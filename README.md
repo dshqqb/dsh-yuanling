@@ -83,6 +83,49 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:17777/inbox `
 | `h` 的算法 | 示例写 `sha1:…` | 用 `sha256:…` | 下一版文档更正；只是幂等键，不影响契约 |
 | 分片阈值 | 32MB | 32MB（可传参覆盖，测试用） | 一致 |
 
+## 版本与审计（P2）
+
+写记忆之前先有"能退回去"的能力。两套版本库，跟着各自的迁移单元走：
+
+```
+system/versions/                    根级文件（yuanling.json / guardrails.json / rules/ingest.json）
+personas/<id>/versions/             该人格的全部文件（拷走人格时历史一起走）
+  ├── blobs/<ab>/<sha256>           内容寻址：同一内容只存一份
+  └── journal.ndjson                每写一次一行（带 prev 链、actor、reason）
+```
+
+```powershell
+yuanling versions                   版本库统计
+yuanling history guardrails.json    看历史
+yuanling track   personas/yuanling/persona/SELF.md   把当前内容记一笔
+yuanling revert  guardrails.json --to 2026-11-06    回滚（hash 或时间戳前缀）
+yuanling scan                       检测插件外的修改（记事本改过也能抓到）
+```
+
+**回滚也是新版本**——后来的历史不会被擦掉。这条很重要：一次"退回去"本身也需要能被追溯。
+
+`scan` 让"记事本改文件"从隐患变成特性：改完自动进历史，并标成 `human:editor`。
+
+## 记忆层（P3）
+
+```powershell
+# 先造一条原始记录，拿到指针
+#   raw/2026-11/06/qq.ndjson#01JCV8K3M2QH7X9ABCDEFGH
+
+yuanling memory save --topic 备份 --text "备份脚本的定时任务被宿主收走了" `
+  --src "raw/2026-11/06/qq.ndjson#01JCV8K3M2QH7X9ABCDEFGH" --slot 备份方案 --imp 80
+
+yuanling memory recall 备份        # 按词命中，带指针
+yuanling memory recall npm --all   # --all 才看已失效的旧值
+yuanling memory open 备份          # 全文：active + 曾经
+yuanling memory list
+yuanling card                      # 本轮会注入的卡片（800 字节预算）
+```
+
+**硬规则**：没有 `@src` 的事实不写；`@src` 指不到真实记录也不写。查重三档（完全相同 / 包含 ≥0.45 / 二元组 Jaccard ≥0.78）在写入时生效。
+
+条目与人物档案用 **JSON**（机器写机器读的结构化数据）；人设骨架仍是 Markdown（人写的散文）。这是对文档 v0.1.0 的一处有意偏差，下版文档更正。
+
 ## 测试
 
 ```powershell
@@ -92,8 +135,10 @@ node --test
 
 - `test/p0.test.mjs`：22 个（目录 / 校验 / 人格 / 完整性）
 - `test/p1.test.mjs`：16 个（追加 / 去重 / 分片 / 封存 / 链 / 脱敏 / 投递 / 心跳 / HTTP）
+- `test/p2.test.mjs`：12 个（blob / prev 链 / 幂等 / 回滚 / 外部编辑 / 作用域）
+- `test/p3.test.mjs`：21 个（指针 / 写入 / 查重 / 槽位 / 检索 / 卡片 / 裁剪）
 
-当前：**38 个全绿**。
+当前：**71 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -102,7 +147,7 @@ cd yuanling
 git init
 git add .
 git status --short          # 自查：不该出现 *.ndjson / *.token / raw/ / personas/ / system/
-git commit -m "P1: 原始层与双通道 inbox"
+git commit -m "P2: 版本与审计"
 git branch -M main
 git remote add origin https://github.com/<你的用户名>/dsh-yuanling.git
 git push -u origin main
@@ -121,6 +166,9 @@ git push -u origin main
 | raw 追加 / 去重 / 分片 / 封存 / 链校验 | ✅ |
 | 三档黑名单 + 硬脱敏 | ✅ |
 | inbox 文件 + HTTP 双通道 + 心跳 | ✅ |
+| 版本：blob / journal / 回滚 / 外部编辑检测 | ✅ |
+| 记忆：条目 / 事实 / 指针校验 / 查重 / 槽位 | ✅ |
+| 记忆：检索 / 卡片（800 字节） | ✅ |
 | 墓碑（redact） | 数据结构已定，写入接口 P4 |
 | 记忆层 / 检索 / 卡片 | ⬜ P3 |
 | 管理台 UI | ⬜ P8 |

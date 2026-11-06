@@ -10,6 +10,8 @@ import { doctor, doctorExitCode } from './doctor.js'
 import { exists, localIso } from './fsx.js'
 import { drain, healthReport } from './inbox.js'
 import { sealDay, verifyDay, listDays, today, prevDate } from './raw.js'
+import { history, revertTo, scanExternalEdits, snapshotCurrent, stats as versionStats } from './version.js'
+import { addFact, recall, openEntry, buildCard, listEntries, DEFAULT_SPACE } from './memory.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
 
@@ -64,6 +66,16 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling seal [--date YYYY-MM-DD]  封存某天（默认昨天）
   yuanling health                    各来源心跳 / 沉默状态
   yuanling serve [--port <n>]        启动回环 HTTP（POST /inbox）
+  yuanling versions                  版本库统计
+  yuanling history <路径> [--json]   看某文件的历史
+  yuanling track <路径>              把当前内容记一笔
+  yuanling revert <路径> --to <x>    回滚（x = hash / 时间戳前缀）
+  yuanling scan                      检测插件外的修改
+  yuanling memory save --topic <t> --text <内容> --src <指针> [--slot s] [--imp n]
+  yuanling memory recall <查询> [--limit 5] [--all]
+  yuanling memory open <主题>
+  yuanling memory list
+  yuanling card                      打印本轮会注入的卡片
   yuanling verify [--root <path>] [--json] [--all]
   yuanling doctor [--root <path>] [--json] [--fast]
   yuanling persona list
@@ -198,6 +210,166 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         out(`summary: ${d.summary.pass} pass / ${d.summary.warn} warn / ${d.summary.fail} fail / ${d.summary.skip} skip`)
       }
       return doctorExitCode(d)
+    }
+
+    if (cmd === 'history') {
+      const rel = _[1]
+      if (!rel) {
+        err('用法：yuanling history <相对路径> [--json]')
+        return EXIT.CONFIG
+      }
+      const list = history(root, rel)
+      if (flags.json) out(JSON.stringify(list, null, 2))
+      else if (!list.length) out('（没有历史：这个文件从没被跟踪过）')
+      else {
+        for (const e of list) {
+          out(`${e.ts}  ${String(e.hash).slice(0, 19)}…  ${String(e.kind).padEnd(13)} ${e.actor}  ${e.reason ?? ''}`)
+        }
+      }
+      return EXIT.OK
+    }
+
+    if (cmd === 'track') {
+      const rel = _[1]
+      if (!rel) {
+        err('用法：yuanling track <相对路径>')
+        return EXIT.CONFIG
+      }
+      const r = snapshotCurrent(root, rel, { reason: 'manual track' })
+      out(r.changed ? `✓ 已记录 ${rel}` : '· 内容没变，未新增版本')
+      return EXIT.OK
+    }
+
+    if (cmd === 'revert') {
+      const rel = _[1]
+      if (!rel || !flags.to) {
+        err('用法：yuanling revert <相对路径> --to <hash|时间戳>')
+        return EXIT.CONFIG
+      }
+      const r = revertTo(root, rel, String(flags.to))
+      if (!r.changed) {
+        out(`· 目标版本与当前内容一致，未产生新版本：${rel}`)
+        return EXIT.OK
+      }
+      out(`✓ 已回滚 ${rel}（新版本 ${String(r.hash).slice(0, 19)}…）`)
+      out('  回滚本身也是一次新版本，后来的历史没有被擦掉。')
+      return EXIT.OK
+    }
+
+    if (cmd === 'scan') {
+      const changed = scanExternalEdits(root)
+      if (!changed.length) {
+        out('· 没有检测到插件外的修改')
+        return EXIT.OK
+      }
+      for (const c of changed) out(`! ${c.path}  ${String(c.from).slice(0, 14)}… → ${String(c.to).slice(0, 14)}…`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'versions') {
+      const list = versionStats(root)
+      if (!list.length) {
+        out('（还没有任何版本记录）')
+        return EXIT.OK
+      }
+      for (const s of list) out(`${s.scope.padEnd(10)} ${String(s.entries).padStart(4)} 条  ${String(s.blobs).padStart(4)} blob`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'memory') {
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+      if (!pid) {
+        err('没有激活人格，先跑 yuanling init')
+        return EXIT.CONFIG
+      }
+      const sub = _[1]
+
+      if (sub === 'save') {
+        const text = flags.text
+        const src = flags.src
+        if (!text || !src) {
+          err('用法：yuanling memory save --topic <主题> --text <内容> --src <raw/…/qq.ndjson#ULID> [--slot <槽位>] [--imp 0-100]')
+          return EXIT.CONFIG
+        }
+        const r = addFact(root, pid, {
+          topic: String(flags.topic ?? '未分类'),
+          space: String(flags.space ?? DEFAULT_SPACE),
+          text: String(text),
+          slot: flags.slot ? String(flags.slot) : null,
+          src: String(src),
+          imp: flags.imp !== undefined ? Number(flags.imp) : null,
+        })
+        if (!r.added) {
+          out(`· 未写入：${r.reason}（已有 ${r.fact.id}：${r.fact.text}）`)
+          return EXIT.OK
+        }
+        out(`✓ 已写入 ${r.entry.topic}：${r.fact.text}`)
+        out(`  重要度 ${r.fact.imp}${r.closed.length ? `，关闭旧值 ${r.closed.length} 条` : ''}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'recall') {
+        const q = _[2] ? _[2] : flags.q ? String(flags.q) : ''
+        const hits = recall(root, pid, String(q), {
+          space: flags.space ? String(flags.space) : null,
+          limit: Number(flags.limit ?? 5),
+          includeExpired: Boolean(flags.all),
+        })
+        if (!hits.length) {
+          out('（没有命中。可能：没记过 / 换个说法 / 补一条别名）')
+          return EXIT.OK
+        }
+        for (const h of hits) {
+          out(`${h.score.toFixed(3)}  〔${h.topic}〕${h.fact.text}${h.fact.until ? '（已失效）' : ''}`)
+          out(`         ${h.fact.src}`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'open') {
+        const topic = _[2]
+        if (!topic) {
+          err('用法：yuanling memory open <主题> [--space 日常]')
+          return EXIT.CONFIG
+        }
+        const e = openEntry(root, pid, String(topic), String(flags.space ?? DEFAULT_SPACE))
+        if (!e) {
+          err(`没有这个主题：${topic}`)
+          return EXIT.CONFIG
+        }
+        out(`〔${e.space} / ${e.topic}〕${e.summary}`)
+        for (const f of e.active) out(`  - [${f.slot ?? '-'}] ${f.text}  @since ${f.since}  imp=${f.imp}`)
+        if (e.expired.length) {
+          out('  曾经：')
+          for (const f of e.expired) out(`  - [${f.slot ?? '-'}] ${f.text}  @until ${f.until}`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'list' || !sub) {
+        const list = listEntries(root, pid)
+        if (!list.length) out('（还没有任何条目）')
+        for (const e of list) out(`${e.space}/${e.topic}  ${e.facts.length} 条  ${e.summary || e.facts[0]?.text || ''}`)
+        return EXIT.OK
+      }
+
+      err(`未知子命令：memory ${sub}`)
+      return EXIT.CONFIG
+    }
+
+    if (cmd === 'card') {
+      const marker = readMarker(root)
+      const pid = marker?.active
+      if (!pid) {
+        err('没有激活人格')
+        return EXIT.CONFIG
+      }
+      const text = buildCard(root, pid)
+      out(text || '（卡片为空：还没有事实）')
+      out('')
+      out(`—— ${Buffer.byteLength(text, 'utf8')} 字节 / 预算 800`)
+      return EXIT.OK
     }
 
     if (cmd === 'persona') {

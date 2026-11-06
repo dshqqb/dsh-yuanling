@@ -5,6 +5,7 @@ import { exists, readJson, writeJsonAtomic, appendLine, localIso, ulid, isDir } 
 import { P, personaPaths } from './paths.js'
 import { PERSONA_ID_RE } from './scaffold.js'
 import * as T from './templates.js'
+import { snapshotCurrent } from './version.js'
 
 export function markerPath(root) {
   return path.join(root, P.marker)
@@ -127,6 +128,11 @@ export function createPersona(root, id, name = id, { from = null } = {}) {
 
   marker.personas.push({ id, name, created_at: now, from: from ?? null })
   writeMarker(root, marker)
+  try {
+    snapshotCurrent(root, P.marker, { actor: 'system:persona', reason: `create persona ${id}` })
+  } catch {
+    /* 版本记录失败不该挡住建人格 */
+  }
   appendChange(root, { kind: 'persona_create', id, name, from: from ?? null })
   return { id, name, dir: path.join(root, pp.base) }
 }
@@ -144,6 +150,11 @@ export function switchPersona(root, id) {
   if (previous === id) return { id, changed: false, previous }
   marker.active = id
   writeMarker(root, marker)
+  try {
+    snapshotCurrent(root, P.marker, { actor: 'system:persona', reason: `switch ${previous} → ${id}` })
+  } catch {
+    /* 同上 */
+  }
   appendChange(root, { kind: 'persona_switch', from: previous, to: id })
   return { id, changed: true, previous }
 }
