@@ -1,0 +1,24 @@
+# 换行与文本处理
+#
+# 这个项目主要在 Windows 上开发，但代码与数据格式都按 LF 存储。
+# 统一 LF 可以避免「同一条记录在两台机器上 hash 不一致」这类怪事
+# ——raw 的日链是对内容做 sha256 的。
+
+* text=auto eol=lf
+
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.ndjson text eol=lf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.zip   binary
+*.tgz   binary

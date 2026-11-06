@@ -1,0 +1,75 @@
+# ══════════════════════════════════════════════════════════════════════
+# 原灵 yuanling · 仓库 .gitignore
+#
+# 前提：**数据目录不在仓库里**。默认是 ~/.dsh/yuanling，或用户指定的
+# 任意路径（如 D:\yuanling）。仓库只放代码与模板。
+#
+# 下面「运行时数据」一节是兜底：万一有人把数据目录拷进仓库，也不该
+# 被提交。隐私不该依赖「人记得配置」。
+# ══════════════════════════════════════════════════════════════════════
+
+# ── 依赖与构建产物 ────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+
+# ── 运行时数据（绝不应出现在仓库里）──────────────────────────────────
+# 用 / 锚定根目录，避免误伤以后可能出现的同名源码目录
+/data/
+/raw/
+/raw-archive/
+/media/
+/personas/
+/spaces/
+/system/
+/secrets/
+/candidates/
+/snapshots/
+/backups/
+/imports/
+
+# 数据文件本身（即便放错位置也不提交）
+*.ndjson
+*.jsonl
+*.token
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# 凭据与本地配置
+.env
+.env.*
+!.env.example
+*.local.json
+config.local.*
+
+# ── 本地临时文件 ──────────────────────────────────────────────────────
+.tmp/
+tmp/
+*.log
+npm-debug.log*
+yarn-error.log*
+*.pid
+*.seed
+*.bak
+
+# ── 编辑器 / 系统 ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── 个人笔记（不要误提交）────────────────────────────────────────────
+/notes/
+/scratch/
+/TODO.local.md
