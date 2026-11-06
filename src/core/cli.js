@@ -11,7 +11,8 @@ import { exists, localIso } from './fsx.js'
 import { drain, healthReport } from './inbox.js'
 import { sealDay, verifyDay, listDays, today, prevDate } from './raw.js'
 import { history, revertTo, scanExternalEdits, snapshotCurrent, stats as versionStats } from './version.js'
-import { addFact, recall, openEntry, buildCard, listEntries, DEFAULT_SPACE } from './memory.js'
+import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, DEFAULT_SPACE } from './memory.js'
+import { shield, unshield, listShields, recentRecordIds, rebuildShields } from './shield.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
 
@@ -74,7 +75,11 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling memory save --topic <t> --text <内容> --src <指针> [--slot s] [--imp n]
   yuanling memory recall <查询> [--limit 5] [--all]
   yuanling memory open <主题>
+  yuanling memory why <factId>       这条凭什么存在（指针 + 变更史）
   yuanling memory list
+  yuanling shield [--last N] [--channel c] [--yes]   屏蔽"刚才"（默认只预览）
+  yuanling shield list | shield rebuild
+  yuanling unshield <id...>          撤销屏蔽
   yuanling card                      打印本轮会注入的卡片
   yuanling verify [--root <path>] [--json] [--all]
   yuanling doctor [--root <path>] [--json] [--fast]
@@ -347,6 +352,27 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.OK
       }
 
+      if (sub === 'why') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling memory why <factId>')
+          return EXIT.CONFIG
+        }
+        const w = memoryWhy(root, pid, String(id))
+        if (!w) {
+          err(`没有这条事实：${id}`)
+          return EXIT.CONFIG
+        }
+        out(`〔${w.topic}〕${w.fact.text}`)
+        out(`  指针  ${w.src.pointer}`)
+        out(`        ${w.src.ok ? '✓ 可达' : `✗ ${w.src.reason}`}`)
+        out(`  重要度 ${w.fact.imp}   创建 ${w.fact.created}${w.fact.until ? `   失效 ${w.fact.until}` : ''}`)
+        if (w.shielded) out('  状态：已屏蔽（证据被用户撤回）')
+        out('  变更史：')
+        for (const h of w.history.slice(-6)) out(`    ${h.ts}  ${h.kind.padEnd(13)} ${h.reason ?? ''}`)
+        return EXIT.OK
+      }
+
       if (sub === 'list' || !sub) {
         const list = listEntries(root, pid)
         if (!list.length) out('（还没有任何条目）')
@@ -369,6 +395,64 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       out(text || '（卡片为空：还没有事实）')
       out('')
       out(`—— ${Buffer.byteLength(text, 'utf8')} 字节 / 预算 800`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'shield') {
+      const sub = _[1]
+
+      if (sub === 'list') {
+        const list = listShields(root)
+        if (!list.length) out('（还没有任何屏蔽登记）')
+        for (const r of list) {
+          const state = r.revoked_at ? '已撤销' : '生效中'
+          out(`${r.at}  ${state}  ${r.targets.length} 条  ${r.reason || ''}`)
+          for (const t of r.targets) out(`    ${t}`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'rebuild') {
+        const r = rebuildShields(root)
+        out(`✓ 已按 raw 重建登记簿：${r.events} 个事件 / ${r.redactions} 条登记`)
+        return EXIT.OK
+      }
+
+      // 默认：屏蔽"刚才"
+      const last = Number(flags.last ?? 1)
+      const cands = recentRecordIds(root, { last, channel: flags.channel ? String(flags.channel) : null })
+      if (!cands.length) {
+        out('· 没有找到可屏蔽的记录')
+        return EXIT.OK
+      }
+      for (const c of cands) {
+        const t = c.text.length > 40 ? c.text.slice(0, 40) + '…' : c.text
+        out(`${c.id}  ${c.ts}  ${c.channel}  ${t}`)
+      }
+      if (!flags.yes) {
+        out('')
+        out('以上是预览。确认无误后加 --yes 执行屏蔽。')
+        out('（raw 不会被删除，只会追加一条 redact，并在所有出口隔离）')
+        return EXIT.OK
+      }
+      const r = shield(root, cands.map((c) => c.id), { reason: String(flags.reason ?? '用户要求删除') })
+      out(`✓ 已屏蔽 ${cands.length} 条原始记录`)
+      out(`  级联隔离记忆 ${r.cascaded.length} 条${r.already ? `，其中 ${r.already} 条本来就已屏蔽` : ''}`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'unshield') {
+      const ids = _.slice(1)
+      if (!ids.length) {
+        err('用法：yuanling unshield <id...>')
+        return EXIT.CONFIG
+      }
+      const r = unshield(root, ids, { reason: String(flags.reason ?? '用户撤销') })
+      if (!r.redaction) {
+        out('· 这些记录本来就没有被屏蔽')
+        return EXIT.OK
+      }
+      out(`✓ 已撤销屏蔽；恢复记忆 ${r.restored.length} 条`)
       return EXIT.OK
     }
 

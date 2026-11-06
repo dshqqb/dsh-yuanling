@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { exists, isDir, readJson, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
-import { writeTracked } from './version.js'
+import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
 
 export const DEFAULT_SPACE = '日常'
@@ -30,6 +30,51 @@ export function entryRel(pid, space, topic) {
 
 export function spacesDir(root, pid) {
   return path.join(root, P.personas, pid, 'spaces')
+}
+
+/** 列出所有人格 id（读根标记，不依赖 persona.js，避免循环引用）。 */
+export function listPersonaIds(root) {
+  const marker = readJson(path.join(root, P.marker), null)
+  if (!marker || !Array.isArray(marker.personas)) return []
+  return marker.personas.map((p) => p.id).filter((id) => typeof id === 'string')
+}
+
+/**
+ * 屏蔽级联：把证据指向这些原始记录的**所有人格**的事实都标记/解除标记。
+ * 屏蔽是全局的（raw 共享），所以级联也必须跨人格。
+ *
+ * @returns {Array<{persona:string, topic:string, factId:string}>}
+ */
+export function setFactsShieldedBySrc(root, targets, on, now = localIso()) {
+  const ids = new Set((Array.isArray(targets) ? targets : [targets]).map(String))
+  if (!ids.size) return []
+  const touched = []
+
+  for (const pid of listPersonaIds(root)) {
+    for (const e of listEntries(root, pid)) {
+      let changed = false
+      for (const f of e.facts) {
+        const srcId = String(f.src ?? '').split('#').pop()
+        if (!ids.has(srcId)) continue
+        if (on && !f.shielded_at) {
+          f.shielded_at = now
+          changed = true
+          touched.push({ persona: pid, topic: e.topic, factId: f.id })
+        } else if (!on && f.shielded_at) {
+          f.shielded_at = null
+          changed = true
+          touched.push({ persona: pid, topic: e.topic, factId: f.id })
+        }
+      }
+      if (!changed) continue
+      e.updated = now
+      writeTracked(root, entryRel(pid, e.space, e.topic), JSON.stringify(e, null, 2) + '\n', {
+        actor: 'system:shield',
+        reason: on ? '证据被屏蔽，级联隔离' : '证据撤销屏蔽，级联恢复',
+      })
+    }
+  }
+  return touched
 }
 
 // ── 文本工具 ────────────────────────────────────────────────────────────
@@ -233,7 +278,12 @@ function daysSince(iso, now = Date.now()) {
  * 认轴检索（P3 只实现"词 + 时间"两轴，其余在 P5/P6 补）。
  * @returns {Array<{topic,space,fact,score,parts}>}
  */
-export function recall(root, pid, query, { space = null, limit = 5, includeExpired = false, now = Date.now() } = {}) {
+export function recall(
+  root,
+  pid,
+  query,
+  { space = null, limit = 5, includeExpired = false, includeShielded = false, now = Date.now() } = {},
+) {
   const entries = listEntries(root, pid, space)
   const qt = tokens(query)
   const out = []
@@ -241,17 +291,51 @@ export function recall(root, pid, query, { space = null, limit = 5, includeExpir
   for (const e of entries) {
     for (const f of e.facts) {
       if (f.until && !includeExpired) continue
+      if (f.shielded_at && !includeShielded) continue
       const lex = query ? lexScore(qt, `${e.topic} ${e.summary} ${f.text}`) : 0
       const imp = (f.imp ?? 50) / 100
       const rec = Math.max(0, 1 - daysSince(f.created ?? f.last_seen ?? '', now) / 30) * 0.15
       const score = query ? 0.6 * lex + 0.25 * imp + rec : 0.7 * imp + 0.3 * rec
       if (query && lex === 0) continue
-      out.push({ topic: e.topic, space: e.space, fact: f, score: Number(score.toFixed(4)), parts: { lex, imp } })
+      out.push({
+        topic: e.topic,
+        space: e.space,
+        fact: f,
+        score: Number(score.toFixed(4)),
+        parts: { lex, imp },
+      })
     }
   }
 
   out.sort((a, b) => b.score - a.score)
   return out.slice(0, Math.max(1, limit))
+}
+
+/** 按 id 找一条事实（跨主题、跨空间）。 */
+export function findFact(root, pid, factId) {
+  for (const e of listEntries(root, pid)) {
+    const f = e.facts.find((x) => x.id === factId)
+    if (f) return { topic: e.topic, space: e.space, entry: e, fact: f }
+  }
+  return null
+}
+
+/**
+ * 「凭什么记得这个」：事实 → 指针 → 原始记录；再叠加该条目的变更史。
+ */
+export function why(root, pid, factId) {
+  const hit = findFact(root, pid, factId)
+  if (!hit) return null
+  const { fact, entry } = hit
+  const ptr = resolvePointer(root, fact.src)
+  return {
+    topic: hit.topic,
+    space: hit.space,
+    fact,
+    shielded: Boolean(fact.shielded_at),
+    src: { pointer: fact.src, ok: ptr.ok, kind: ptr.kind ?? null, reason: ptr.reason ?? null },
+    history: history(root, entryRel(pid, hit.space, hit.topic)),
+  }
 }
 
 // ── 卡片 ────────────────────────────────────────────────────────────────
@@ -281,7 +365,17 @@ function byteLen(s) {
 export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
   const entries = listEntries(root, pid)
   const active = []
-  for (const e of entries) for (const f of e.facts) if (!f.until) active.push({ ...f, topic: e.topic })
+  let shielded = 0
+  for (const e of entries) {
+    for (const f of e.facts) {
+      if (f.until) continue
+      if (f.shielded_at) {
+        shielded += 1
+        continue
+      }
+      active.push({ ...f, topic: e.topic })
+    }
+  }
 
   const peak = [...active].sort((a, b) => (b.imp ?? 0) - (a.imp ?? 0)).slice(0, 3)
   const recent = [...active]
@@ -294,7 +388,7 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   if (id) lines.push(`[骨架] ${id}`)
   if (peak.length) lines.push('[最深刻] ' + peak.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (recent.length) lines.push('[最新] ' + recent.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
-  lines.push(`[索引] ${active.length} 条事实 / ${entries.length} 个主题`)
+  lines.push(`[索引] ${active.length} 条事实 / ${entries.length} 个主题${shielded ? ` / ${shielded} 条已隔离` : ''}`)
 
   // 裁：先丢「最新」，再丢「最深刻」
   while (byteLen(lines.join('\n')) > budget) {

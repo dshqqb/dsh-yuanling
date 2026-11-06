@@ -126,6 +126,25 @@ yuanling card                      # 本轮会注入的卡片（800 字节预算
 
 条目与人物档案用 **JSON**（机器写机器读的结构化数据）；人设骨架仍是 Markdown（人写的散文）。这是对文档 v0.1.0 的一处有意偏差，下版文档更正。
 
+## 墓碑（P4）
+
+"删掉刚才那条"在这里不是删除，是**追加一条屏蔽**，再在所有出口隔离。
+
+```powershell
+yuanling shield --last 1                 # 先预览（默认不执行）
+yuanling shield --last 3 --yes           # 确认后执行
+yuanling shield list                     # 谁被屏蔽过、为什么、是否已撤销
+yuanling unshield <id>                   # 撤销（误删比删不掉更常见）
+yuanling shield rebuild                  # 登记簿丢了，从 raw 重建
+yuanling memory why <factId>             # 这条凭什么存在：指针 + 变更史
+```
+
+**三条规矩**：
+
+1. **raw 一个字节不动。** 屏蔽只是往当天 `system.ndjson` 追加一条 `redact` 事件。
+2. **全局生效。** raw 是共享的，所以级联隔离会跨所有人格——A 人格屏蔽的，B 人格也看不到。
+3. **可撤销。** `unredact` 是对称事件；登记簿 `system/shields.json` 只是索引，真相在 raw 里，随时可重建。
+
 ## 测试
 
 ```powershell
@@ -137,8 +156,9 @@ node --test
 - `test/p1.test.mjs`：16 个（追加 / 去重 / 分片 / 封存 / 链 / 脱敏 / 投递 / 心跳 / HTTP）
 - `test/p2.test.mjs`：12 个（blob / prev 链 / 幂等 / 回滚 / 外部编辑 / 作用域）
 - `test/p3.test.mjs`：21 个（指针 / 写入 / 查重 / 槽位 / 检索 / 卡片 / 裁剪）
+- `test/p4.test.mjs`：13 个（屏蔽 / 级联 / 跨人格 / 撤销 / 重建 / why）
 
-当前：**71 个全绿**。
+当前：**84 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -169,7 +189,6 @@ git push -u origin main
 | 版本：blob / journal / 回滚 / 外部编辑检测 | ✅ |
 | 记忆：条目 / 事实 / 指针校验 / 查重 / 槽位 | ✅ |
 | 记忆：检索 / 卡片（800 字节） | ✅ |
-| 墓碑（redact） | 数据结构已定，写入接口 P4 |
-| 记忆层 / 检索 / 卡片 | ⬜ P3 |
+| 墓碑：屏蔽 / 级联隔离 / 撤销 / 重建 / why | ✅ |
 | 管理台 UI | ⬜ P8 |
 | QQ / B站 适配器 | ⬜ P3.5 / P12 |

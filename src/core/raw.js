@@ -203,6 +203,21 @@ function normalizeActor(a) {
   return { kind, id: String(a?.id ?? ''), name: String(a?.name ?? '') }
 }
 
+/**
+ * 追加一条系统事件（redact / unredact / purge 等）。
+ * 与消息不同，系统事件**不做去重**——同一个目标被屏蔽两次是两件事。
+ * 落在当天的 system.ndjson 里，仍然是 raw 的一部分（只追加、可审计）。
+ */
+export function appendSystemEvent(root, { type, targets = [], by = 'owner', reason = '', ts } = {}) {
+  if (!type) throw new Error('系统事件缺少 type')
+  const when = ts ?? localIso()
+  const dateStr = today(new Date(when))
+  const { abs, name } = pickShard(root, dateStr, 'system')
+  const rec = { v: 2, type, id: ulid(), ts: when, source: 'system', targets, by, reason }
+  fs.appendFileSync(abs, JSON.stringify(rec) + '\n', 'utf8')
+  return { ...rec, file: `${relDayDir(dateStr)}/${name}` }
+}
+
 /** 读某一天的全部记录（可按来源过滤）。坏行只跳过、不抛。 */
 export function readDay(root, dateStr, { source } = {}) {
   const dir = dayDirFor(root, dateStr)
