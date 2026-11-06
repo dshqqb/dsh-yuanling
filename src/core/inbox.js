@@ -9,6 +9,7 @@ import { exists, ensureDir, readJson, appendLine, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { appendRecord } from './raw.js'
 import { applyIngestPolicy, loadIngestRules } from './redact.js'
+import { canIngest, logRefusal } from './rules.js'
 
 export const INBOX_VERSION = 1
 
@@ -38,6 +39,16 @@ export function ingest(root, env, { now, maxBytes } = {}) {
     try {
       const channel = String(item.channel ?? 'unknown')
       const rawText = String(item.text ?? '')
+
+      // 硬线：guardrails.never_record 命中的内容，连 raw 都不进。
+      const guard = canIngest(root, channel, rawText)
+      if (!guard.ok) {
+        countSkip(root, source)
+        logRefusal(root, null, { dim: 'ingest', action: 'record', channel, reason: guard.reason })
+        out.skipped += 1
+        continue
+      }
+
       const policy = applyIngestPolicy(rawText, { channel, rules })
 
       if (policy.skip) {

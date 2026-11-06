@@ -182,6 +182,28 @@ yuanling catchup                      # 切入补跑（单次 ≤200）
 
 **按对象注入**：`contextFor(channel)` 在卡片后面追加 `[这个人]` 或 `[这个群]` 一行。人格不变，变的是"这一轮想起谁"。
 
+## 规则层（P7）
+
+```powershell
+yuanling rule show [--channel group:123]     # 合并后的有效规则 + 来源链
+yuanling rule check proactive --channel group:123
+yuanling rule guardrails                     # 根级硬线
+yuanling rule refusals                       # 最近的拒绝记录
+```
+
+**三级继承**：`private-<uid>` 30 > `qq/group-<gid>` 20 > `global` 10；`guardrails.json` 是 ∞，不参与合并、单独硬拦。
+
+| 维度 | 管什么 | 生效范围 |
+|---|---|---|
+| `ingest` | 写不写 raw | **全局**（raw 共享，只能有一个答案） |
+| `recall` | 给不给、给多少 | 人格 |
+| `action` | 动不动、何时动 | 人格 |
+| `persona` | 准不准演化 | 人格 |
+
+**合并规则**：普通字段深合并（数组整体替换）；`deny`/`allow` **取并集**——下层不许悄悄放宽上层；要放宽 `deny` 必须显式 `override_deny: true`，且只放开本层 `allow` 里写明的那条。
+
+**每次拒绝都留痕**（`system/log/changes.ndjson` 的 `rule_refusal`）。否则"她为什么没回我"永远查不出来。
+
 ## 测试
 
 ```powershell
@@ -196,8 +218,9 @@ node --test
 - `test/p4.test.mjs`：13 个（屏蔽 / 级联 / 跨人格 / 撤销 / 重建 / why）
 - `test/p5.test.mjs`：22 个（衰减 / 清晰度 / 三带 / 抽签 / 召回计数 / 卡片裁剪）
 - `test/p6.test.mjs`：17 个（身份映射 / 合并拆分 / 候选 / 档案隔离 / 按对象注入 / 补跑）
+- `test/p7.test.mjs`：16 个（继承 / deny 并集 / override / 静默时段 / 入库硬线 / 留痕）
 
-当前：**123 个全绿**。
+当前：**139 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -231,5 +254,6 @@ git push -u origin main
 | 墓碑：屏蔽 / 级联隔离 / 撤销 / 重建 / why | ✅ |
 | 三带 / 衰减 / 清晰度 / 召回计数 / 卡片配额 | ✅ |
 | 实体档案 / 身份合并 / 按对象注入 / 切入补跑 | ✅ |
+| 规则层：三级继承 / deny 优先 / 静默时段 / 拒绝留痕 | ✅ |
 | 管理台 UI | ⬜ P8 |
 | QQ / B站 适配器 | ⬜ P3.5 / P12 |

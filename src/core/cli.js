@@ -29,6 +29,7 @@ import {
   writeGroup,
 } from './entities.js'
 import { catchUp, catchUpStatus } from './catchup.js'
+import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
 
@@ -100,6 +101,10 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling person candidates|confirm <n>|reject <n>
   yuanling group show|set <群号> [--name --intro --tone]
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
+  yuanling rule show [--channel c]    看合并后的有效规则与来源
+  yuanling rule check <action> [--channel c]
+  yuanling rule guardrails            看根级硬线
+  yuanling rule refusals [--limit n]  最近的拒绝记录
   yuanling card                      打印本轮会注入的卡片
   yuanling verify [--root <path>] [--json] [--all]
   yuanling doctor [--root <path>] [--json] [--fast]
@@ -650,6 +655,51 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       out(`切入补跑：处理 ${r.processed} 条，剩余 ${r.remaining} 条${r.done ? '（已追平）' : ''}`)
       out(`  补跑前待处理 ${before.pending} 条；游标 ${r.tail ?? '（空）'}`)
       return EXIT.OK
+    }
+
+    if (cmd === 'rule') {
+      const sub = _[1]
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+      const channel = flags.channel ? String(flags.channel) : null
+
+      if (sub === 'show' || !sub) {
+        const { rules, sources, missing } = loadEffectiveRules(root, pid, { channel })
+        out(JSON.stringify(rules, null, 2))
+        out('')
+        out(`来源：${sources.length ? sources.join(' → ') : '（无规则文件，全部取默认）'}`)
+        if (missing.length) out(`未命中：${missing.join('、')}`)
+        if (channel) out(`频道：${channel}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'check') {
+        const action = _[2]
+        if (!action) {
+          err('用法：yuanling rule check <proactive|send|recall|evolve> [--channel group:123]')
+          return EXIT.CONFIG
+        }
+        const { rules } = loadEffectiveRules(root, pid, { channel })
+        const r = checkAction(rules, action, { channel })
+        out(r.allowed ? `✓ 允许 ${action}` : `✗ 拒绝 ${action}：${r.reason}`)
+        if (channel) out(`  频道 ${channel}`)
+        return r.allowed ? EXIT.OK : EXIT.INTEGRITY
+      }
+
+      if (sub === 'guardrails') {
+        out(JSON.stringify(loadGuardrails(root), null, 2))
+        return EXIT.OK
+      }
+
+      if (sub === 'refusals') {
+        const list = recentRefusals(root, { limit: Number(flags.limit ?? 20) })
+        if (!list.length) out('（还没有任何拒绝记录）')
+        for (const r of list) out(`${r.ts}  ${r.dim}/${r.action}  ${r.channel ?? '-'}  ${r.reason}`)
+        return EXIT.OK
+      }
+
+      err(`未知子命令：rule ${sub}`)
+      return EXIT.CONFIG
     }
 
     if (cmd === 'persona') {
