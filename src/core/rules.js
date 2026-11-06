@@ -76,7 +76,7 @@ const DEFAULTS = {
   schema: 1,
   recall: { max_inject: 800, hidden_kinds: [], min_importance: 0 },
   action: { proactive: 'on', quiet_hours: [], max_per_hour: 3, max_per_day: 20, per_target: true, group_proactive: false },
-  persona: { evolve: true, auto_adopt: true, weekly_auto_limit: 1, rollback_days: 7 },
+  persona: { evolve: true, auto_adopt: true, daily_auto_limit: 1, auto_approve_days: 3, rollback_days: 7 },
   deny: [],
   allow: [],
 }

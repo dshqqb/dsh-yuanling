@@ -100,18 +100,19 @@ export function recordHash(rec) {
 }
 
 // ── 去重缓存 ────────────────────────────────────────────────────────────
-// 按「root + 日期」缓存当天已出现过的 h。首次访问时扫一遍当天所有分片。
+// 按「root + 日期」缓存当天已出现过的 h → 它落在哪个文件。
+// 存文件不是多余的：去重时调用方仍需要一个合法指针，否则拿不到 file 就拼不出 src。
 const seenCache = new Map()
 
 function seenKey(root, dateStr) {
   return `${path.resolve(root)}::${dateStr}`
 }
 
-function seenSet(root, dateStr) {
+function seenMap(root, dateStr) {
   const key = seenKey(root, dateStr)
-  let set = seenCache.get(key)
-  if (set) return set
-  set = new Set()
+  let map = seenCache.get(key)
+  if (map) return map
+  map = new Map()
   const dir = dayDirFor(root, dateStr)
   if (isDir(dir)) {
     for (const name of fs.readdirSync(dir)) {
@@ -121,15 +122,15 @@ function seenSet(root, dateStr) {
         if (!line.trim()) continue
         try {
           const r = JSON.parse(line)
-          if (r.h) set.add(r.h)
+          if (r.h) map.set(r.h, `${relDayDir(dateStr)}/${name}`)
         } catch {
           /* 坏行跳过，不阻塞 */
         }
       }
     }
   }
-  seenCache.set(key, set)
-  return set
+  seenCache.set(key, map)
+  return map
 }
 
 /** 选中要写的分片：超过阈值就往 qq-p2.ndjson 顺延。 */
@@ -188,13 +189,17 @@ export function appendRecord(root, input, { maxBytes = MAX_RAW_BYTES, now } = {}
     rec.h = recordHash(rec)
   }
 
-  const seen = seenSet(root, dateStr)
-  if (seen.has(rec.h)) return { ok: true, deduped: true, id: rec.id }
-  seen.add(rec.h)
+  const seen = seenMap(root, dateStr)
+  if (seen.has(rec.h)) {
+    // 去重也要给出它落在哪儿：调用方需要指针，不能只给 id
+    return { ok: true, deduped: true, id: rec.id, file: seen.get(rec.h) }
+  }
 
   const { abs, name } = pickShard(root, dateStr, source, maxBytes)
   fs.appendFileSync(abs, JSON.stringify(rec) + '\n', 'utf8')
-  return { ok: true, id: rec.id, file: `${relDayDir(dateStr)}/${name}`, deduped: false }
+  const rel = `${relDayDir(dateStr)}/${name}`
+  seen.set(rec.h, rel)
+  return { ok: true, id: rec.id, file: rel, deduped: false }
 }
 
 function normalizeActor(a) {

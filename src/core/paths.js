@@ -153,6 +153,7 @@ export const P = {
   imports: 'system/imports',
   secrets: 'system/secrets',
   consoleToken: 'system/secrets/console.token',
+  policy: 'system/policy.json',
   trash: 'system/trash',
 }
 

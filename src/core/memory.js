@@ -220,7 +220,19 @@ export function addFact(
   const entry = readJson(path.join(root, rel), null) ?? emptyEntry(topic, space, now)
 
   const dup = findDuplicate(entry.facts.filter((f) => !f.until), t)
-  if (dup) return { added: false, reason: 'duplicate', fact: dup, entry }
+  if (dup) {
+    // 重复表述不是垃圾，是信号：人格演化就靠"同一句话被反复说"。
+    // 所以不新增事实，但把次数、最近一次时间、证据都记下来。
+    dup.repeat = Number(dup.repeat ?? 1) + 1
+    dup.last_seen = now
+    dup.srcs = [...new Set([...(dup.srcs ?? (dup.src ? [dup.src] : [])), src])].slice(-20)
+    entry.updated = now
+    writeTracked(root, rel, JSON.stringify(entry, null, 2) + '\n', {
+      actor: 'model:memory_save',
+      reason: `重复表述 +1（累计 ${dup.repeat} 次）`,
+    })
+    return { added: false, reason: 'duplicate', fact: dup, entry, repeated: true }
+  }
 
   const closed = []
   if (slot) {

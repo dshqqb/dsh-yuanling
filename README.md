@@ -27,6 +27,8 @@ dsh plugin --profile <profile> add "D:\path\to\yuanling"
 | `consolePort` | 17777 | 0 = 随机 |
 | `allowRemote` | false | 打开前想清楚：这是你的私人记忆 |
 | `preset` | true | 是否注册 agent preset |
+| `autoApproveDays` | 3 | 提案无人理会几天后自动批准 |
+| `dailyAutoLimit` | 1 | 每天最多自动采纳几条 |
 | `logLevel` | info | debug / info / warn / error |
 
 ## 快速开始（CLI）
@@ -269,6 +271,27 @@ yuanling identity correct person_xxx --platform bili --id abc123 --reason "本�
 
 **为什么"谁不喜欢被问家里的事"不在规则里**：那是关于人的判断，会淡、会错、会变，所以它是一条普通事实（`person=<uid>`、`slot=禁忌`、带 `src`），自动继承槽位覆盖、屏蔽、衰减。**规则层只放机器可执行的策略**（能不能说话、给不给、准不准演化），少而可审计。
 
+## 演化提案（P10）
+
+**设计前提**：记忆与人格共同塑造灵魂，记忆在潜移默化地改变人格；规则只限定权限，不塑造人格。
+所以演化只有一条路——**重复的主张 → 提案 → 人批准 → 改表达层 → 7 天可回滚**；人不理会，到期自动批准（除非被否决）。
+
+```powershell
+yuanling proposal scan              # 把"反复出现"的主张变成提案
+yuanling proposal list              # 待定 + 已生效
+yuanling proposal show <id>         # 看依据与将要追加的那一行
+yuanling proposal approve <id>      # 采纳（写进 style.md）
+yuanling proposal reject <id>       # 否决（永不自动批准）
+yuanling proposal rollback <id>     # 7 天内退回
+yuanling proposal sweep             # 到期自动批准（受每周上限约束）
+```
+
+**为什么查重要改成"记次数"**：如果重复的话被查重直接吞掉，"反复出现"这个信号就消失了。所以现在重复不新增事实，但 `repeat +1`、追加一条证据、刷新 `last_seen`——这既是演化的燃料，也是"她为什么这么想"的依据。
+
+**阈值**：重复 ≥5 次、跨度 ≥3 天、且不与硬线冲突。**到期 3 天自动批准，每天最多 1 条**——两个旋钮都在 DSH 设置页（`autoApproveDays` / `dailyAutoLimit`），改完立刻对已有提案生效（到期时间按当前设置现算，不用等下一轮重新生成）。
+
+**只改表达层**：提案只往 `style.md` 追加一行，`SELF.md` 的骨架永不自动改——她可以长大，不能变成另一个人。
+
 ## 测试
 
 ```powershell
@@ -286,8 +309,9 @@ node --test
 - `test/p7.test.mjs`：16 个（继承 / deny 并集 / override / 静默时段 / 入库硬线 / 留痕）
 - `test/p8.test.mjs`：10 个（静态页 / Token 门 / 只读 API / 目录穿越）
 - `test/p9.test.mjs`：14 个（主张抽取 / 自述确认 / 转述候选 / 推断 / 纠错）
+- `test/p10.test.mjs`：19 个（重复计数 / 提案 / 批准 / 否决 / 自动到期 / 每日配额 / 回滚）
 
-当前：**163 个全绿**。
+当前：**182 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -324,5 +348,6 @@ git push -u origin main
 | 规则层：三级继承 / deny 优先 / 静默时段 / 拒绝留痕 | ✅ |
 | 管理台：静态页 + 只读 API + 注入预览 | ✅ |
 | 身份主张：自述确认 / 转述候选 / 推断 / 纠错 | ✅ |
+| 演化提案：重复 → 提案 → 批准 / 否决 / 自动 / 回滚 | ✅ |
 | 管理台写操作（屏蔽/回滚/编辑） | ⬜ 后续 |
 | QQ / B站 适配器 | ⬜ P3.5 / P12 |

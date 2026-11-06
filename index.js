@@ -10,11 +10,12 @@
 //   ④ 把状态打到日志里，方便排障
 
 import z from '@deepseek-ai/schemastery'
+import path from 'node:path'
 import { resolveRoot, validateRoot } from './src/core/paths.js'
 import { scaffold } from './src/core/scaffold.js'
 import { readMarker } from './src/core/persona.js'
 import { checkFormat } from './src/core/manifest.js'
-import { exists, localIso } from './src/core/fsx.js'
+import { exists, localIso, readJson, writeJsonAtomic } from './src/core/fsx.js'
 
 export const name = 'yuanling'
 
@@ -34,6 +35,8 @@ export const Config = z.object({
   consolePort: z.number().default(17777).description('管理台端口（0 = 随机）。改动需重启。'),
   allowRemote: z.boolean().default(false).description('允许管理台监听非回环地址。打开前先想清楚：这是你的私人记忆。'),
   preset: z.boolean().default(true).description('是否注册 agent preset「yuanling」。'),
+  autoApproveDays: z.number().default(3).description('提案无人理会几天后自动批准（默认 3 天）。'),
+  dailyAutoLimit: z.number().default(1).description('每天最多自动采纳几条提案（默认 1 条/天）。'),
   logLevel: z.string().default('info').description('debug | info | warn | error'),
 })
 
@@ -44,6 +47,29 @@ function log(level, cfg, ...args) {
   if (level === 'error') console.error(tag, ...args)
   else if (level === 'warn') console.warn(tag, ...args)
   else console.log(tag, ...args)
+}
+
+/**
+ * 设置页 → 数据目录。
+ * 只在这两个值真的变了的时候写盘，避免每次启动都动文件。
+ * CLI 与定时任务读同一份，所以"设置页改了"和"命令行跑"不会各说各话。
+ */
+function syncPolicy(root, config) {
+  try {
+    const p = path.join(root, 'system', 'policy.json')
+    const days = Number(config.autoApproveDays ?? 3)
+    const limit = Number(config.dailyAutoLimit ?? 1)
+    const cur = readJson(p, null)
+    if (cur && Number(cur.autoApproveDays) === days && Number(cur.dailyAutoLimit) === limit) return
+    writeJsonAtomic(p, {
+      _comment: '由 DSH 设置页同步；直接改这里等价于改设置。',
+      autoApproveDays: Number.isFinite(days) ? days : 3,
+      dailyAutoLimit: Number.isFinite(limit) ? limit : 1,
+      updated_at: localIso(),
+    })
+  } catch (err) {
+    console.warn('[yuanling:warn] 同步策略失败：', err?.message ?? err)
+  }
 }
 
 /**
@@ -94,6 +120,10 @@ export function apply(ctx, config) {
   }
 
   const marker = readMarker(root)
+
+  // 把设置页的两个旋钮同步到数据目录，CLI / 定时任务也读它
+  syncPolicy(root, config)
+
   log(
     'info',
     config,

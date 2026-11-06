@@ -31,6 +31,7 @@ import {
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
+import { scan as scanProposals, listProposals, findProposal, approve, reject, rollback, sweep, readPolicy } from './proposals.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
 
@@ -103,6 +104,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
   yuanling identity correct <uid> --platform bili --id 123
+  yuanling proposal scan             把"反复出现的主张"变成提案
+  yuanling proposal list|show|approve|reject|rollback|sweep|policy
   yuanling group show|set <群号> [--name --intro --tone]
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
   yuanling rule show [--channel c]    看合并后的有效规则与来源
@@ -492,6 +495,108 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       }
       out(`✓ 已撤销屏蔽；恢复记忆 ${r.restored.length} 条`)
       return EXIT.OK
+    }
+
+    if (cmd === 'proposal') {
+      const sub = _[1]
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+
+      if (sub === 'scan') {
+        const list = scanProposals(root, pid, {
+          minRepeat: Number(flags.repeat ?? 5),
+          minDays: Number(flags.days ?? 3),
+        })
+        if (!list.length) out('· 没有新的提案（重复次数或跨度还不够）')
+        for (const p of list) out(`+ ${p.id}  ${p.claim}  （${p.count} 次 / ${p.days} 天）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'list' || !sub) {
+        const all = listProposals(root, pid)
+        const list = flags.all ? all : all.filter((p) => p.status === 'pending' || p.status === 'approved')
+        if (!list.length) out('（没有提案）')
+        for (const p of list) {
+          const tag = p.status === 'approved' ? '已生效' : p.status === 'rejected' ? '已否决' : p.status === 'rolled_back' ? '已回滚' : '待定'
+          out(`${p.id}  [${tag}]  ${p.claim}  （${p.count} 次 / ${p.days} 天）`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'show') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling proposal show <id>')
+          return EXIT.CONFIG
+        }
+        const p = findProposal(root, pid, id)
+        if (!p) {
+          err(`没有这个提案：${id}`)
+          return EXIT.CONFIG
+        }
+        out(`${p.id}  [${p.status}]`)
+        out(`主张：${p.claim}`)
+        out(`依据：重复 ${p.count} 次，跨度 ${p.days} 天，主题「${p.topic}」`)
+        out(`将追加到 style.md：${p.line}`)
+        out(`证据：`)
+        for (const e of p.evidence) out(`  ${e.src}`)
+        if (p.status === 'pending') out(`\n批准：proposal approve ${p.id}   否决：proposal reject ${p.id}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'approve') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling proposal approve <id>')
+          return EXIT.CONFIG
+        }
+        const r = approve(root, pid, id, { by: 'human' })
+        out(r.changed ? `✓ 已采纳并写入 style.md：${r.proposal.line}` : '· 已经生效过了')
+        out(`  回滚窗口至 ${String(r.proposal.rollback_until).slice(0, 10)}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'reject') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling proposal reject <id> [--reason "..."]')
+          return EXIT.CONFIG
+        }
+        reject(root, pid, id, { reason: String(flags.reason ?? '') })
+        out(`✓ 已否决 ${id}（不会再被自动批准）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'rollback') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling proposal rollback <id>')
+          return EXIT.CONFIG
+        }
+        rollback(root, pid, id)
+        out(`✓ 已回滚 ${id}（style.md 退回采纳前）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'policy') {
+        const policy = readPolicy(root)
+        if (!policy) out('（还没同步过，使用默认：3 天后自动批准 / 每天 1 条）')
+        else out(JSON.stringify(policy, null, 2))
+        out('在 DSH 设置页改 autoApproveDays / dailyAutoLimit，或直接改 system/policy.json')
+        return EXIT.OK
+      }
+
+      if (sub === 'sweep') {
+        const r = sweep(root, pid)
+        if (r.skipped) out(`· 跳过：${r.skipped}`)
+        else if (!r.approved.length) out(`· 没有到期的提案（到期 ${r.days} 天 / 每日上限 ${r.dailyLimit}）`)
+        for (const id of r.approved) out(`✓ 自动采纳 ${id}`)
+        if (!r.skipped) out(`  到期 ${r.days} 天，每日上限 ${r.dailyLimit}，今日剩余 ${r.budgetLeft}`)
+        return EXIT.OK
+      }
+
+      err(`未知子命令：proposal ${sub}`)
+      return EXIT.CONFIG
     }
 
     if (cmd === 'identity') {

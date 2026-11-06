@@ -204,7 +204,7 @@ export function globalRuleJson() {
       per_target: true,
       group_proactive: false,
     },
-    persona: { evolve: true, auto_adopt: true, weekly_auto_limit: 1, rollback_days: 7 },
+    persona: { evolve: true, auto_adopt: true, daily_auto_limit: 1, auto_approve_days: 3, rollback_days: 7 },
     deny: [],
     allow: [],
   }
