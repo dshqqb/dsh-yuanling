@@ -10,6 +10,7 @@ import { exists, isDir, readJson, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
+import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readGroup, readProfile } from './entities.js'
 import {
   ageDays,
   clarityOf,
@@ -203,6 +204,7 @@ export function addFact(
     tags = [],
     summary = null,
     origin = null,
+    person = null,
     now = localIso(),
   },
 ) {
@@ -237,6 +239,13 @@ export function addFact(
     entry.facts.length < 2 &&
     shouldMarkOrigin({ factId, entryAgeDays: ageDays(entry.created, Date.parse(now) || Date.now()) })
 
+  // 关于某个人的第一条事实：这是"跟 TA 的第一次"，比条目的第一条更重要。
+  let personFirst = false
+  if (person) {
+    const fm = ensureFirstMet(root, pid, person, now)
+    personFirst = fm.first
+  }
+
   const fact = {
     id: factId,
     slot,
@@ -244,9 +253,10 @@ export function addFact(
     since: since ?? now.slice(0, 7),
     until: null,
     src,
+    person: person ?? null,
     imp: Number.isFinite(imp) ? Math.max(1, Math.min(100, Math.round(imp))) : scoreImportance(t, { slot }),
     emotional: emotionalScore(t),
-    origin: origin === null ? autoOrigin : Boolean(origin),
+    origin: origin === null ? (person ? personFirst : autoOrigin) : Boolean(origin),
     tags: Array.isArray(tags) ? tags : [],
     created: now,
     last_seen: now,
@@ -471,4 +481,38 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
     break
   }
   return lines.join('\n')
+}
+
+/**
+ * 按对话对象组装上下文：卡片 + 对象先验。
+ * 人格不变，变的是"这一轮该想起谁"。
+ */
+export function contextFor(root, pid, { channel = null, budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
+  const lines = [buildCard(root, pid, { budget, now })]
+  if (channel) {
+    const { kind, id } = parseChannel(channel)
+    if (kind === 'private') {
+      const uid = personForChannel(root, channel)
+      if (uid) {
+        const p = readProfile(root, pid, uid)
+        if (p) {
+          // 档案里没写显示名时，回到客观映射里取——注入时别显示一串 uid
+          const display = p.display || loadIdentities(root).people[uid]?.display || uid
+          const bits = [display]
+          if (p.sketch) bits.push(p.sketch)
+          if (p.first_met) bits.push(`第一次 ${String(p.first_met).slice(0, 10)}`)
+          lines.push(`[这个人] ${bits.join(' · ')}`)
+        }
+      }
+    } else if (kind === 'group') {
+      const g = readGroup(root, pid, id)
+      if (g) {
+        const bits = [g.name || g.gid]
+        if (g.intro) bits.push(g.intro)
+        if (g.tone) bits.push(g.tone)
+        lines.push(`[这个群] ${bits.join(' · ')}`)
+      }
+    }
+  }
+  return lines.filter(Boolean).join('\n')
 }

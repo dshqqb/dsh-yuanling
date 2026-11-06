@@ -162,6 +162,26 @@ yuanling memory why <factId>             # 这条凭什么存在：指针 + 变�
 `retention = imp + min(12, recall×2) + 近期加成(18/8) − 时间惩罚`。
 召回次数记在 `state/access.ndjson`（只追加），**读路径不产生写放大**——不为了记一次"看过"去重写整个条目文件。
 
+## 实体档案（P6）
+
+```powershell
+yuanling person new 张三 --platform qq --id 12345
+yuanling person link person_xxx --platform bili --id 998877
+yuanling person candidates            # 疑似同一人（只提，不自动并）
+yuanling person confirm 0
+yuanling person merge person_b person_a
+yuanling person split person_a --platform bili --id 998877
+yuanling person profile person_a --sketch "说话短，爱用草"
+yuanling group set 123456 --name "XX 游戏群" --intro "折腾 mod 的人"
+yuanling catchup                      # 切入补跑（单次 ≤200）
+```
+
+**客观 / 主观分家**：`system/identities.json` 存"哪个号是同一个人"（跨人格共用）；`personas/<p>/entities/` 存"这个角色认识的 TA"（按人格隔离）。合并/拆分只改映射，各人格的记忆文件零改动。
+
+**关于某人的第一条事实自动进「最初」带**——比"某个主题的第一条"更有意义。之后的事实不会重复算最初。
+
+**按对象注入**：`contextFor(channel)` 在卡片后面追加 `[这个人]` 或 `[这个群]` 一行。人格不变，变的是"这一轮想起谁"。
+
 ## 测试
 
 ```powershell
@@ -175,8 +195,9 @@ node --test
 - `test/p3.test.mjs`：21 个（指针 / 写入 / 查重 / 槽位 / 检索 / 卡片 / 裁剪）
 - `test/p4.test.mjs`：13 个（屏蔽 / 级联 / 跨人格 / 撤销 / 重建 / why）
 - `test/p5.test.mjs`：22 个（衰减 / 清晰度 / 三带 / 抽签 / 召回计数 / 卡片裁剪）
+- `test/p6.test.mjs`：17 个（身份映射 / 合并拆分 / 候选 / 档案隔离 / 按对象注入 / 补跑）
 
-当前：**106 个全绿**。
+当前：**123 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -209,5 +230,6 @@ git push -u origin main
 | 记忆：检索 / 卡片（800 字节） | ✅ |
 | 墓碑：屏蔽 / 级联隔离 / 撤销 / 重建 / why | ✅ |
 | 三带 / 衰减 / 清晰度 / 召回计数 / 卡片配额 | ✅ |
+| 实体档案 / 身份合并 / 按对象注入 / 切入补跑 | ✅ |
 | 管理台 UI | ⬜ P8 |
 | QQ / B站 适配器 | ⬜ P3.5 / P12 |

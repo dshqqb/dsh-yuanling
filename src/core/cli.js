@@ -13,6 +13,22 @@ import { sealDay, verifyDay, listDays, today, prevDate } from './raw.js'
 import { history, revertTo, scanExternalEdits, snapshotCurrent, stats as versionStats } from './version.js'
 import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, DEFAULT_SPACE } from './memory.js'
 import { shield, unshield, listShields, recentRecordIds, rebuildShields } from './shield.js'
+import {
+  loadIdentities,
+  createPerson,
+  linkIdentity,
+  findByIdentity,
+  listCandidates,
+  confirmCandidate,
+  rejectCandidate,
+  mergePeople,
+  splitIdentity,
+  readProfile,
+  writeProfile,
+  readGroup,
+  writeGroup,
+} from './entities.js'
+import { catchUp, catchUpStatus } from './catchup.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
 
@@ -80,6 +96,10 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling shield [--last N] [--channel c] [--yes]   屏蔽"刚才"（默认只预览）
   yuanling shield list | shield rebuild
   yuanling unshield <id...>          撤销屏蔽
+  yuanling person list|new|show|link|merge|split|profile
+  yuanling person candidates|confirm <n>|reject <n>
+  yuanling group show|set <群号> [--name --intro --tone]
+  yuanling catchup [--limit 200]     切入补跑（把游标追平）
   yuanling card                      打印本轮会注入的卡片
   yuanling verify [--root <path>] [--json] [--all]
   yuanling doctor [--root <path>] [--json] [--fast]
@@ -453,6 +473,182 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.OK
       }
       out(`✓ 已撤销屏蔽；恢复记忆 ${r.restored.length} 条`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'person') {
+      const sub = _[1]
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+
+      if (sub === 'list' || !sub) {
+        const data = loadIdentities(root)
+        const list = Object.values(data.people)
+        if (!list.length) out('（还没有任何人物）')
+        for (const p of list) {
+          const ids = (p.identities ?? []).map((x) => `${x.platform}:${x.id}`).join('、') || '（无账号）'
+          out(`${p.uid}  ${p.display}  [${ids}]`)
+        }
+        if (data.pending.length) out(`\n有 ${data.pending.length} 个待确认的疑似同一人（yuanling person candidates）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'new') {
+        const display = _[2] || String(flags.name ?? '')
+        if (!display) {
+          err('用法：yuanling person new <显示名> [--platform qq --id 12345]')
+          return EXIT.CONFIG
+        }
+        const p = createPerson(root, { display })
+        if (flags.platform && flags.id) linkIdentity(root, p.uid, { platform: flags.platform, id: flags.id })
+        out(`✓ 已建立人物 ${p.uid}（${p.display}）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'link') {
+        const uid = _[2]
+        if (!uid || !flags.platform || !flags.id) {
+          err('用法：yuanling person link <uid> --platform qq --id 12345')
+          return EXIT.CONFIG
+        }
+        const r = linkIdentity(root, uid, { platform: flags.platform, id: flags.id })
+        out(r.changed ? `✓ 已绑定 ${flags.platform}:${flags.id} → ${uid}` : '· 已经绑过了，未变')
+        return EXIT.OK
+      }
+
+      if (sub === 'show') {
+        const uid = _[2]
+        if (!uid) {
+          err('用法：yuanling person show <uid> [--persona <id>]')
+          return EXIT.CONFIG
+        }
+        const data = loadIdentities(root)
+        const p = data.people[uid]
+        if (!p) {
+          err(`没有这个人物：${uid}`)
+          return EXIT.CONFIG
+        }
+        out(`${p.uid}  ${p.display}`)
+        for (const i of p.identities ?? []) out(`  ${i.platform}:${i.id}  ${i.state}  置信 ${i.confidence}`)
+        if (pid) {
+          const prof = readProfile(root, pid, uid)
+          if (prof) {
+            out(`  档案（${pid}）：${prof.sketch || '（无素描）'}`)
+            if (prof.first_met) out(`  第一次：${String(prof.first_met).slice(0, 19)}`)
+          } else {
+            out(`  档案（${pid}）：还没有——说明这个角色还没跟 TA 打过交道`)
+          }
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'profile') {
+        const uid = _[2]
+        if (!uid) {
+          err('用法：yuanling person profile <uid> --sketch "..." [--first-meet]')
+          return EXIT.CONFIG
+        }
+        const patch = { __reason: '手动编辑人物档案' }
+        if (flags.sketch) patch.sketch = String(flags.sketch)
+        if (flags.display) patch.display = String(flags.display)
+        if (flags['first-meet']) patch.first_met = localIso()
+        const prof = writeProfile(root, pid, uid, patch)
+        out(`✓ 已更新 ${uid} 的档案（${pid}）`)
+        if (prof.sketch) out(`  素描：${prof.sketch}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'merge') {
+        const from = _[2]
+        const into = _[3]
+        if (!from || !into) {
+          err('用法：yuanling person merge <fromUid> <intoUid>')
+          return EXIT.CONFIG
+        }
+        const r = mergePeople(root, from, into)
+        out(`✓ 已把 ${r.absorbed} 并进 ${r.uid}（原记录里保留了 merges，可追溯）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'split') {
+        const uid = _[2]
+        if (!uid || !flags.platform || !flags.id) {
+          err('用法：yuanling person split <uid> --platform qq --id 12345')
+          return EXIT.CONFIG
+        }
+        const r = splitIdentity(root, uid, flags.platform, flags.id)
+        out(`✓ 已把 ${flags.platform}:${flags.id} 拆到新人物 ${r.uid}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'candidates') {
+        const list = listCandidates(root)
+        if (!list.length) out('（没有待确认的候选）')
+        for (let i = 0; i < list.length; i += 1) {
+          const c = list[i]
+          out(`#${i}  ${c.platform}:${c.id} → ${c.uid}  ${c.reason || ''}`)
+        }
+        if (list.length) out('\n确认：yuanling person confirm <n>   拒绝：yuanling person reject <n>')
+        return EXIT.OK
+      }
+
+      if (sub === 'confirm') {
+        const n = Number(_[2])
+        confirmCandidate(root, n)
+        out(`✓ 已确认 #${n}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'reject') {
+        const n = Number(_[2])
+        rejectCandidate(root, n)
+        out(`✓ 已拒绝 #${n}`)
+        return EXIT.OK
+      }
+
+      err(`未知子命令：person ${sub}`)
+      return EXIT.CONFIG
+    }
+
+    if (cmd === 'group') {
+      const sub = _[1]
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+      const gid = _[2]
+      if (!gid) {
+        err('用法：yuanling group show|set <群号> [--name n] [--intro s] [--tone s]')
+        return EXIT.CONFIG
+      }
+      if (sub === 'show' || !sub) {
+        const g = readGroup(root, pid, gid)
+        if (!g) {
+          out('（这个群还没有档案）')
+          return EXIT.OK
+        }
+        out(`${g.name || g.gid}  ${g.intro || ''}`)
+        if (g.tone) out(`  语气：${g.tone}`)
+        return EXIT.OK
+      }
+      if (sub === 'set') {
+        const patch = { __reason: '手动编辑群档案' }
+        if (flags.name) patch.name = String(flags.name)
+        if (flags.intro) patch.intro = String(flags.intro)
+        if (flags.tone) patch.tone = String(flags.tone)
+        const g = writeGroup(root, pid, gid, patch)
+        out(`✓ 已更新群 ${gid} 的档案（${pid}）：${g.name || ''}`)
+        return EXIT.OK
+      }
+      err(`未知子命令：group ${sub}`)
+      return EXIT.CONFIG
+    }
+
+    if (cmd === 'catchup') {
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+      const before = catchUpStatus(root, pid)
+      const r = catchUp(root, pid, { limit: Number(flags.limit ?? 200) })
+      out(`切入补跑：处理 ${r.processed} 条，剩余 ${r.remaining} 条${r.done ? '（已追平）' : ''}`)
+      out(`  补跑前待处理 ${before.pending} 条；游标 ${r.tail ?? '（空）'}`)
       return EXIT.OK
     }
 
