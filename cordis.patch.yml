@@ -1,0 +1,5 @@
+# 原灵：把自己挂进 profile 的那一层配置。
+# id 是这一行的唯一标识；name 是包名，装载器按 profile 的 node_modules 解析。
+- insert:
+    - id: yuanling
+      name: dsh-yuanling

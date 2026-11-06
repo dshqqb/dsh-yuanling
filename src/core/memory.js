@@ -205,6 +205,7 @@ export function addFact(
     summary = null,
     origin = null,
     person = null,
+    kind = 'fact',
     now = localIso(),
   },
 ) {
@@ -248,6 +249,7 @@ export function addFact(
 
   const fact = {
     id: factId,
+    kind,
     slot,
     text: t,
     since: since ?? now.slice(0, 7),

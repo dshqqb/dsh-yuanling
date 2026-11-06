@@ -7,7 +7,29 @@ DSH 的长期记忆与人格底座。
 
 设计文档：上一级目录 `yuanling_ds4.1f_0.1.0.md`。**代码与文档冲突时，以文档为准，然后改代码或改文档——不能两边都算数。**
 
-## 快速开始
+## 装进 DSH
+
+**它已经是 DSH 插件**：`index.js` 导出 `name / inject / Config / apply`，`package.json` 里有 `dsh.bundle.patch`，`cordis.patch.yml` 负责把自己挂进 profile。`src/core/**` 是插件调用的库，`bin/` 是同一套库的运维入口——不是两个程序。
+
+```powershell
+# 开发期：从本地目录装（profile 用你实际的，例如 desktop / web / tui）
+dsh plugin --profile <profile> add "D:\path\to\yuanling"
+```
+
+装完重启 DSH，设置页会出现这些项（宿主按 schema 渲染，插件没有自己的设置界面代码）：
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | true | 总开关 |
+| `dataDir` | 空 → `~/.dsh/yuanling` | 数据目录；默认路径首次运行会自动建骨架 |
+| `consoleEnabled` | true | 是否启动管理台 |
+| `consoleHost` | `127.0.0.1` | 只允许回环；改非回环必须同时开 `allowRemote` |
+| `consolePort` | 17777 | 0 = 随机 |
+| `allowRemote` | false | 打开前想清楚：这是你的私人记忆 |
+| `preset` | true | 是否注册 agent preset |
+| `logLevel` | info | debug / info / warn / error |
+
+## 快速开始（CLI）
 
 ```powershell
 # 建数据目录（默认 ~/.dsh/yuanling，可用 --root 指到 D 盘）
@@ -219,6 +241,34 @@ yuanling serve --port 17777
 
 API 是只读的（`/api/status|card|memory|entries|entry|rules|sources|refusals`），写操作仍走 CLI，避免在 UI 里误点一下就改了记忆。
 
+## 身份主张（P9）
+
+身份不是配置项，是**带证据的主张**——所以它进记忆层，不进规则层。
+
+```powershell
+# 有人告诉你他的号（owner 私聊自述 → 直接确认）
+yuanling identity claim --platform bili --id abc123 --channel private:10001 `
+  --src "raw/2026-11/06/qq.ndjson#01JCV..." --text "我的b站是 abc123"
+
+# 别人转述 / 群聊自述 → 只进候选，不自动合并
+yuanling identity claim --platform bili --id zzz999 --speaker member ... 
+
+# 从 raw 推断跨平台同名（只看，不写）
+yuanling identity infer
+yuanling identity infer --apply     # 写入候选，仍然不合并
+
+# 发现绑错了：拆出去，并关闭旧主张（不删）
+yuanling identity correct person_xxx --platform bili --id abc123 --reason "本人说那不是他的号"
+```
+
+**三条保守规则**：
+
+1. **只有 owner 私聊里的自述自动确认**——群聊里说"这是我小号"可能是冒充；
+2. **推断只提候选**，永不自动合并（合并错了拆起来很痛）；
+3. **纠错走 split + 关闭旧主张**：旧主张补 `until` 不删——"当时确实这么说过"也是事实。
+
+**为什么"谁不喜欢被问家里的事"不在规则里**：那是关于人的判断，会淡、会错、会变，所以它是一条普通事实（`person=<uid>`、`slot=禁忌`、带 `src`），自动继承槽位覆盖、屏蔽、衰减。**规则层只放机器可执行的策略**（能不能说话、给不给、准不准演化），少而可审计。
+
 ## 测试
 
 ```powershell
@@ -235,8 +285,9 @@ node --test
 - `test/p6.test.mjs`：17 个（身份映射 / 合并拆分 / 候选 / 档案隔离 / 按对象注入 / 补跑）
 - `test/p7.test.mjs`：16 个（继承 / deny 并集 / override / 静默时段 / 入库硬线 / 留痕）
 - `test/p8.test.mjs`：10 个（静态页 / Token 门 / 只读 API / 目录穿越）
+- `test/p9.test.mjs`：14 个（主张抽取 / 自述确认 / 转述候选 / 推断 / 纠错）
 
-当前：**149 个全绿**。
+当前：**163 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -272,5 +323,6 @@ git push -u origin main
 | 实体档案 / 身份合并 / 按对象注入 / 切入补跑 | ✅ |
 | 规则层：三级继承 / deny 优先 / 静默时段 / 拒绝留痕 | ✅ |
 | 管理台：静态页 + 只读 API + 注入预览 | ✅ |
+| 身份主张：自述确认 / 转述候选 / 推断 / 纠错 | ✅ |
 | 管理台写操作（屏蔽/回滚/编辑） | ⬜ 后续 |
 | QQ / B站 适配器 | ⬜ P3.5 / P12 |

@@ -30,6 +30,7 @@ import {
 } from './entities.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
+import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
 
@@ -99,6 +100,9 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling unshield <id...>          撤销屏蔽
   yuanling person list|new|show|link|merge|split|profile
   yuanling person candidates|confirm <n>|reject <n>
+  yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
+  yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
+  yuanling identity correct <uid> --platform bili --id 123
   yuanling group show|set <群号> [--name --intro --tone]
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
   yuanling rule show [--channel c]    看合并后的有效规则与来源
@@ -488,6 +492,76 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       }
       out(`✓ 已撤销屏蔽；恢复记忆 ${r.restored.length} 条`)
       return EXIT.OK
+    }
+
+    if (cmd === 'identity') {
+      const sub = _[1]
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+
+      if (sub === 'claim') {
+        if (!flags.platform || !flags.id || !flags.src) {
+          err('用法：yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001] [--speaker owner|member]')
+          return EXIT.CONFIG
+        }
+        const r = claimIdentity(root, pid, {
+          platform: String(flags.platform),
+          id: String(flags.id),
+          channel: flags.channel ? String(flags.channel) : null,
+          speakerKind: String(flags.speaker ?? 'owner'),
+          text: String(flags.text ?? ''),
+          src: String(flags.src),
+        })
+        if (r.state === 'confirmed') {
+          out(`✓ 已确认并绑定 → ${r.uid}${r.changed === false ? '（原本就绑过）' : ''}`)
+        } else {
+          out(`· 已记为候选（${r.added ? '新增' : '已存在'}）。非本人私聊自述不自动合并。`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'extract') {
+        const text = _[2] ? _.slice(2).join(' ') : String(flags.text ?? '')
+        const claims = extractClaims(text)
+        if (!claims.length) out('（没识别出身份主张）')
+        for (const c of claims) out(`${c.platform}:${c.id}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'infer') {
+        if (flags.apply) {
+          const r = applyInferredCandidates(root, pid, { limit: Number(flags.limit ?? 50) })
+          out(`✓ 推断出 ${r.proposals} 组，写入候选 ${r.added} 条（仍未合并）`)
+          return EXIT.OK
+        }
+        const list = inferIdentityCandidates(root, { limit: Number(flags.limit ?? 50) })
+        if (!list.length) out('（没有发现明显的跨平台同名）')
+        for (const c of list) {
+          out(`${c.display}：${c.identities.map((i) => `${i.platform}:${i.id}`).join('、')}  — ${c.reason}`)
+        }
+        if (list.length) out('\n加 --apply 才写入候选（仍然不会自动合并）')
+        return EXIT.OK
+      }
+
+      if (sub === 'correct') {
+        const uid = _[2]
+        if (!flags.platform || !flags.id) {
+          err('用法：yuanling identity correct <uid> --platform bili --id 123 --reason "..."')
+          return EXIT.CONFIG
+        }
+        const r = correctIdentity(root, pid, {
+          uid: uid ? String(uid) : null,
+          platform: String(flags.platform),
+          id: String(flags.id),
+          reason: String(flags.reason ?? ''),
+        })
+        out(`✓ 已把 ${flags.platform}:${flags.id} 从 ${r.from} 拆到 ${r.to}`)
+        out(`  关闭旧身份主张 ${r.closedFacts.length} 条（不删，只写 until）`)
+        return EXIT.OK
+      }
+
+      err(`未知子命令：identity ${sub}`)
+      return EXIT.CONFIG
     }
 
     if (cmd === 'person') {

@@ -89,15 +89,15 @@ export function linkIdentity(root, uid, { platform, id, state = 'confirmed', con
   return { changed: true, person }
 }
 
-/** 候选：只提，不自动合并。 */
-export function addCandidate(root, { uid, platform, id, reason = '', evidence = [] }) {
+/** 候选：只提，不自动合并。uid 允许为 null（还没确定属于谁）。 */
+export function addCandidate(root, { uid = null, platform, id, reason = '', evidence = [] }) {
   const data = loadIdentities(root)
-  if (!data.people[uid]) throw new Error(`人物不存在：${uid}`)
+  if (uid && !data.people[uid]) throw new Error(`人物不存在：${uid}`)
   if (findByIdentity(root, platform, id)) return { added: false, reason: 'already-linked' }
   if (data.pending.some((c) => c.platform === platform && String(c.id) === String(id))) {
     return { added: false, reason: 'already-pending' }
   }
-  data.pending.push({ uid, platform: String(platform), id: String(id), reason, evidence, at: localIso() })
+  data.pending.push({ uid: uid ?? null, platform: String(platform), id: String(id), reason, evidence, at: localIso() })
   saveIdentities(root, data)
   return { added: true }
 }
@@ -106,13 +106,19 @@ export function listCandidates(root) {
   return loadIdentities(root).pending.slice()
 }
 
-export function confirmCandidate(root, index) {
+/**
+ * 确认候选。候选可能还没归属（uid=null），这时必须显式给一个 uid。
+ */
+export function confirmCandidate(root, index, { uid = null } = {}) {
   const data = loadIdentities(root)
   const c = data.pending[index]
   if (!c) throw new Error(`候选不存在：#${index}`)
+  const target = uid ?? c.uid
+  if (!target) throw new Error(`候选 #${index} 还没确定属于谁，请传 uid`)
+  if (!data.people[target]) throw new Error(`人物不存在：${target}`)
   data.pending.splice(index, 1)
   saveIdentities(root, data)
-  return linkIdentity(root, c.uid, { platform: c.platform, id: c.id, state: 'confirmed', confidence: 1 })
+  return linkIdentity(root, target, { platform: c.platform, id: c.id, state: 'confirmed', confidence: 1 })
 }
 
 export function rejectCandidate(root, index) {

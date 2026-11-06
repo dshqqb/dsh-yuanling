@@ -12,9 +12,15 @@
     "bin/",
     "src/",
     "web/",
+    "cordis.patch.yml",
     "README.md",
     "SECURITY.md"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
     "test": "node --test",
     "cli": "node bin/yuanling.js"
