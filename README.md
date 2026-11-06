@@ -16,6 +16,19 @@ DSH 的长期记忆与人格底座。
 dsh plugin --profile <profile> add "D:\path\to\yuanling"
 ```
 
+三种装法，按"确定能成"排序：
+
+| 方式 | 命令 | 前提 |
+|---|---|---|
+| **本地目录**（最稳） | `git clone https://github.com/dshqqb/dsh-yuanling.git D:\dsh-plugins\dsh-yuanling`<br>`dsh plugin --profile <p> add "D:\dsh-plugins\dsh-yuanling"` | 只需要 git |
+| **tarball** | `add "D:\path\dsh-yuanling-0.1.0.tgz"` | 从 Release 下载，或本地 `npm pack` |
+| **npm 包名** | `dsh plugin --profile <p> add dsh-yuanling` | 需要先 `npm publish` |
+| **git URL** | `add https://github.com/dshqqb/dsh-yuanling` | **取决于 `dsh plugin add` 是否把参数转给 npm**，未验证 |
+
+装完**必须重启 DSH**：插件在启动时加载，没有热加载。
+
+一句话安装（在对话框里说"装这个插件"）能不能成，取决于三件宿主侧的事：agent 有没有 shell 权限、`add` 认不认远程地址、谁来重启。**仓库这边只能做到"装得上"，做不到"自己装自己"。**
+
 装完重启 DSH，设置页会出现这些项（宿主按 schema 渲染，插件没有自己的设置界面代码）：
 
 | 配置 | 默认 | 说明 |
