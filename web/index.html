@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>原灵 · 管理台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>原灵</h1>
+    <span id="status-line" class="muted">连接中…</span>
+    <span class="spacer"></span>
+    <button id="btn-token" class="ghost">令牌</button>
+  </header>
+
+  <div id="tokenbar" hidden>
+    <input id="token-input" placeholder="粘贴 system/secrets/console.token 的内容" autocomplete="off" />
+    <button id="token-save">保存</button>
+    <span class="muted">只存本机浏览器 localStorage，不上传</span>
+  </div>
+
+  <nav id="tabs">
+    <button data-tab="status" class="active">状态</button>
+    <button data-tab="card">注入预览</button>
+    <button data-tab="memory">记忆</button>
+    <button data-tab="entries">条目</button>
+    <button data-tab="rules">规则</button>
+    <button data-tab="sources">来源</button>
+    <button data-tab="refusals">拒绝记录</button>
+  </nav>
+
+  <main>
+    <section id="tab-status">
+      <div id="status-cards" class="cards"></div>
+      <div id="personas"></div>
+    </section>
+
+    <section id="tab-card" hidden>
+      <div class="row">
+        <input id="card-channel" placeholder="频道，例如 private:10001 或 group:123（可留空）" />
+        <button id="card-load">生成</button>
+      </div>
+      <pre id="card-out" class="box"></pre>
+      <div id="card-meta" class="muted"></div>
+    </section>
+
+    <section id="tab-memory" hidden>
+      <div class="row">
+        <input id="mem-q" placeholder="按话题搜，例如 备份" />
+        <button id="mem-go">搜索</button>
+        <label class="muted"><input type="checkbox" id="mem-all" /> 含已失效/已隔离</label>
+      </div>
+      <div id="mem-out"></div>
+    </section>
+
+    <section id="tab-entries" hidden>
+      <div id="entries-out"></div>
+    </section>
+
+    <section id="tab-rules" hidden>
+      <div class="row">
+        <input id="rule-channel" placeholder="频道（留空=只叠全局）" />
+        <button id="rule-load">查看</button>
+      </div>
+      <div id="rule-src" class="muted"></div>
+      <pre id="rule-out" class="box"></pre>
+    </section>
+
+    <section id="tab-sources" hidden>
+      <div id="sources-out"></div>
+    </section>
+
+    <section id="tab-refusals" hidden>
+      <div id="refusals-out"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

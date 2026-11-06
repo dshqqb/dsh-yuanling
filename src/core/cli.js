@@ -150,7 +150,16 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
     if (!check.ok) {
       err('✗ 数据目录不可用：')
       for (const e of check.errors) err(`  · ${e.code}: ${e.message}`)
-      err('  提示：先运行 yuanling init，或检查 dataDir / YUANLING_HOME 是否指向了正确的盘。')
+      const missing = check.errors.some((e) => e.code === 'ROOT_MISSING')
+      if (missing) {
+        err('')
+        err('  这个路径还没有被初始化。先运行：')
+        err(`    yuanling init --root "${root}"`)
+        err('  （如果它本该已经存在，检查盘符是否插好、dataDir 是否指错——原灵不会替你新建目录）')
+      } else {
+        err('')
+        err('  提示：检查目录权限，或换一个当前用户可写的位置。')
+      }
       return EXIT.ROOT
     }
 

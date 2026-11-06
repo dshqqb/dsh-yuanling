@@ -204,6 +204,21 @@ yuanling rule refusals                       # 最近的拒绝记录
 
 **每次拒绝都留痕**（`system/log/changes.ndjson` 的 `rule_refusal`）。否则"她为什么没回我"永远查不出来。
 
+## 管理台（P8）
+
+```powershell
+yuanling serve --port 17777
+# 打开 http://127.0.0.1:17777
+```
+
+第一次打开会让你粘贴 `system/secrets/console.token` 的内容——令牌存本机 localStorage，只发给回环服务，不进 URL、不上传。
+
+页面：状态 / **注入预览** / 记忆搜索 / 条目 / 规则 / 来源健康 / 拒绝记录。
+
+**注入预览**是这一版最值钱的东西：它直接显示"这一轮她要读到的 800 字节原文"。记忆系统最大的问题不是不记得，是**你以为它记得**——能看见就能调。
+
+API 是只读的（`/api/status|card|memory|entries|entry|rules|sources|refusals`），写操作仍走 CLI，避免在 UI 里误点一下就改了记忆。
+
 ## 测试
 
 ```powershell
@@ -219,8 +234,9 @@ node --test
 - `test/p5.test.mjs`：22 个（衰减 / 清晰度 / 三带 / 抽签 / 召回计数 / 卡片裁剪）
 - `test/p6.test.mjs`：17 个（身份映射 / 合并拆分 / 候选 / 档案隔离 / 按对象注入 / 补跑）
 - `test/p7.test.mjs`：16 个（继承 / deny 并集 / override / 静默时段 / 入库硬线 / 留痕）
+- `test/p8.test.mjs`：10 个（静态页 / Token 门 / 只读 API / 目录穿越）
 
-当前：**139 个全绿**。
+当前：**149 个全绿**。
 
 ## 首次推送到 GitHub
 
@@ -255,5 +271,6 @@ git push -u origin main
 | 三带 / 衰减 / 清晰度 / 召回计数 / 卡片配额 | ✅ |
 | 实体档案 / 身份合并 / 按对象注入 / 切入补跑 | ✅ |
 | 规则层：三级继承 / deny 优先 / 静默时段 / 拒绝留痕 | ✅ |
-| 管理台 UI | ⬜ P8 |
+| 管理台：静态页 + 只读 API + 注入预览 | ✅ |
+| 管理台写操作（屏蔽/回滚/编辑） | ⬜ 后续 |
 | QQ / B站 适配器 | ⬜ P3.5 / P12 |

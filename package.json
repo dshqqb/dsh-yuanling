@@ -11,6 +11,7 @@
     "index.js",
     "bin/",
     "src/",
+    "web/",
     "README.md",
     "SECURITY.md"
   ],
