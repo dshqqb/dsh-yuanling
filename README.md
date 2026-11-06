@@ -1,366 +1,238 @@
 # 原灵 yuanling
 
-DSH 的长期记忆与人格底座。
+**给 DSH 的长期记忆与人格底座。** 纯文件、纯 JSON，没有数据库，没有向量库，没有后台服务依赖。
 
-- **P0（已完成）**：数据目录骨架、root 四级解析、fail-closed 校验、多人格注册、体检。
-- **P1（本版）**：L0 原始层 —— 日目录 / NDJSON / 双通道 inbox / 单写者 / `day.json` / 封存 / 32MB 分片 / 心跳。
+它的目标不是"记住更多"，而是**记住的东西能被解释、被纠正、被忘掉**。
 
-设计文档：上一级目录 `yuanling_ds4.1f_0.1.0.md`。**代码与文档冲突时，以文档为准，然后改代码或改文档——不能两边都算数。**
+---
 
-## 装进 DSH
+## 它解决什么
 
-**它已经是 DSH 插件**：`index.js` 导出 `name / inject / Config / apply`，`package.json` 里有 `dsh.bundle.patch`，`cordis.patch.yml` 负责把自己挂进 profile。`src/core/**` 是插件调用的库，`bin/` 是同一套库的运维入口——不是两个程序。
+| 问题 | 常见做法 | 原灵的做法 |
+|---|---|---|
+| 记不住 | 只保留最近 N 轮 | 原始层永久留档，记忆层按重要性分层衰减 |
+| **记错了却改不掉** | 摘要越摞越多，错的一直在 | 每条事实必须挂一个 `raw/…#ULID` 指针，可回查、可回滚 |
+| **该忘的忘不了** | 删除即破坏，或者根本删不干净 | 墓碑：不动 raw，只在所有出口隔离，可撤销 |
 
-```powershell
-# 开发期：从本地目录装（profile 用你实际的，例如 desktop / web / tui）
-dsh plugin --profile <profile> add "D:\path\to\yuanling"
+一句话：**没有指针，就不许成为事实。**
+
+---
+
+## 设计框架
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  L0 原始层  raw/YYYY-MM/DD/<source>.ndjson               │
+│  只追加、不改写、按天封存、sha256 日链                    │
+└───────────────┬─────────────────────────────────────────┘
+                │  证据指针（唯一入口）
+┌───────────────▼─────────────────────────────────────────┐
+│  L1 记忆层  personas/<id>/spaces/**/<主题>.json           │
+│  事实 = 文本 + 指针 + 重要度 + 槽位 + 人生周期             │
+│  三带：最初 / 最深刻 / 最新                               │
+└───────────────┬─────────────────────────────────────────┘
+                │  反复出现 → 提案
+┌───────────────▼─────────────────────────────────────────┐
+│  L2 人格层  SELF.md（骨架，不许自动改） / style.md（可演化）│
+│  实体档案  entities/people|groups                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
-三种装法，按"确定能成"排序：
+两条线**贯穿所有层**：
 
-| 方式 | 命令 | 前提 |
+- **版本线**：任何写盘都进内容寻址的 blob + append-only journal，回滚是"生成新版本"，不是"抹掉过去"。
+- **规则线**：`guardrails.json`（硬线）→ `rules/ingest.json`（入库）→ 人格级 `rules/`（recall / action / persona）。
+
+**边界很硬**：规则只管"能不能做"，从不塑造人格。人格靠记忆与表达层慢慢长出来。
+
+---
+
+## 一轮对话发生了什么
+
+### 写入
+
+```
+QQ / B站 / 桌宠 / DSH
+   │  ① 投递（NDJSON 文件 或 回环 HTTP + token）
+   ▼
+inbox  →  ② 硬线检查（guardrails.never_record 命中就丢弃，只计数）
+   →  ③ 脱敏（密钥无条件打码；软黑名单入库但标 hidden；显式 skip 不落盘）
+   →  ④ 追加 raw（补齐 v / id / h，32MB 自动分片，单行 256KB 截断）
+   →  ⑤ 封存（day.json：行数 / 字节 / sha256 / 前一日哈希）
+```
+
+### 记成事实（由模型或人显式调用）
+
+```
+addFact({ topic, text, src: "raw/2026-11/07/qq.ndjson#01JCV..." })
+   │  ① 指针必须能解析到真实记录   ← 硬规则，不满足直接抛错
+   │  ② 查重：完全相同 / 包含 / 双字 bigram ≥0.78  → 命中则只 +1 重复次数
+   │  ③ 槽位：同槽位新值关闭旧值（写 until，不删）
+   │  ④ 重要度：规则表打分（承诺 > 事实 > 闲聊）
+   │  ⑤ 情绪浓度、是否「最初」
+   ▼
+personas/<id>/spaces/日常/<主题>.json  +  版本历史一条
+```
+
+### 注入（每一轮）
+
+```
+buildCard()  ≤800 字节
+  [骨架]     SELF.md 里的身份句（永不裁剪）
+  [最初]     2 行，不衰减、不淘汰
+  [最深刻]   3 行（重要 + 被反复召回）
+  [最新]     5 行（14 天内）
+  [索引]     N 条事实 / M 个主题 / K 条已隔离
+contextFor(channel)
+  [这个人]   私聊时带上对方素描
+  [这个群]   群里带上群档案
+```
+
+预算不够时**从后往前裁**：先砍「最新」，再砍「最深刻」，**永不动「最初」**。
+
+---
+
+## 数据目录
+
+默认 `~/.dsh/yuanling`，也可以用 `--root` / `YUANLING_HOME` / DSH 设置里的 `dataDir` 指到别处。
+
+```
+D:\yuanling\
+├─ yuanling.json                 根标记：格式版本、当前人格、人格列表
+├─ guardrails.json               硬线：never_record / never_inject / never_do
+├─ 第一条.md                     写给"第一次启动的她"的话
+├─ rules\
+│  └─ ingest.json                入库策略：软黑名单、跳过频道（raw 共享，只有一份）
+│
+├─ raw\                          ① 原始层（只追加，永不改写）
+│  └─ 2026-11\07\
+│     ├─ qq.ndjson               一条消息一行 JSON（v/id/h/ts/channel/actor/text…）
+│     ├─ qq-p2.ndjson            超过 32MB 自动分片
+│     ├─ bili.ndjson             同一套格式，不同来源各一个文件
+│     ├─ system.ndjson           系统事件：墓碑、纠错（也进链）
+│     └─ day.json                封存：行数 / 字节 / sha256 / prev（日链）
+│
+├─ personas\                     ② 人格层（多个人格，共用上面那份 raw）
+│  └─ yuanling\
+│     ├─ persona.json            人格标记（id / 名字 / 创建时间）
+│     ├─ persona\
+│     │  ├─ SELF.md              骨架：名字、存在的原因（**永不自动修改**）
+│     │  ├─ lines.md             口吻样例
+│     │  └─ user.md              关于主人的设定
+│     ├─ core.json               核心档案：身份、边界、说话习惯
+│     ├─ style.md                表达层（演化提案只落这里）
+│     ├─ entities\
+│     │  ├─ people\person_x.json 对某个人的主观认识（素描、first_met）
+│     │  └─ groups\123456.json   对某个群的印象（名称、氛围、语气）
+│     ├─ spaces\
+│     │  └─ 日常\备份.json        一个主题一个文件：facts[] + summary
+│     ├─ rules\
+│     │  ├─ global.json          人格级默认（recall / action / persona）
+│     │  ├─ qq\group-123.json    群覆盖（20）
+│     │  └─ private-10001.json   私聊覆盖（30，最具体）
+│     ├─ proposals\prop_x.json   演化提案：主张、证据、状态、回滚锚点
+│     ├─ state\
+│     │  ├─ access.ndjson        召回流水（只追加，用于算"被想起过几次"）
+│     │  └─ cursor.json          切入补跑游标
+│     ├─ versions\               人格自己的版本库（blobs + journal，可随人格拷走）
+│     └─ snapshots\              导出用的快照
+│
+└─ system\                       ③ 机器自有（人可以读，但不该手改）
+   ├─ manifest.json              格式版本（太新就拒绝启动）
+   ├─ identities.json            **客观**身份映射：哪个号是同一个人（跨人格共用）
+   ├─ shields.json              墓碑登记簿（可从 raw 重建，不是真相）
+   ├─ policy.json                设置页同步下来的两个旋钮（到期天数 / 每日配额）
+   ├─ secrets\console.token      管理台令牌（64 位 hex）
+   ├─ inbox\                     文件投递（<source>.ndjson + .health 心跳）
+   ├─ versions\                  根级文件的版本库（blobs + journal）
+   ├─ log\changes.ndjson         变更、拒绝、纠错、身份主张——一条流水账
+   ├─ candidates\  index\  backups\  imports\  trash\   预留
+   └─ media\  raw-archive\       （与 system 同级）外置媒体与冷归档，用到才出现
+```
+
+**哪些能删**：`system/shields.json` 删了可以从 raw 重建；`personas/*/versions` 删了只是丢掉回滚能力；`raw/` **永远不能删**——删了就没有任何东西能证明事实从哪来。
+
+---
+
+## 遗忘与纠错
+
+| 动作 | 命令 | 说明 |
 |---|---|---|
-| **本地目录**（最稳） | `git clone https://github.com/dshqqb/dsh-yuanling.git D:\dsh-plugins\dsh-yuanling`<br>`dsh plugin --profile <p> add "D:\dsh-plugins\dsh-yuanling"` | 只需要 git |
-| **tarball** | `add "D:\path\dsh-yuanling-0.1.0.tgz"` | 从 Release 下载，或本地 `npm pack` |
-| **npm 包名** | `dsh plugin --profile <p> add dsh-yuanling` | 需要先 `npm publish` |
-| **git URL** | `add https://github.com/dshqqb/dsh-yuanling` | **取决于 `dsh plugin add` 是否把参数转给 npm**，未验证 |
+| 屏蔽一条原始记录 | `shield` / 管理台「屏蔽这条」 | raw 不动，只追加 redact 事件；所有人格、所有事实级联隔离 |
+| 撤销屏蔽 | `unshield` | 追加 unredact，登记簿回滚 |
+| 让它自然淡忘 | 无操作 | 重要度 + 召回 + 时间 → 清晰度从 vivid 一路掉到 gone |
+| 纠正身份 | `identity correct` | 账号拆到新人物，旧主张写 `until`（不删），留 `identity_correction` |
+| 撤销一次人格演化 | `proposal rollback` | 7 天内可用，按采纳前的 hash 退回 style.md |
 
-装完**必须重启 DSH**：插件在启动时加载，没有热加载。
+---
 
-一句话安装（在对话框里说"装这个插件"）能不能成，取决于三件宿主侧的事：agent 有没有 shell 权限、`add` 认不认远程地址、谁来重启。**仓库这边只能做到"装得上"，做不到"自己装自己"。**
+## 安装
 
-装完重启 DSH，设置页会出现这些项（宿主按 schema 渲染，插件没有自己的设置界面代码）：
+**它已经是 DSH 插件**：`index.js` 导出 `name / inject / Config / apply`，`package.json` 带 `dsh.bundle.patch`，`cordis.patch.yml` 负责挂进 profile。
+
+```powershell
+# 本地目录（最稳）
+git clone https://github.com/dshqqb/dsh-yuanling.git D:\dsh-plugins\dsh-yuanling
+dsh plugin --profile <profile> add "D:\dsh-plugins\dsh-yuanling"
+```
+
+装完**必须重启 DSH**。设置页会出现这些项：
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | true | 总开关 |
-| `dataDir` | 空 → `~/.dsh/yuanling` | 数据目录；默认路径首次运行会自动建骨架 |
-| `consoleEnabled` | true | 是否启动管理台 |
-| `consoleHost` | `127.0.0.1` | 只允许回环；改非回环必须同时开 `allowRemote` |
+| `dataDir` | 空 → `~/.dsh/yuanling` | 默认路径首次运行会自动建骨架；显式路径必须先 `init` |
+| `consoleEnabled` | true | 是否起管理台 |
+| `consoleHost` | `127.0.0.1` | 只允许回环；要暴露必须同时开 `allowRemote` |
 | `consolePort` | 17777 | 0 = 随机 |
-| `allowRemote` | false | 打开前想清楚：这是你的私人记忆 |
-| `preset` | true | 是否注册 agent preset |
 | `autoApproveDays` | 3 | 提案无人理会几天后自动批准 |
 | `dailyAutoLimit` | 1 | 每天最多自动采纳几条 |
-| `logLevel` | info | debug / info / warn / error |
+| `preset` / `logLevel` | true / info | 是否注册 preset、日志级别 |
 
-## 快速开始（CLI）
+---
 
-```powershell
-# 建数据目录（默认 ~/.dsh/yuanling，可用 --root 指到 D 盘）
-node bin/yuanling.js init --root D:\yuanling
-
-node bin/yuanling.js status  --root D:\yuanling
-node bin/yuanling.js doctor  --root D:\yuanling
-node bin/yuanling.js verify  --root D:\yuanling
-
-# 人格
-node bin/yuanling.js persona list   --root D:\yuanling
-node bin/yuanling.js persona new ling2 --name 灵二 --from yuanling --root D:\yuanling
-node bin/yuanling.js persona switch ling2 --root D:\yuanling
-
-# 原始层
-node bin/yuanling.js drain            # 消费 system/inbox/ 的投递
-node bin/yuanling.js seal             # 封存昨天（--date 指定具体日期）
-node bin/yuanling.js health           # 各来源心跳 / 沉默
-node bin/yuanling.js serve            # 回环 HTTP：POST /inbox
-```
-
-## 怎么把数据喂进来
-
-**方式一：写文件（跨进程最稳）**
-
-投递到 `system/inbox/<任意名>.ndjson`，一行一个信封：
-
-```json
-{"v":1,"source":"qq","acct":"10001","items":[
-  {"ts":"2026-11-05T14:32:10+08:00","channel":"group:123",
-   "actor":{"kind":"member","id":"20002","name":"张三"},
-   "role":"user","kind":"msg","text":"今天备份脚本跑到一半断了"}
-]}
-```
-
-然后 `yuanling drain`（或让宿主定期 drain）。
-
-**方式二：HTTP（低延迟）**
+## 常用命令
 
 ```powershell
-$token = Get-Content D:\yuanling\system\secrets\console.token
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:17777/inbox `
-  -Headers @{ 'x-yuanling-token' = $token } -ContentType 'application/json' -Body $json
-```
-
-## 目录契约
-
-```
-<root>/
-├── yuanling.json        根标记（format / personas / active）
-├── guardrails.json      硬线          ← 人改的
-├── rules/ingest.json    入库规则
-├── 第一条.md             引导
-├── raw/YYYY-MM/DD/<source>.ndjson + day.json
-├── raw-archive/  media/
-├── personas/<id>/                     ← 每个人格的全部私有内容
-├── system/                            ← 机器自己管的
-└── web/
-```
-
-## 五条不可动的规矩
-
-1. **目录不存在时绝不自动创建**（除默认路径的首次运行）。外置盘没插就建空目录，会让人以为记忆全丢了。
-2. **`init` 只补缺失，不覆盖已有文件。**
-3. **raw 只追加。** 没有 update / delete；"删掉"是追加一条 `redact`，再在派生层屏蔽。
-4. **体检的 `skip` 必须带 `reason`。** 静默跳过 = 那一格永远绿。
-5. **超长单行 256KB 截断，并留痕**（`flags:["truncated"]` + 原长）。
-
-## 实现与文档的两处已知差异
-
-| 项 | 文档 | 实现 | 处理 |
-|---|---|---|---|
-| `h` 的算法 | 示例写 `sha1:…` | 用 `sha256:…` | 下一版文档更正；只是幂等键，不影响契约 |
-| 分片阈值 | 32MB | 32MB（可传参覆盖，测试用） | 一致 |
-
-## 版本与审计（P2）
-
-写记忆之前先有"能退回去"的能力。两套版本库，跟着各自的迁移单元走：
-
-```
-system/versions/                    根级文件（yuanling.json / guardrails.json / rules/ingest.json）
-personas/<id>/versions/             该人格的全部文件（拷走人格时历史一起走）
-  ├── blobs/<ab>/<sha256>           内容寻址：同一内容只存一份
-  └── journal.ndjson                每写一次一行（带 prev 链、actor、reason）
-```
-
-```powershell
-yuanling versions                   版本库统计
-yuanling history guardrails.json    看历史
-yuanling track   personas/yuanling/persona/SELF.md   把当前内容记一笔
-yuanling revert  guardrails.json --to 2026-11-06    回滚（hash 或时间戳前缀）
-yuanling scan                       检测插件外的修改（记事本改过也能抓到）
-```
-
-**回滚也是新版本**——后来的历史不会被擦掉。这条很重要：一次"退回去"本身也需要能被追溯。
-
-`scan` 让"记事本改文件"从隐患变成特性：改完自动进历史，并标成 `human:editor`。
-
-## 记忆层（P3）
-
-```powershell
-# 先造一条原始记录，拿到指针
-#   raw/2026-11/06/qq.ndjson#01JCV8K3M2QH7X9ABCDEFGH
-
-yuanling memory save --topic 备份 --text "备份脚本的定时任务被宿主收走了" `
-  --src "raw/2026-11/06/qq.ndjson#01JCV8K3M2QH7X9ABCDEFGH" --slot 备份方案 --imp 80
-
-yuanling memory recall 备份        # 按词命中，带指针
-yuanling memory recall npm --all   # --all 才看已失效的旧值
-yuanling memory open 备份          # 全文：active + 曾经
-yuanling memory list
-yuanling card                      # 本轮会注入的卡片（800 字节预算）
-```
-
-**硬规则**：没有 `@src` 的事实不写；`@src` 指不到真实记录也不写。查重三档（完全相同 / 包含 ≥0.45 / 二元组 Jaccard ≥0.78）在写入时生效。
-
-条目与人物档案用 **JSON**（机器写机器读的结构化数据）；人设骨架仍是 Markdown（人写的散文）。这是对文档 v0.1.0 的一处有意偏差，下版文档更正。
-
-## 墓碑（P4）
-
-"删掉刚才那条"在这里不是删除，是**追加一条屏蔽**，再在所有出口隔离。
-
-```powershell
-yuanling shield --last 1                 # 先预览（默认不执行）
-yuanling shield --last 3 --yes           # 确认后执行
-yuanling shield list                     # 谁被屏蔽过、为什么、是否已撤销
-yuanling unshield <id>                   # 撤销（误删比删不掉更常见）
-yuanling shield rebuild                  # 登记簿丢了，从 raw 重建
-yuanling memory why <factId>             # 这条凭什么存在：指针 + 变更史
-```
-
-**三条规矩**：
-
-1. **raw 一个字节不动。** 屏蔽只是往当天 `system.ndjson` 追加一条 `redact` 事件。
-2. **全局生效。** raw 是共享的，所以级联隔离会跨所有人格——A 人格屏蔽的，B 人格也看不到。
-3. **可撤销。** `unredact` 是对称事件；登记簿 `system/shields.json` 只是索引，真相在 raw 里，随时可重建。
-
-## 三条记忆带（P5）
-
-卡片不再按单一分数排序，而是**三条带各自排序、按配额混装**：
-
-| 带 | 判定 | 衰减 | 配额 |
-|---|---|---|---|
-| 最初 | 条目最早两条事实里，按 id 确定性抽签（0–10 天 90% → 递减） | **不衰减** | 2 行 |
-| 最深刻 | `imp ≥ 80` 或 `emotional ≥ 20`，且被召回 ≥ 3 次 | 半衰期长（k=0.12） | 3 行 |
-| 最新 | 14 天内发生 | 半衰期短（k=0.35） | 5 行 |
-
-**为什么配额而不是加权**：新事的 `lastSeenAt` 永远是今天。只按分数排，「最初」必然饿死——而人格连续性恰恰靠那几条不被挤掉。
-
-**裁剪顺序固定**：先砍「最新」，再砍「最深刻」，**永不动「最初」**。
-
-`retention = imp + min(12, recall×2) + 近期加成(18/8) − 时间惩罚`。
-召回次数记在 `state/access.ndjson`（只追加），**读路径不产生写放大**——不为了记一次"看过"去重写整个条目文件。
-
-## 实体档案（P6）
-
-```powershell
+yuanling init --root D:\yuanling          # 建骨架 + 令牌（只补缺失，不覆盖）
+yuanling status --root D:\yuanling        # 一眼看根、人格、计数
+yuanling doctor --root D:\yuanling        # 体检：格式/标记/令牌/目录/权限
+yuanling verify --root D:\yuanling        # 校验 raw 的 sha256 日链
+yuanling last --root D:\yuanling          # 最近消息（带可直接用的指针）
+yuanling memory save --topic 备份 --text "…" --src-last 1
+yuanling memory recall --topic 备份 [--all]
+yuanling memory why <factId>              # 这条凭什么存在
+yuanling shield --last 1 [--yes]          # 屏蔽刚才那条
+yuanling proposal scan|list|approve|reject|rollback|sweep
 yuanling person new 张三 --platform qq --id 12345
-yuanling person link person_xxx --platform bili --id 998877
-yuanling person candidates            # 疑似同一人（只提，不自动并）
-yuanling person confirm 0
-yuanling person merge person_b person_a
-yuanling person split person_a --platform bili --id 998877
-yuanling person profile person_a --sketch "说话短，爱用草"
-yuanling group set 123456 --name "XX 游戏群" --intro "折腾 mod 的人"
-yuanling catchup                      # 切入补跑（单次 ≤200）
+yuanling identity claim --platform bili --id abc123 --src-last 1 --channel private:10001
+yuanling serve --root D:\yuanling         # 管理台
 ```
 
-**客观 / 主观分家**：`system/identities.json` 存"哪个号是同一个人"（跨人格共用）；`personas/<p>/entities/` 存"这个角色认识的 TA"（按人格隔离）。合并/拆分只改映射，各人格的记忆文件零改动。
+## 管理台
 
-**关于某人的第一条事实自动进「最初」带**——比"某个主题的第一条"更有意义。之后的事实不会重复算最初。
+`http://127.0.0.1:17777` —— 状态 / **注入预览** / 记忆 / 条目 / 提案 / 人物 / 规则 / 来源 / 拒绝记录。
 
-**按对象注入**：`contextFor(channel)` 在卡片后面追加 `[这个人]` 或 `[这个群]` 一行。人格不变，变的是"这一轮想起谁"。
+第一次打开要粘贴 `system/secrets/console.token`（存本机 localStorage，只发给回环服务）。写操作都要 token，服务端不返回 CORS 头，别的网页发不进来。
 
-## 规则层（P7）
+**注入预览**是最有用的那一页：它显示"这一轮她到底读到了什么"。记忆系统最大的问题不是不记得，是**你以为它记得**。
+
+## 安全边界
+
+- 只听 `127.0.0.1`；非回环必须显式 `allowRemote`，且启动时打警告。
+- 控制台令牌独立于 DSH，重装数据目录即失效。
+- 不联网、不引第三方运行依赖（只有宿主提供的 `@deepseek-ai/schemastery`）。
+- `system/identities.json` 视为敏感：不导出、不进注入。
+
+## 开发
 
 ```powershell
-yuanling rule show [--channel group:123]     # 合并后的有效规则 + 来源链
-yuanling rule check proactive --channel group:123
-yuanling rule guardrails                     # 根级硬线
-yuanling rule refusals                       # 最近的拒绝记录
+node --test                      # 全部单元测试
+node scripts/seed-demo.mjs D:\yuanling   # 造一份干净的演示数据（UTF-8 直写，绕开终端编码）
 ```
 
-**三级继承**：`private-<uid>` 30 > `qq/group-<gid>` 20 > `global` 10；`guardrails.json` 是 ∞，不参与合并、单独硬拦。
+进度与待办见 `WORKLIST.md`（不入库）。
 
-| 维度 | 管什么 | 生效范围 |
-|---|---|---|
-| `ingest` | 写不写 raw | **全局**（raw 共享，只能有一个答案） |
-| `recall` | 给不给、给多少 | 人格 |
-| `action` | 动不动、何时动 | 人格 |
-| `persona` | 准不准演化 | 人格 |
+## 许可
 
-**合并规则**：普通字段深合并（数组整体替换）；`deny`/`allow` **取并集**——下层不许悄悄放宽上层；要放宽 `deny` 必须显式 `override_deny: true`，且只放开本层 `allow` 里写明的那条。
-
-**每次拒绝都留痕**（`system/log/changes.ndjson` 的 `rule_refusal`）。否则"她为什么没回我"永远查不出来。
-
-## 管理台（P8）
-
-```powershell
-yuanling serve --port 17777
-# 打开 http://127.0.0.1:17777
-```
-
-第一次打开会让你粘贴 `system/secrets/console.token` 的内容——令牌存本机 localStorage，只发给回环服务，不进 URL、不上传。
-
-页面：状态 / **注入预览** / 记忆搜索 / 条目 / 规则 / 来源健康 / 拒绝记录。
-
-**注入预览**是这一版最值钱的东西：它直接显示"这一轮她要读到的 800 字节原文"。记忆系统最大的问题不是不记得，是**你以为它记得**——能看见就能调。
-
-API 是只读的（`/api/status|card|memory|entries|entry|rules|sources|refusals`），写操作仍走 CLI，避免在 UI 里误点一下就改了记忆。
-
-## 身份主张（P9）
-
-身份不是配置项，是**带证据的主张**——所以它进记忆层，不进规则层。
-
-```powershell
-# 有人告诉你他的号（owner 私聊自述 → 直接确认）
-yuanling identity claim --platform bili --id abc123 --channel private:10001 `
-  --src "raw/2026-11/06/qq.ndjson#01JCV..." --text "我的b站是 abc123"
-
-# 别人转述 / 群聊自述 → 只进候选，不自动合并
-yuanling identity claim --platform bili --id zzz999 --speaker member ... 
-
-# 从 raw 推断跨平台同名（只看，不写）
-yuanling identity infer
-yuanling identity infer --apply     # 写入候选，仍然不合并
-
-# 发现绑错了：拆出去，并关闭旧主张（不删）
-yuanling identity correct person_xxx --platform bili --id abc123 --reason "本人说那不是他的号"
-```
-
-**三条保守规则**：
-
-1. **只有 owner 私聊里的自述自动确认**——群聊里说"这是我小号"可能是冒充；
-2. **推断只提候选**，永不自动合并（合并错了拆起来很痛）；
-3. **纠错走 split + 关闭旧主张**：旧主张补 `until` 不删——"当时确实这么说过"也是事实。
-
-**为什么"谁不喜欢被问家里的事"不在规则里**：那是关于人的判断，会淡、会错、会变，所以它是一条普通事实（`person=<uid>`、`slot=禁忌`、带 `src`），自动继承槽位覆盖、屏蔽、衰减。**规则层只放机器可执行的策略**（能不能说话、给不给、准不准演化），少而可审计。
-
-## 演化提案（P10）
-
-**设计前提**：记忆与人格共同塑造灵魂，记忆在潜移默化地改变人格；规则只限定权限，不塑造人格。
-所以演化只有一条路——**重复的主张 → 提案 → 人批准 → 改表达层 → 7 天可回滚**；人不理会，到期自动批准（除非被否决）。
-
-```powershell
-yuanling proposal scan              # 把"反复出现"的主张变成提案
-yuanling proposal list              # 待定 + 已生效
-yuanling proposal show <id>         # 看依据与将要追加的那一行
-yuanling proposal approve <id>      # 采纳（写进 style.md）
-yuanling proposal reject <id>       # 否决（永不自动批准）
-yuanling proposal rollback <id>     # 7 天内退回
-yuanling proposal sweep             # 到期自动批准（受每周上限约束）
-```
-
-**为什么查重要改成"记次数"**：如果重复的话被查重直接吞掉，"反复出现"这个信号就消失了。所以现在重复不新增事实，但 `repeat +1`、追加一条证据、刷新 `last_seen`——这既是演化的燃料，也是"她为什么这么想"的依据。
-
-**阈值**：重复 ≥5 次、跨度 ≥3 天、且不与硬线冲突。**到期 3 天自动批准，每天最多 1 条**——两个旋钮都在 DSH 设置页（`autoApproveDays` / `dailyAutoLimit`），改完立刻对已有提案生效（到期时间按当前设置现算，不用等下一轮重新生成）。
-
-**只改表达层**：提案只往 `style.md` 追加一行，`SELF.md` 的骨架永不自动改——她可以长大，不能变成另一个人。
-
-## 测试
-
-```powershell
-cd yuanling
-node --test
-```
-
-- `test/p0.test.mjs`：22 个（目录 / 校验 / 人格 / 完整性）
-- `test/p1.test.mjs`：16 个（追加 / 去重 / 分片 / 封存 / 链 / 脱敏 / 投递 / 心跳 / HTTP）
-- `test/p2.test.mjs`：12 个（blob / prev 链 / 幂等 / 回滚 / 外部编辑 / 作用域）
-- `test/p3.test.mjs`：21 个（指针 / 写入 / 查重 / 槽位 / 检索 / 卡片 / 裁剪）
-- `test/p4.test.mjs`：13 个（屏蔽 / 级联 / 跨人格 / 撤销 / 重建 / why）
-- `test/p5.test.mjs`：22 个（衰减 / 清晰度 / 三带 / 抽签 / 召回计数 / 卡片裁剪）
-- `test/p6.test.mjs`：17 个（身份映射 / 合并拆分 / 候选 / 档案隔离 / 按对象注入 / 补跑）
-- `test/p7.test.mjs`：16 个（继承 / deny 并集 / override / 静默时段 / 入库硬线 / 留痕）
-- `test/p8.test.mjs`：10 个（静态页 / Token 门 / 只读 API / 目录穿越）
-- `test/p9.test.mjs`：14 个（主张抽取 / 自述确认 / 转述候选 / 推断 / 纠错）
-- `test/p10.test.mjs`：19 个（重复计数 / 提案 / 批准 / 否决 / 自动到期 / 每日配额 / 回滚）
-
-当前：**182 个全绿**。
-
-## 首次推送到 GitHub
-
-```powershell
-cd yuanling
-git init
-git add .
-git status --short          # 自查：不该出现 *.ndjson / *.token / raw/ / personas/ / system/
-git commit -m "P2: 版本与审计"
-git branch -M main
-git remote add origin https://github.com/<你的用户名>/dsh-yuanling.git
-git push -u origin main
-```
-
-`package.json` 里的 `repository` 字段**故意留空**——等你建好仓再补，避免写死一个错误的地址。
-
-## 已实现 / 未实现
-
-| 模块 | 状态 |
-|---|---|
-| root 四级解析 + 校验 | ✅ |
-| `init` 骨架 + 令牌 | ✅ |
-| 人格注册表 | ✅ |
-| `doctor` 基础检查 | ✅ |
-| raw 追加 / 去重 / 分片 / 封存 / 链校验 | ✅ |
-| 三档黑名单 + 硬脱敏 | ✅ |
-| inbox 文件 + HTTP 双通道 + 心跳 | ✅ |
-| 版本：blob / journal / 回滚 / 外部编辑检测 | ✅ |
-| 记忆：条目 / 事实 / 指针校验 / 查重 / 槽位 | ✅ |
-| 记忆：检索 / 卡片（800 字节） | ✅ |
-| 墓碑：屏蔽 / 级联隔离 / 撤销 / 重建 / why | ✅ |
-| 三带 / 衰减 / 清晰度 / 召回计数 / 卡片配额 | ✅ |
-| 实体档案 / 身份合并 / 按对象注入 / 切入补跑 | ✅ |
-| 规则层：三级继承 / deny 优先 / 静默时段 / 拒绝留痕 | ✅ |
-| 管理台：静态页 + 只读 API + 注入预览 | ✅ |
-| 身份主张：自述确认 / 转述候选 / 推断 / 纠错 | ✅ |
-| 演化提案：重复 → 提案 → 批准 / 否决 / 自动 / 回滚 | ✅ |
-| 管理台写操作（屏蔽/回滚/编辑） | ⬜ 后续 |
-| QQ / B站 适配器 | ⬜ P3.5 / P12 |
+MIT。

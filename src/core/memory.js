@@ -214,7 +214,11 @@ export function addFact(
   if (!src) throw new Error('缺少证据指针 @src（没有指针的事实不写）')
 
   const check = resolvePointer(root, src)
-  if (!check.ok) throw new Error(`证据指针无效：${check.reason}`)
+  if (!check.ok) {
+    throw new Error(
+      `证据指针无效：${check.reason}（应为 raw/YYYY-MM/DD/qq.ndjson#ULID，可用 \`yuanling last\` 查，或 CLI 传 --src-last 1）`,
+    )
+  }
 
   const rel = entryRel(pid, space, topic)
   const entry = readJson(path.join(root, rel), null) ?? emptyEntry(topic, space, now)

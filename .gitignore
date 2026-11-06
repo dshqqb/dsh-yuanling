@@ -73,3 +73,5 @@ desktop.ini
 /notes/
 /scratch/
 /TODO.local.md
+# 内部工作清单：只记录"还没做什么"，不属于发布物
+/WORKLIST.md

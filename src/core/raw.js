@@ -351,3 +351,41 @@ export function verifyDay(root, dateStr) {
 export function _resetSeenCache() {
   seenCache.clear()
 }
+
+/**
+ * 最近的消息，带可直接使用的指针。
+ * 手动测试与排障用：不用自己拼 `raw/…/qq.ndjson#ULID`。
+ */
+export function recentMessages(root, { limit = 5, source = null } = {}) {
+  const out = []
+  const days = listDays(root).slice(-3).reverse()
+  for (const date of days) {
+    const dir = dayDirFor(root, date)
+    if (!isDir(dir)) continue
+    const names = fs
+      .readdirSync(dir)
+      .filter((n) => n.endsWith('.ndjson'))
+      .filter((n) => (source ? n === `${source}.ndjson` || n.startsWith(`${source}-p`) : true))
+      .sort()
+    const rows = []
+    for (const name of names) {
+      const buf = fs.readFileSync(path.join(dir, name), 'utf8')
+      for (const line of buf.split('\n')) {
+        if (!line.trim()) continue
+        try {
+          const r = JSON.parse(line)
+          if ((r.type ?? 'message') !== 'message') continue
+          rows.push({ r, file: `${relDayDir(date)}/${name}` })
+        } catch {
+          /* 坏行跳过 */
+        }
+      }
+    }
+    rows.sort((a, b) => String(b.r.ts).localeCompare(String(a.r.ts)))
+    for (const { r, file } of rows) {
+      out.push({ ...r, pointer: `${file}#${r.id}` })
+      if (out.length >= limit) return out
+    }
+  }
+  return out
+}

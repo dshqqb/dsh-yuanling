@@ -25,6 +25,8 @@
     <button data-tab="card">注入预览</button>
     <button data-tab="memory">记忆</button>
     <button data-tab="entries">条目</button>
+    <button data-tab="proposals">提案</button>
+    <button data-tab="people">人物</button>
     <button data-tab="rules">规则</button>
     <button data-tab="sources">来源</button>
     <button data-tab="refusals">拒绝记录</button>
@@ -56,6 +58,29 @@
 
     <section id="tab-entries" hidden>
       <div id="entries-out"></div>
+    </section>
+
+    <section id="tab-proposals" hidden>
+      <div class="row">
+        <button id="proposal-scan">扫描新提案</button>
+        <span class="muted">重复 ≥5 次、跨度 ≥3 天的主张会变成提案</span>
+      </div>
+      <div id="proposals-out"></div>
+    </section>
+
+    <section id="tab-people" hidden>
+      <div id="people-out"></div>
+      <div id="person-editor" hidden>
+        <h3 id="person-title"></h3>
+        <div class="row">
+          <input id="person-display" placeholder="显示名" />
+        </div>
+        <textarea id="person-sketch" rows="5" placeholder="素描：这个人是谁、怎么说话、在意什么、别碰什么"></textarea>
+        <div class="row">
+          <button id="person-save">保存</button>
+          <span id="person-msg" class="muted"></span>
+        </div>
+      </div>
     </section>
 
     <section id="tab-rules" hidden>

@@ -9,7 +9,7 @@ import { checkFormat } from './manifest.js'
 import { doctor, doctorExitCode } from './doctor.js'
 import { exists, localIso } from './fsx.js'
 import { drain, healthReport } from './inbox.js'
-import { sealDay, verifyDay, listDays, today, prevDate } from './raw.js'
+import { sealDay, verifyDay, listDays, today, prevDate, recentMessages } from './raw.js'
 import { history, revertTo, scanExternalEdits, snapshotCurrent, stats as versionStats } from './version.js'
 import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, DEFAULT_SPACE } from './memory.js'
 import { shield, unshield, listShields, recentRecordIds, rebuildShields } from './shield.js'
@@ -83,6 +83,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling init [--root <path>] [--persona <id>] [--name <显示名>]
   yuanling status [--root <path>] [--port <n>]
   yuanling drain                     消费 system/inbox/ 里的投递
+  yuanling last [--limit 5] [--source qq] [--json]   最近的消息（带可直接用的指针）
   yuanling seal [--date YYYY-MM-DD]  封存某天（默认昨天）
   yuanling health                    各来源心跳 / 沉默状态
   yuanling serve [--port <n>]        启动回环 HTTP（POST /inbox）
@@ -91,7 +92,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling track <路径>              把当前内容记一笔
   yuanling revert <路径> --to <x>    回滚（x = hash / 时间戳前缀）
   yuanling scan                      检测插件外的修改
-  yuanling memory save --topic <t> --text <内容> --src <指针> [--slot s] [--imp n]
+  yuanling memory save --topic <t> --text <内容> (--src <指针> | --src-last 1) [--slot s] [--imp n]
   yuanling memory recall <查询> [--limit 5] [--all]
   yuanling memory open <主题>
   yuanling memory why <factId>       这条凭什么存在（指针 + 变更史）
@@ -179,6 +180,26 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       out(`激活人格  ${marker?.active ?? '（无）'}`)
       out(`人格数    ${marker?.personas?.length ?? 0}`)
       out(`管理台    http://127.0.0.1:${port}${Number(port) === 0 ? '（端口为 0，实际端口见启动日志）' : ''}`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'last') {
+      const list = recentMessages(root, {
+        limit: Number(flags.limit ?? 5),
+        source: flags.source ? String(flags.source) : null,
+      })
+      if (!list.length) {
+        out('（还没有任何原始消息）')
+        return EXIT.OK
+      }
+      if (flags.json) {
+        out(JSON.stringify(list.map((r) => ({ pointer: r.pointer, ts: r.ts, channel: r.channel, text: r.text })), null, 2))
+        return EXIT.OK
+      }
+      for (const r of list) {
+        const t = String(r.text ?? '').slice(0, 50)
+        out(`${r.pointer}  ${r.channel}  ${t}`)
+      }
       return EXIT.OK
     }
 
@@ -333,9 +354,28 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
 
       if (sub === 'save') {
         const text = flags.text
-        const src = flags.src
+        let src = flags.src
+
+        // --src-last [N]：直接用最近第 N 条消息当证据，省掉复制粘贴
+        if (!src && flags['src-last'] !== undefined) {
+          const n = Math.max(1, Number(flags['src-last']) || 1)
+          const rows = recentMessages(root, { limit: n, source: flags.source ? String(flags.source) : null })
+          src = rows[n - 1]?.pointer
+          if (!src) {
+            err('没有可用的原始消息：先投递一条，或去掉 --src-last 改用 --src')
+            return EXIT.CONFIG
+          }
+          out(`· 用最近第 ${n} 条作证据：${src}`)
+        }
+
+        if (src && (/[<>]/.test(String(src)) || String(src).includes('粘贴'))) {
+          err(`这看起来是占位符，不是真指针：${src}`)
+          err('真指针形如 raw/2026-11/07/qq.ndjson#01M6RT...，可用 `yuanling last` 查看，或用 --src-last 1 自动取')
+          return EXIT.CONFIG
+        }
+
         if (!text || !src) {
-          err('用法：yuanling memory save --topic <主题> --text <内容> --src <raw/…/qq.ndjson#ULID> [--slot <槽位>] [--imp 0-100]')
+          err('用法：yuanling memory save --topic <主题> --text <内容> (--src <指针> | --src-last 1) [--slot <槽位>] [--imp 0-100]')
           return EXIT.CONFIG
         }
         const r = addFact(root, pid, {

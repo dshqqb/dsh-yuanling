@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { exists } from './fsx.js'
 import { P } from './paths.js'
 import { ingest, healthReport } from './inbox.js'
-import { handleApi } from './api.js'
+import { handleApi, handleApiWrite } from './api.js'
 
 const BODY_LIMIT = 4 * 1024 * 1024
 const WEB_ROOT = fileURLToPath(new URL('../../web/', import.meta.url))
@@ -127,9 +127,27 @@ export function createServer(root, { token = readToken(root) } = {}) {
       return json(res, 200, { ok: true, service: 'yuanling', sources: healthReport(root) })
     }
 
-    // 3) 管理台 API
+    // 3) 管理台 API（GET 只读，POST 写入；都要 token）
     if (url.pathname.startsWith('/api/')) {
       if (given !== token) return json(res, 401, { ok: false, error: 'bad token' })
+
+      if (req.method === 'POST') {
+        let text = ''
+        try {
+          text = await readBody(req)
+        } catch (err) {
+          return json(res, err.code ?? 400, { ok: false, error: String(err.message) })
+        }
+        let body
+        try {
+          body = JSON.parse(text || '{}')
+        } catch {
+          return json(res, 400, { ok: false, error: 'body 不是合法 JSON' })
+        }
+        const w = handleApiWrite(root, url, body)
+        return json(res, w.status, w.body)
+      }
+
       const r = handleApi(root, url)
       return json(res, r.status, r.body)
     }

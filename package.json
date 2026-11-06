@@ -1,7 +1,7 @@
 {
   "name": "dsh-yuanling",
   "version": "0.1.0",
-  "description": "原灵 —— DSH 的长期记忆与人格底座（P1：目录骨架 / root 解析 / 原始层 / 双通道 inbox）",
+  "description": "原灵 —— DSH 的长期记忆与人格底座（目录骨架 / 原始层 / 版本 / 记忆 / 规则 / 管理台 / 演化提案）",
   "type": "module",
   "main": "index.js",
   "bin": {
@@ -40,6 +40,11 @@
   "author": "yuanling contributors",
   "peerDependencies": {
     "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
   },
   "license": "MIT"
 }

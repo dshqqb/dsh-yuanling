@@ -54,6 +54,17 @@ input[type="text"], input:not([type]) {
   padding: 7px 10px; border-radius: 6px; min-width: 260px;
 }
 input:focus { outline: 1px solid var(--accent); }
+textarea {
+  width: 100%; background: #0f1115; border: 1px solid var(--line); color: var(--text);
+  padding: 8px 10px; border-radius: 6px; font: 13px/1.7 ui-sans-serif, "Microsoft YaHei", sans-serif;
+  resize: vertical;
+}
+textarea:focus { outline: 1px solid var(--accent); }
+
+.actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+button.small { padding: 4px 10px; font-size: 12px; font-weight: 500; }
+button.danger { background: transparent; color: var(--bad); border: 1px solid #5b2b33; }
+button.ghost.small { padding: 4px 10px; font-size: 12px; }
 
 button {
   background: var(--accent); color: #0b0d10; border: 0; border-radius: 6px;
