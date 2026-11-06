@@ -207,7 +207,11 @@ test('card：空记忆时只有索引行', () => {
 test('card：有事实时包含骨架 / 最深刻 / 索引', () => {
   const root = tmpRoot()
   const { ptr } = seedRaw(root)
-  addFact(root, PID, { topic: '备份', text: '备份脚本的定时任务被宿主收走了', src: ptr, imp: 90 })
+  // origin:false —— 「最初」由确定性抽签决定，测试里不要碰运气
+  addFact(root, PID, { topic: '备份', text: '备份脚本的定时任务被宿主收走了', src: ptr, imp: 90, origin: false })
+
+  // 「最深刻」要求被反复召回（recall ≥ 3）
+  for (let i = 0; i < 3; i += 1) recall(root, PID, '备份')
 
   const card = buildCard(root, PID)
   assert.match(card, /\[骨架\] 原灵/)

@@ -10,6 +10,17 @@ import { exists, isDir, readJson, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
+import {
+  ageDays,
+  clarityOf,
+  classify,
+  emotionalScore,
+  recallCounts,
+  recordAccess,
+  retentionOf,
+  shouldMarkOrigin,
+  RECENT_WINDOW_DAYS,
+} from './retention.js'
 
 export const DEFAULT_SPACE = '日常'
 export const CARD_BUDGET_BYTES = 800
@@ -181,7 +192,19 @@ export function listEntries(root, pid, space = null) {
 export function addFact(
   root,
   pid,
-  { topic, space = DEFAULT_SPACE, text, slot = null, src, since = null, imp = null, tags = [], summary = null, now = localIso() },
+  {
+    topic,
+    space = DEFAULT_SPACE,
+    text,
+    slot = null,
+    src,
+    since = null,
+    imp = null,
+    tags = [],
+    summary = null,
+    origin = null,
+    now = localIso(),
+  },
 ) {
   const t = String(text ?? '').trim()
   if (!t) throw new Error('事实内容不能为空')
@@ -207,14 +230,23 @@ export function addFact(
     }
   }
 
+  const factId = 'fact_' + ulid()
+  // 「最初」只考虑条目最早的两条事实，并按 id 做确定性抽签。
+  // 抽签而不是"前 N 条一律算"——否则新条目会把所有早期事实都标成最初。
+  const autoOrigin =
+    entry.facts.length < 2 &&
+    shouldMarkOrigin({ factId, entryAgeDays: ageDays(entry.created, Date.parse(now) || Date.now()) })
+
   const fact = {
-    id: 'fact_' + ulid(),
+    id: factId,
     slot,
     text: t,
     since: since ?? now.slice(0, 7),
     until: null,
     src,
     imp: Number.isFinite(imp) ? Math.max(1, Math.min(100, Math.round(imp))) : scoreImportance(t, { slot }),
+    emotional: emotionalScore(t),
+    origin: origin === null ? autoOrigin : Boolean(origin),
     tags: Array.isArray(tags) ? tags : [],
     created: now,
     last_seen: now,
@@ -282,16 +314,28 @@ export function recall(
   root,
   pid,
   query,
-  { space = null, limit = 5, includeExpired = false, includeShielded = false, now = Date.now() } = {},
+  {
+    space = null,
+    limit = 5,
+    includeExpired = false,
+    includeShielded = false,
+    includeGone = false,
+    track = true,
+    now = Date.now(),
+  } = {},
 ) {
   const entries = listEntries(root, pid, space)
   const qt = tokens(query)
+  const counts = recallCounts(root, pid, { now })
   const out = []
 
   for (const e of entries) {
     for (const f of e.facts) {
       if (f.until && !includeExpired) continue
       if (f.shielded_at && !includeShielded) continue
+      const recallN = counts.get(f.id) ?? 0
+      const retention = retentionOf(f, { recall: recallN, now })
+      if (!includeGone && clarityOf(retention) === 'gone') continue
       const lex = query ? lexScore(qt, `${e.topic} ${e.summary} ${f.text}`) : 0
       const imp = (f.imp ?? 50) / 100
       const rec = Math.max(0, 1 - daysSince(f.created ?? f.last_seen ?? '', now) / 30) * 0.15
@@ -301,6 +345,9 @@ export function recall(
         topic: e.topic,
         space: e.space,
         fact: f,
+        retention,
+        clarity: clarityOf(retention),
+        band: classify(f, { recall: recallN, now }),
         score: Number(score.toFixed(4)),
         parts: { lex, imp },
       })
@@ -308,7 +355,9 @@ export function recall(
   }
 
   out.sort((a, b) => b.score - a.score)
-  return out.slice(0, Math.max(1, limit))
+  const hits = out.slice(0, Math.max(1, limit))
+  if (track && hits.length) recordAccess(root, pid, hits.map((h) => h.fact.id), query)
+  return hits
 }
 
 /** 按 id 找一条事实（跨主题、跨空间）。 */
@@ -360,12 +409,21 @@ function byteLen(s) {
 
 /**
  * 组装每轮注入的卡片（文档 §12.3）。
- * 预算 800 字节；从后往前裁：先砍「最新」，再砍「最深刻」，至死不动「骨架」。
+ *
+ * 三条带各自排序、按配额混装：
+ *   最初 2 行（永不衰减、永不淘汰）/ 最深刻 3 行 / 最新 5 行
+ * 预算 800 字节，从后往前裁：先砍「最新」，再砍「最深刻」，至死不动「最初」。
  */
 export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
   const entries = listEntries(root, pid)
-  const active = []
+  const counts = recallCounts(root, pid, { now })
+
+  const first = []
+  const deep = []
+  const recent = []
   let shielded = 0
+  let active = 0
+
   for (const e of entries) {
     for (const f of e.facts) {
       if (f.until) continue
@@ -373,24 +431,32 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
         shielded += 1
         continue
       }
-      active.push({ ...f, topic: e.topic })
+      active += 1
+      const recallN = counts.get(f.id) ?? 0
+      const retention = retentionOf(f, { recall: recallN, now })
+      if (clarityOf(retention) === 'gone') continue
+
+      const item = { ...f, topic: e.topic, retention, recall: recallN }
+      const band = classify(f, { recall: recallN, now })
+      if (band === 'first') first.push(item)
+      else if (band === 'deep') deep.push(item)
+      else if (band === 'recent') recent.push(item)
     }
   }
 
-  const peak = [...active].sort((a, b) => (b.imp ?? 0) - (a.imp ?? 0)).slice(0, 3)
-  const recent = [...active]
-    .filter((f) => daysSince(f.created, now) <= RECENT_DAYS)
-    .sort((a, b) => String(b.created).localeCompare(String(a.created)))
-    .slice(0, 3)
+  const firstPick = first.sort((a, b) => String(a.created).localeCompare(String(b.created))).slice(0, 2)
+  const deepPick = deep.sort((a, b) => b.retention - a.retention).slice(0, 3)
+  const recentPick = recent.sort((a, b) => String(b.created).localeCompare(String(a.created))).slice(0, 5)
 
   const lines = []
   const id = identityLine(root, pid)
   if (id) lines.push(`[骨架] ${id}`)
-  if (peak.length) lines.push('[最深刻] ' + peak.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
-  if (recent.length) lines.push('[最新] ' + recent.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
-  lines.push(`[索引] ${active.length} 条事实 / ${entries.length} 个主题${shielded ? ` / ${shielded} 条已隔离` : ''}`)
+  if (firstPick.length) lines.push('[最初] ' + firstPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
+  if (deepPick.length) lines.push('[最深刻] ' + deepPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
+  if (recentPick.length) lines.push('[最新] ' + recentPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
+  lines.push(`[索引] ${active} 条事实 / ${entries.length} 个主题${shielded ? ` / ${shielded} 条已隔离` : ''}`)
 
-  // 裁：先丢「最新」，再丢「最深刻」
+  // 裁：先丢「最新」，再丢「最深刻」，**永不动「最初」**
   while (byteLen(lines.join('\n')) > budget) {
     const i = lines.findIndex((l) => l.startsWith('[最新]'))
     if (i >= 0) {
