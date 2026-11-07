@@ -154,6 +154,10 @@ export const P = {
   secrets: 'system/secrets',
   consoleToken: 'system/secrets/console.token',
   policy: 'system/policy.json',
+  modules: 'system/modules',
+  modulesRegistry: 'system/modules.json',
+  modulesLog: 'system/log/modules',
+  mediaIndex: 'media/index.ndjson',
   trash: 'system/trash',
 }
 

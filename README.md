@@ -1,10 +1,12 @@
 # 原灵 yuanling
 
-松耦合，模块化，
+松耦合，模块化，核心只保留最基本的记忆相关设置，对接QQ、B站、桌宠等功能都采用模块化的方式，每个模块是单独的项目
 
 原始层（保留最原始的记忆，写过一次之后只读，不改），记忆层，人格层（骨架由人设定，不能自改，其余可以演化）
 
 
+
+---
 
 
 
@@ -131,6 +133,7 @@ D:\yuanling\
 ├─ yuanling.json                 根标记：格式版本、当前人格、人格列表
 ├─ guardrails.json               硬线：never_record / never_inject / never_do
 ├─ 第一条.md                     写给"第一次启动的她"的话
+├─ README.md  .gitignore          数据目录自带的说明与忽略规则（别把这里提交进 git）
 ├─ rules\
 │  └─ ingest.json                入库策略：软黑名单、跳过频道（raw 共享，只有一份）
 │
@@ -142,7 +145,11 @@ D:\yuanling\
 │     ├─ system.ndjson           系统事件：墓碑、纠错（也进链）
 │     └─ day.json                封存：行数 / 字节 / sha256 / prev（日链）
 │
-├─ personas\                     ② 人格层（多个人格，共用上面那份 raw）
+├─ media\                        ② 媒体层（与 raw 平级：内容不可重建，所以不进 system）
+│  ├─ sha256\ab\cd\<hash>.png    二进制本体，按内容寻址，天然去重（规划中）
+│  └─ index.ndjson               只追加：{hash, size, mime, ts, origin, src}（规划中）
+│
+├─ personas\                     ③ 人格层（多个人格，共用上面那份 raw）
 │  └─ yuanling\
 │     ├─ persona.json            人格标记（id / 名字 / 创建时间）
 │     ├─ persona\
@@ -155,7 +162,8 @@ D:\yuanling\
 │     │  ├─ people\person_x.json 对某个人的主观认识（素描、first_met）
 │     │  └─ groups\123456.json   对某个群的印象（名称、氛围、语气）
 │     ├─ spaces\
-│     │  └─ 日常\备份.json        一个主题一个文件：facts[] + summary
+│     │  └─ 日常\
+│     │     └─ entries\备份.json   一个主题一个文件：facts[] + summary（space 与 entries 都是目录层）
 │     ├─ rules\
 │     │  ├─ global.json          人格级默认（recall / action / persona）
 │     │  ├─ qq\group-123.json    群覆盖（20）
@@ -167,7 +175,10 @@ D:\yuanling\
 │     ├─ versions\               人格自己的版本库（blobs + journal，可随人格拷走）
 │     └─ snapshots\              导出用的快照
 │
-└─ system\                       ③ 机器自有（人可以读，但不该手改）
+├─ raw-archive\                  冷归档：raw 的早期分片按月移入，链仍可校验
+├─ web\                          管理台静态页（仓库自带一份；这里可放覆盖版，预留）
+│
+└─ system\                       ④ 机器自有（人可以读，但不该手改）
    ├─ manifest.json              格式版本（太新就拒绝启动）
    ├─ identities.json            **客观**身份映射：哪个号是同一个人（跨人格共用）
    ├─ shields.json              墓碑登记簿（可从 raw 重建，不是真相）
@@ -175,12 +186,44 @@ D:\yuanling\
    ├─ secrets\console.token      管理台令牌（64 位 hex）
    ├─ inbox\                     文件投递（<source>.ndjson + .health 心跳）
    ├─ versions\                  根级文件的版本库（blobs + journal）
-   ├─ log\changes.ndjson         变更、拒绝、纠错、身份主张——一条流水账
+   ├─ log\
+   │  ├─ changes.ndjson          变更、拒绝、纠错、身份主张——一条流水账
+   │  └─ modules\qq.ndjson       每个模块一个日志文件（核心代写：stderr + 关键事件）
+   ├─ modules\                   已安装的模块（独立子进程，每模块一目录一版本；目前为空）
+   │  └─ qq\1.2.0\
+   ├─ modules.json               模块注册表：id / repo / version / api / enabled / permissions
    ├─ candidates\  index\  backups\  imports\  trash\   预留
-   └─ media\  raw-archive\       （与 system 同级）外置媒体与冷归档，用到才出现
+   └─ （其余按需出现，核心不依赖）
 ```
 
-**哪些能删**：`system/shields.json` 删了可以从 raw 重建；`personas/*/versions` 删了只是丢掉回滚能力；`raw/` **永远不能删**——删了就没有任何东西能证明事实从哪来。
+**哪些能删**：`system/shields.json` 删了可以从 raw 重建；`system/modules.json` 删了重扫 `modules/` 就能还原；`personas/*/versions` 删了只是丢掉回滚能力；`media/index.ndjson` 删了能从 `media/` 与 raw 里的引用重建。
+
+**不能删**：`raw/` 和 `media/`——删了就没有任何东西能证明事实从哪来、那句话长什么样。`raw/` 是文本的真相，`media/` 是二进制的真相。
+
+---
+
+## 模块
+
+**核心只做四件事**：原始层、记忆层、人格层、规则与版本。对外的每一种能力——QQ、B站、桌宠、语音、视频——都是**模块**，各自独立仓库、独立进程。
+
+| 约定 | 内容 |
+|---|---|
+| 命名 | `dsh-yuanling-<name>`（推荐，不强制；身份以 manifest 的 `id` 为准） |
+| 形态 | 独立子进程 + stdio JSON-RPC，跨语言（Python 的语音/视频模型也能接） |
+| 自描述 | 仓库根 `yuanling.module.json`：`id / api / kind / transport / capabilities / permissions` |
+| 安装位置 | `system/modules/<id>/<version>/`，注册表 `system/modules.json` |
+| 日志 | `system/log/modules/<id>.ndjson`，由核心代写（stderr + 关键事件） |
+
+**四条硬边界**（模块再强也越不过去）：
+
+1. 不能直接读 `raw/` —— 只能调 `ingest()`，落盘与脱敏由核心决定；
+2. 不能直接写记忆 —— 只能提交候选事实，由核心决定入不入库；
+3. 不能决定媒体存哪 —— 只能 `media.put()`，拿回一个内容寻址的指针；
+4. **不能自己决定发什么** —— 发送由核心发起，模块只做投递；发送前核心执行 `rules/action` 与 `guardrails.never_do`。这是 `never_do` 唯一的执行点。
+
+自带模块：`qq`（OneBot v11）、`bili`（只读采集），都会是独立仓库。
+
+> 协议全文（消息格式、能力协商、错误码、trace 规则）会写成 `PROTOCOL.md`；在那之前，只有上面这些约定算数。
 
 ---
 

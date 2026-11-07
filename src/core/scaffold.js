@@ -41,6 +41,8 @@ export function dirList(personaId) {
     P.secrets,
     P.trash,
     'system/log',
+    P.modulesLog,
+    P.modules,
     'rules',
     P.web,
   ]
