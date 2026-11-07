@@ -33,6 +33,8 @@ import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from 
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
 import { refreshWeights, setManualWeight, clearManualWeight } from './weights.js'
 import { setIdentityText } from './entities.js'
+import { refreshDrives } from './drives.js'
+import { readPurposes, writePurposes, minePurposes, closePurpose, duePurposes, expirePurposes, purposesPath } from './purposes.js'
 import { scan as scanProposals, listProposals, findProposal, approve, reject, rollback, sweep, readPolicy } from './proposals.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
@@ -110,6 +112,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
   yuanling identity correct <uid> --platform bili --id 123
   yuanling proposal scan             把"反复出现的主张"变成提案
+  yuanling purpose list|mine|drives|close <id>   目的账本（惦记）
   yuanling proposal list|show|approve|reject|rollback|sweep|policy
   yuanling group show|set <群号> [--name --intro --tone]
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
@@ -538,6 +541,63 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.OK
       }
       out(`✓ 已撤销屏蔽；恢复记忆 ${r.restored.length} 条`)
+      return EXIT.OK
+    }
+
+    if (cmd === 'purpose') {
+      const sub = _[1] ?? 'list'
+      const marker = readMarker(root)
+      const pid = flags.persona ? String(flags.persona) : marker?.active
+
+      const loadFacts = () =>
+        listEntries(root, pid).flatMap((e) => (e.facts ?? []).map((f) => ({ ...f, topic: e.topic })))
+
+      if (sub === 'mine') {
+        const doc = readPurposes(root, pid)
+        const mined = minePurposes(doc, loadFacts())
+        if (mined.added.length) writePurposes(root, pid, mined)
+        out(`✓ 新挖到 ${mined.added.length} 条惦记`)
+        for (const p of mined.added) out(`  ${p.id}  [${p.need}] ${p.text}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'drives') {
+        const drives = refreshDrives(root, pid)
+        for (const [k, v] of Object.entries(drives)) out(`${k.padEnd(10)} ${v.toFixed(2)}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'close') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling purpose close <id>')
+          return EXIT.CONFIG
+        }
+        const doc = readPurposes(root, pid)
+        const r = closePurpose(doc, id, { reason: String(flags.reason ?? '') })
+        if (!r.changed) {
+          err(`没有这个目的：${id}`)
+          return EXIT.CONFIG
+        }
+        writePurposes(root, pid, { version: doc.version, items: r.items })
+        out(`✓ 已关闭 ${id}`)
+        return EXIT.OK
+      }
+
+      // list
+      const doc = readPurposes(root, pid)
+      const expired = expirePurposes(doc)
+      if (expired) writePurposes(root, pid, doc)
+      const open = doc.items.filter((p) => p.status === 'open')
+      const done = doc.items.filter((p) => p.status !== 'open')
+      if (!doc.items.length) out('（还没有目的。先跑 yuanling purpose mine）')
+      for (const p of open) out(`○ ${p.id}  [${p.need}] ${p.text}${p.hits ? `  (提过 ${p.hits} 次)` : ''}`)
+      for (const p of done) out(`× ${p.id}  [${p.status}] ${p.text}`)
+      if (flags.due) {
+        const drives = refreshDrives(root, pid)
+        for (const p of duePurposes(doc.items, drives, { limit: 2 })) out(`→ ${p.text}`)
+      }
+      out(`\n账本 ${purposesPath(root, pid)}`)
       return EXIT.OK
     }
 

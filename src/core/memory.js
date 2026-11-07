@@ -11,6 +11,8 @@ import { P } from './paths.js'
 import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
+import { refreshDrives } from './drives.js'
+import { readPurposes, writePurposes, minePurposes, duePurposes, expirePurposes, markHit } from './purposes.js'
 import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readGroup, readProfile } from './entities.js'
 import {
   ageDays,
@@ -633,6 +635,51 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   return lines.join('\n')
 }
 
+/** 最近一条消息的时间（用来算"多久没和人说话了"）。 */
+function lastActivityMs(root) {
+  for (const date of listDays(root).slice(-3).reverse()) {
+    let max = 0
+    for (const r of readDay(root, date)) {
+      if ((r.type ?? 'message') !== 'message') continue
+      const t = Date.parse(r.ts)
+      if (!Number.isNaN(t) && t > max) max = t
+    }
+    if (max) return max
+  }
+  return 0
+}
+
+/** 一次上下文里最多带几条「惦记」。多了就不是惦记，是汇报。 */
+export const PURPOSE_INJECT_LIMIT = 2
+
+/**
+ * 动机层：刷新需求 → 从记忆里挖目的 → 取到期的 → 生成一行「惦记」。
+ * 任何一步出问题都不该让注入失败，所以整体兜底。
+ */
+function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMIT } = {}) {
+  try {
+    const entries = listEntries(root, pid)
+    const facts = entries.flatMap((e) => (e.facts ?? []).map((f) => ({ ...f, topic: e.topic })))
+
+    const last = lastActivityMs(root)
+    const hoursSinceMaster = last ? Math.max(0, (now - last) / 3_600_000) : null
+    const drives = refreshDrives(root, pid, { now, hoursSinceMaster })
+
+    const doc = readPurposes(root, pid)
+    const mined = minePurposes(doc, facts, { now })
+    const expired = expirePurposes(mined, { now })
+    if (mined.added.length || expired) writePurposes(root, pid, mined)
+
+    const due = duePurposes(mined.items, drives, { now, limit })
+    if (!due.length) return null
+    if (markHit(mined, due.map((p) => p.id))) writePurposes(root, pid, mined)
+
+    return `[惦记] ${due.map((p) => p.text).join('；')}（想提就提，不想提就别提，别硬塞）`
+  } catch {
+    return null
+  }
+}
+
 /**
  * 按对话对象组装上下文：卡片 + 对象先验。
  * 人格不变，变的是"这一轮该想起谁"。
@@ -658,6 +705,10 @@ export function contextFor(
   const card = buildCard(root, pid, { budget: Math.max(1024, budget - reserve), now })
 
   const lines = [card]
+
+  // 「惦记」排在群档案之后、人物卡之前：它是这一轮里最该被"想起来"的一句话
+  const remember = rememberLine(root, pid, { now })
+  if (remember) lines.push(remember)
 
   if (channel) {
     const { kind, id } = parseChannel(channel)
