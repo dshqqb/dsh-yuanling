@@ -18,7 +18,7 @@ import {
   clearManualWeight,
 } from '../src/core/weights.js'
 import { history } from '../src/core/version.js'
-import { buildCard } from '../src/core/memory.js'
+import { buildCard, contextFor } from '../src/core/memory.js'
 
 const PID = 'yuanling'
 
@@ -141,16 +141,14 @@ test('refresh：没有档案的人不参与（她还没认识他）', () => {
   assert.equal(rows.length, 0)
 })
 
-test('buildCard：权重高的人排在前面', () => {
+test('权重不决定谁进上下文——它只管列表排序', () => {
   const root = tmpRoot()
-  const a = createPerson(root, { display: '低权重' })
-  linkIdentity(root, a.uid, { platform: 'qq', id: '111' })
-  writeProfile(root, PID, a.uid, { sketch: '淡淡的', weight: 5 })
+  const high = createPerson(root, { display: '权重很高但没说话' })
+  linkIdentity(root, high.uid, { platform: 'qq', id: '111' })
+  writeProfile(root, PID, high.uid, { sketch: '淡淡的', weight: 100 })
 
-  const b = createPerson(root, { display: '高权重' })
-  linkIdentity(root, b.uid, { platform: 'qq', id: '222' })
-  writeProfile(root, PID, b.uid, { sketch: '很重要', weight: 95 })
-
-  const line = buildCard(root, PID).split('\n').find((l) => l.startsWith('[人物]'))
-  assert.ok(line.indexOf('高权重') < line.indexOf('低权重'))
+  // 没在这个频道出现过 → 不该进上下文
+  const ctx = contextFor(root, PID, { channel: 'group:999' })
+  assert.ok(!ctx.includes('权重很高但没说话'))
+  assert.ok(!buildCard(root, PID).includes('[人物]'), '卡片本身也不含人物榜')
 })

@@ -216,7 +216,7 @@ test('contextFor：私聊带人档案', () => {
   writeProfile(root, PID, p.uid, { sketch: '说话短，爱用草' })
 
   const ctx = contextFor(root, PID, { channel: 'private:12345' })
-  assert.match(ctx, /\[这个人\] 张三/)
+  assert.match(ctx, /\[人物\].*张三/)
   assert.match(ctx, /说话短/)
 })
 
@@ -231,7 +231,7 @@ test('contextFor：群里带群档案', () => {
 test('contextFor：认不出对象时只有卡片，不硬编', () => {
   const root = tmpRoot()
   const ctx = contextFor(root, PID, { channel: 'private:99999' })
-  assert.ok(!ctx.includes('[这个人]'))
+  assert.ok(!ctx.includes('[人物]'), '认不出的人不该硬编一张卡')
   assert.match(ctx, /\[索引\]/)
 })
 

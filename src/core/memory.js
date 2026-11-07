@@ -10,6 +10,7 @@ import { exists, isDir, readJson, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
+import { listDays, readDay } from './raw.js'
 import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readGroup, readProfile } from './entities.js'
 import {
   ageDays,
@@ -29,8 +30,11 @@ export const CARD_BUDGET_BYTES = 8192
 export const RECENT_DAYS = 14
 
 // 各段配额：宁少勿滥——一条对的记忆胜过十条平庸的。
-export const QUOTA = { first: 3, deep: 6, recent: 10, people: 3 }
+export const QUOTA = { first: 3, deep: 6, recent: 10 }
+// 单张人物卡的字节上限。人物卡是按对话对象检索的档案，不是全局榜单，所以没有人数配额。
 export const PERSON_BUDGET_BYTES = 600
+// 一次上下文里最多带几张人物卡（群聊里在说话的那几个人）
+export const MAX_PEOPLE_PER_CONTEXT = 8
 
 // ── 路径 ────────────────────────────────────────────────────────────────
 
@@ -451,54 +455,126 @@ function listPersonProfiles(root, pid) {
     .filter(Boolean)
 }
 
-/**
- * 排人物：管理员 → 重要人物 → 其余按权重，权重相同看最近互动。
- * 权重是"她多在意这个人"，不是"这个人多活跃"。
- */
-function rankPeople(root, pid, { skipUid = null } = {}) {
-  const data = loadIdentities(root)
-  return listPersonProfiles(root, pid)
-    .filter((p) => p.uid && p.uid !== skipUid)
-    .map((p) => {
-      const person = data.people[p.uid]
-      const tier = person?.tier === 'admin' ? 'admin' : p.tier === 'important' ? 'important' : 'normal'
-      return {
-        p,
-        person,
-        tier,
-        rank: tier === 'admin' ? 3 : tier === 'important' ? 2 : 1,
-        weight: Number(p.weight ?? 0),
-        rec: String(p.last_met ?? p.updated_at ?? p.first_met ?? ''),
-        display: p.display || person?.display || p.uid,
-      }
-    })
-    .sort((a, b) => b.rank - a.rank || b.weight - a.weight || b.rec.localeCompare(a.rec))
+/** 按 (platform, id) 找人。 */
+function findIdentityIn(data, platform, id) {
+  const p = String(platform)
+  const i = String(id)
+  for (const [uid, person] of Object.entries(data.people)) {
+    const hit = (person.identities ?? []).find((x) => x.platform === p && String(x.id) === i)
+    if (hit) return { uid, person }
+  }
+  return null
 }
 
-/** 单人一行，硬上限 PERSON_BUDGET_BYTES。 */
-function personLine(x) {
-  const name = x.tier === 'admin' ? `★${x.display}` : x.display
-  const acct = (x.person?.identities ?? [])[0]
+/**
+ * 从一句话里找出被点名的账号。
+ * 认两种写法：人类习惯的 `@123456`，和协议端的 `[CQ:at,qq=123456]`。
+ * 只有能解析到已知人物时才生效，所以宁可放宽——认错一个陌生 id 只是不产生卡。
+ */
+function mentionedIds(text) {
+  const s = String(text ?? '')
+  const out = []
+  for (const m of s.matchAll(/@(\d{2,})/g)) out.push(m[1])
+  for (const m of s.matchAll(/\[CQ:at,qq=(\d+)\]/g)) out.push(m[1])
+  return out
+}
+
+/** 某频道最近的消息（按时间倒序）。只用来判断"这一轮谁在场"。 */
+function recentChannelRecords(root, channel, limit = 40) {
+  const out = []
+  for (const date of listDays(root).slice(-3).reverse()) {
+    for (const r of readDay(root, date)) {
+      if ((r.type ?? 'message') !== 'message') continue
+      if (String(r.channel ?? '') !== String(channel)) continue
+      out.push(r)
+    }
+    if (out.length >= limit * 2) break
+  }
+  out.sort((a, b) => String(b.ts).localeCompare(String(a.ts)))
+  return out.slice(0, limit)
+}
+
+/**
+ * 这一轮谁在场——人物卡是按**在场者**取的，不是按权重榜取的。
+ *   私聊：只有对方
+ *   群聊：被 @ 的人优先（这话冲谁去的），然后是最近发言人
+ *
+ * 权重不参与这里的判断。权重只影响管理台的列表顺序。
+ */
+export function resolveParticipants(
+  root,
+  pid,
+  { channel = null, participants = null, maxPeople = MAX_PEOPLE_PER_CONTEXT } = {},
+) {
+  const data = loadIdentities(root)
+  const uids = []
+  const push = (uid) => {
+    if (uid && !uids.includes(uid)) uids.push(uid)
+  }
+
+  // ① 调用方显式给出的（适配器可以传 uid，或 {platform,id}）
+  for (const item of participants ?? []) {
+    if (!item) continue
+    if (typeof item === 'string') {
+      if (item.startsWith('person_')) push(item)
+    } else if (item.platform && item.id) {
+      push(findIdentityIn(data, item.platform, item.id)?.uid)
+    } else if (item.uid) {
+      push(item.uid)
+    }
+  }
+
+  if (channel) {
+    const { kind } = parseChannel(channel)
+    if (kind === 'private') push(personForChannel(root, channel))
+
+    if (kind === 'group') {
+      const recs = recentChannelRecords(root, channel, 40)
+      // 被 @ 的人优先：一句话冲谁去，谁就该有卡
+      for (const r of recs) {
+        for (const id of mentionedIds(r.text)) {
+          push(findIdentityIn(data, 'qq', id)?.uid)
+        }
+      }
+      // 然后是发言人，按最近发言时间
+      for (const r of recs) {
+        if (r.role === 'bot') continue
+        push(findIdentityIn(data, 'qq', r.actor?.id)?.uid)
+      }
+    }
+  }
+
+  return uids
+    .map((uid) => ({ uid, person: data.people[uid], profile: readProfile(root, pid, uid) }))
+    .filter((x) => x.profile) // 她还没认识的人，不硬编
+    .slice(0, maxPeople)
+}
+
+/** 一张人物卡压缩成一行，硬上限 PERSON_BUDGET_BYTES。 */
+function personCardLine({ uid, person, profile }) {
+  const display = profile.display || person?.display || uid
+  const name = person?.tier === 'admin' ? `★${display}` : display
+  const acct = (person?.identities ?? [])[0]
   const head = acct ? `${name}（${acct.platform}:${acct.id}）` : name
   const bits = [head]
-  if (x.p.sketch) bits.push(String(x.p.sketch))
-  if (x.p.first_met) bits.push(`初识 ${String(x.p.first_met).slice(0, 10)}`)
+  if (profile.sketch) bits.push(String(profile.sketch))
+  if (profile.first_met) bits.push(`初识 ${String(profile.first_met).slice(0, 10)}`)
 
-  let s = bits.join('：')
+  let s = bits.join(' · ')
   while (byteLen(s) > PERSON_BUDGET_BYTES) s = s.slice(0, -1)
-  return s
+  return `[人物] ${s}`
 }
 
 /**
- * 组装每轮注入的卡片。
+ * 组装"记忆卡"：只含记忆与骨架，**不含人物**。
+ * 人物卡是按对话对象检索的，由 contextFor 追加——这样群聊里不会出现不在场的人。
  *
- * 各段按配额混装，总预算默认 8KB：
- *   最初 3 / 最深刻 6 / 最新 10 / 人物 3（每人 ≤600B）
- * 裁剪顺序：最新 → 最深刻 → 人物，**永不动「最初」**。
+ * 各段按配额混装：最初 3 / 最深刻 6 / 最新 10。
+ * 裁剪顺序：最新 → 最深刻，**永不动「最初」**。
  * 注意：预算是**软上限**。当「骨架 + 最初 + 索引」本身就超过预算时，卡片会超出而不是继续裁——
  * 「最初」是不可压缩的底线，宁可超几个字节，也不能把她最早认识你的那几件事挤掉。
  */
-export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.now(), skipPersonUid = null } = {}) {
+export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
   const entries = listEntries(root, pid)
   const counts = recallCounts(root, pid, { now })
 
@@ -531,7 +607,6 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   const firstPick = first.sort((a, b) => String(a.created).localeCompare(String(b.created))).slice(0, QUOTA.first)
   const deepPick = deep.sort((a, b) => b.retention - a.retention).slice(0, QUOTA.deep)
   const recentPick = recent.sort((a, b) => String(b.created).localeCompare(String(a.created))).slice(0, QUOTA.recent)
-  const peoplePick = rankPeople(root, pid, { skipUid: skipPersonUid }).slice(0, QUOTA.people)
 
   const lines = []
   const id = identityLine(root, pid)
@@ -539,12 +614,11 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   if (firstPick.length) lines.push('[最初] ' + firstPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (deepPick.length) lines.push('[最深刻] ' + deepPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (recentPick.length) lines.push('[最新] ' + recentPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
-  if (peoplePick.length) lines.push('[人物] ' + peoplePick.map(personLine).join('；'))
   lines.push(`[索引] ${active} 条事实 / ${entries.length} 个主题${shielded ? ` / ${shielded} 条已隔离` : ''}`)
 
-  // 裁：最新 → 最深刻 → 人物，**永不动「最初」**
+  // 裁：最新 → 最深刻，**永不动「最初」**
   while (byteLen(lines.join('\n')) > budget) {
-    const order = ['[最新]', '[最深刻]', '[人物]']
+    const order = ['[最新]', '[最深刻]']
     let removed = false
     for (const tag of order) {
       const i = lines.findIndex((l) => l.startsWith(tag))
@@ -563,26 +637,31 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
  * 按对话对象组装上下文：卡片 + 对象先验。
  * 人格不变，变的是"这一轮该想起谁"。
  */
-export function contextFor(root, pid, { channel = null, budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
-  // 正在对话的人不重复出现在「人物」段里——他是这一轮的对方，不是背景
-  const channelUid = channel ? personForChannel(root, channel) : null
-  const lines = [buildCard(root, pid, { budget, now, skipPersonUid: channelUid })]
+export function contextFor(
+  root,
+  pid,
+  {
+    channel = null,
+    budget = CARD_BUDGET_BYTES,
+    now = Date.now(),
+    participants = null,
+    maxPeople = MAX_PEOPLE_PER_CONTEXT,
+  } = {},
+) {
+  // 人物卡按"谁在场"检索：私聊只有对方，群聊是被 @ 的人和最近发言人
+  const people = resolveParticipants(root, pid, { channel, participants, maxPeople })
+  const personLines = people.map(personCardLine)
+  const peopleBytes = personLines.reduce((n, s) => n + byteLen(s) + 1, 0)
+
+  // 给在场的人留预算，但最多占一半——记忆永远是主体
+  const reserve = Math.min(peopleBytes, Math.floor(budget / 2))
+  const card = buildCard(root, pid, { budget: Math.max(1024, budget - reserve), now })
+
+  const lines = [card]
+
   if (channel) {
     const { kind, id } = parseChannel(channel)
-    if (kind === 'private') {
-      const uid = channelUid
-      if (uid) {
-        const p = readProfile(root, pid, uid)
-        if (p) {
-          // 档案里没写显示名时，回到客观映射里取——注入时别显示一串 uid
-          const display = p.display || loadIdentities(root).people[uid]?.display || uid
-          const bits = [display]
-          if (p.sketch) bits.push(p.sketch)
-          if (p.first_met) bits.push(`第一次 ${String(p.first_met).slice(0, 10)}`)
-          lines.push(`[这个人] ${bits.join(' · ')}`)
-        }
-      }
-    } else if (kind === 'group') {
+    if (kind === 'group') {
       const g = readGroup(root, pid, id)
       if (g) {
         const bits = [g.name || g.gid]
@@ -592,5 +671,14 @@ export function contextFor(root, pid, { channel = null, budget = CARD_BUDGET_BYT
       }
     }
   }
-  return lines.filter(Boolean).join('\n')
+
+  // 一条一条塞人物卡，塞不下的丢排在后面的（越靠后越只是路过）
+  const kept = []
+  for (const line of personLines) {
+    const trial = [...lines, ...kept, line].join('\n')
+    if (byteLen(trial) > budget) break
+    kept.push(line)
+  }
+
+  return [...lines, ...kept].filter(Boolean).join('\n')
 }
