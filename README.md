@@ -146,8 +146,11 @@ D:\yuanling\
 │     └─ day.json                封存：行数 / 字节 / sha256 / prev（日链）
 │
 ├─ media\                        ② 媒体层（与 raw 平级：内容不可重建，所以不进 system）
-│  ├─ sha256\ab\cd\<hash>.png    二进制本体，按内容寻址，天然去重（规划中）
-│  └─ index.ndjson               只追加：{hash, size, mime, ts, origin, src}（规划中）
+│  ├─ sha256\ab\cd\<hash>.png    二进制本体，按内容寻址，天然去重
+│  ├─ thumbs\ab\cd\<hash>.webp   派生缩略图（可随时删、可重建）
+│  └─ index\2026-11.ndjson       按月只追加：put / archive / delete 事件
+│
+├─ media-archive\                一年以上的媒体，同样的 hash 布局，可整体删除
 │
 ├─ personas\                     ③ 人格层（多个人格，共用上面那份 raw）
 │  └─ yuanling\
@@ -199,6 +202,13 @@ D:\yuanling\
 **哪些能删**：`system/shields.json` 删了可以从 raw 重建；`system/modules.json` 删了重扫 `modules/` 就能还原；`personas/*/versions` 删了只是丢掉回滚能力；`media/index.ndjson` 删了能从 `media/` 与 raw 里的引用重建。
 
 **不能删**：`raw/` 和 `media/`——删了就没有任何东西能证明事实从哪来、那句话长什么样。`raw/` 是文本的真相，`media/` 是二进制的真相。
+
+**媒体的生命周期**（`media/` 唯一的清理规则）：
+
+- **全留。** 不按年龄删、不按配额删——几十 G 的空间换"她记得的那张图还在"，值。
+- **去重是自动的**：同内容同 hash 同路径，群里转发的重复文件不占第二份空间。
+- **满一年移入 `media-archive/`**：同样的 hash 布局，位置变了但指针不变（核心按指针解析时两处都找）。
+- **删不删由人决定**：`media-archive/` 是一个可以整体删掉的目录，删之前会先给你一份"多少文件、多大、最老到哪年"的清单。
 
 ---
 
