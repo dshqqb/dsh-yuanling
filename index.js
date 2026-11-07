@@ -406,12 +406,25 @@ export function apply(ctx, config) {
     log('warn', config, `管理台正在监听 ${host}——它会暴露你的私人记忆，确认这是你要的`)
   }
 
+  // 关停有两个坑，都会让宿主等到 `graceful deadline exceeded`（更新失败）：
+  //   ① `server.close()` 不销毁**已建立**的 keep-alive 连接——浏览器里开过管理台，
+  //      那条 socket 会让事件循环一直活着，进程永远不退出。
+  //   ② 动态 import 是异步的：dispose 可能先发生，那时 server 还是 null，
+  //      等 import 回来又把服务启起来——关停之后才启动，再也没人关它。
   let server = null
-  import('./src/core/server.js')
-    .then(({ listen }) =>
-      listen(root, {
+  let closeServer = null
+  let disposed = false
+
+  const started = import('./src/core/server.js')
+    .then((mod) => {
+      closeServer = mod.closeServer
+      return mod.listen(root, {
         port: Number(config.consolePort) || 0,
         host,
+        // 关键：插件跑在 DSH 宿主进程里，监听句柄不能钉住宿主的事件循环。
+        // 只靠 dispose 不够——宿主关停时可能根本不会调我们的 dispose，
+        // 那样更新会卡在 `graceful deadline exceeded`（管理台开着时必现）。
+        unref: true,
         // 自证：/root 会把这段原样吐出来，用来排查"配置改了但进程还用旧值"
         meta: {
           source,
@@ -421,25 +434,33 @@ export function apply(ctx, config) {
           envHome: process.env.YUANLING_HOME ?? null,
           pid: process.pid,
         },
-      }),
-    )
-    .then((started) => {
-      server = started.server
-      state.consoleUrl = started.url
-      log('info', config, `管理台：${started.url}`)
+      })
+    })
+    .then((s) => {
+      // 已经进入关停流程了：起来也立刻关掉，绝不留下一个没人管的监听
+      if (disposed) {
+        closeServer?.(s.server)
+        return
+      }
+      server = s.server
+      state.consoleUrl = s.url
+      log('info', config, `管理台：${s.url}`)
     })
     .catch((err) => {
-      log('error', config, `管理台启动失败：${err?.message ?? err}（端口被占？换个 consolePort）`)
+      if (!disposed) log('error', config, `管理台启动失败：${err?.message ?? err}（端口被占？换个 consolePort）`)
     })
 
-  // 插件卸载时把服务关掉，不留孤儿进程
+  // 插件卸载时把服务彻底关掉：先销毁连接，再关监听，不留孤儿 socket
   if (typeof ctx?.on === 'function') {
-    ctx.on('dispose', () => {
+    ctx.on('dispose', async () => {
+      disposed = true
+      state.consoleUrl = ''
       try {
-        server?.close()
+        await started
       } catch {
-        /* ignore */
+        /* 启动失败就没有要关的东西 */
       }
+      closeServer?.(server)
     })
   }
 }

@@ -170,16 +170,56 @@ export function createServer(root, { token = readToken(root), meta = null } = {}
 
 /**
  * 启动并监听。port=0 时由系统分配。
+ *
+ * `unref` 是给「跑在别人进程里」的场景用的（DSH 插件）：监听句柄默认会把事件循环
+ * 钉住，宿主关停时等不到进程退出 → `graceful deadline exceeded`。unref 之后句柄
+ * 不参与「有没有活干」的判定，宿主可以随时退出，而服务在宿主活着时照常工作。
+ * CLI（`yuanling serve`）不要开它，否则进程启动完就退出。
+ *
  * @returns {Promise<{server:http.Server, port:number, url:string}>}
  */
-export function listen(root, { port = 17777, host = '127.0.0.1', meta = null } = {}) {
-  const server = createServer(root, { meta })
+export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false } = {}) {
+  const server = createServer(root, token === undefined ? { meta } : { meta, token })
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {
       const addr = server.address()
       const p = typeof addr === 'object' && addr ? addr.port : port
+      if (unref) {
+        server.unref()
+        // keep-alive 连接也是独立句柄，同样不能钉住宿主
+        server.on('connection', (socket) => socket.unref?.())
+      }
       resolve({ server, port: p, url: `http://${host}:${p}` })
     })
   })
+}
+
+/**
+ * 彻底关掉一个管理台 server。
+ *
+ * `server.close()` 只停止接受**新**连接，不销毁已经建立的 keep-alive 连接。
+ * 浏览器里开过管理台时，那条 socket 会一直让事件循环活着，宿主关停时等不到
+ * 进程退出，就报 `graceful deadline exceeded`（DSH 更新的常见失败）。
+ * 所以顺序是：先掐空闲连接 → 再掐全部连接 → 最后关监听。
+ *
+ * @param {import('node:http').Server | null | undefined} server
+ */
+export function closeServer(server) {
+  if (!server) return
+  try {
+    server.closeIdleConnections?.()
+  } catch {
+    /* 老版本 node 没有这个方法 */
+  }
+  try {
+    server.closeAllConnections?.()
+  } catch {
+    /* 同上 */
+  }
+  try {
+    server.close()
+  } catch {
+    /* 已经关了 */
+  }
 }
