@@ -1,105 +1,218 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>原灵 · 管理台</title>
   <link rel="stylesheet" href="/style.css" />
+  <script>
+    // 首帧之前定主题，避免白闪一下
+    ;(function () {
+      try {
+        var t = localStorage.getItem('yuanling.theme')
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        }
+        document.documentElement.dataset.theme = t
+      } catch (e) {}
+    })()
+  </script>
 </head>
 <body>
-  <header>
-    <h1>原灵</h1>
-    <span id="status-line" class="muted">连接中…</span>
-    <span class="spacer"></span>
-    <button id="btn-token" class="ghost">令牌</button>
-  </header>
-
-  <div id="tokenbar" hidden>
+  <div id="tokenbar" class="tokenbar" hidden>
+    <span class="tokenbar-title">需要一个令牌</span>
     <input id="token-input" placeholder="粘贴 system/secrets/console.token 的内容" autocomplete="off" />
-    <button id="token-save">保存</button>
-    <span class="muted">只存本机浏览器 localStorage，不上传</span>
+    <button id="token-save" class="btn">保存</button>
+    <span class="muted small">只存在这台机器的浏览器里，不上传</span>
   </div>
 
-  <nav id="tabs">
-    <button data-tab="status" class="active">状态</button>
-    <button data-tab="card">注入预览</button>
-    <button data-tab="memory">记忆</button>
-    <button data-tab="entries">条目</button>
-    <button data-tab="proposals">提案</button>
-    <button data-tab="people">人物</button>
-    <button data-tab="rules">规则</button>
-    <button data-tab="sources">来源</button>
-    <button data-tab="refusals">拒绝记录</button>
-  </nav>
-
-  <main>
-    <section id="tab-status">
-      <div id="status-cards" class="cards"></div>
-      <div id="personas"></div>
-    </section>
-
-    <section id="tab-card" hidden>
-      <div class="row">
-        <input id="card-channel" placeholder="频道，例如 private:10001 或 group:123（可留空）" />
-        <button id="card-load">生成</button>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9" />
+          <path d="M12 6.5l2.4-2.4M12 6.5L9.6 4.1M12 17.5l2.4 2.4M12 17.5l-2.4 2.4" stroke-linecap="round" />
+        </svg>
+        <span class="brand-name">原灵</span>
       </div>
-      <pre id="card-out" class="box"></pre>
-      <div id="card-meta" class="muted"></div>
-    </section>
 
-    <section id="tab-memory" hidden>
-      <div class="row">
-        <input id="mem-q" placeholder="按话题搜，例如 备份" />
-        <button id="mem-go">搜索</button>
-        <label class="muted"><input type="checkbox" id="mem-all" /> 含已失效/已隔离</label>
+      <div class="modes">
+        <button id="mode-core" class="mode is-active">核心</button>
+        <button id="mode-modules" class="mode">模块</button>
       </div>
-      <div id="mem-out"></div>
-    </section>
 
-    <section id="tab-entries" hidden>
-      <div id="entries-out"></div>
-    </section>
-
-    <section id="tab-proposals" hidden>
-      <div class="row">
-        <button id="proposal-scan">扫描新提案</button>
-        <span class="muted">重复 ≥5 次、跨度 ≥3 天的主张会变成提案</span>
+      <div class="crumb">
+        <span id="crumb-root">原灵</span>
+        <span class="sep">/</span>
+        <span id="crumb-page">状态</span>
       </div>
-      <div id="proposals-out"></div>
-    </section>
 
-    <section id="tab-people" hidden>
-      <div id="people-out"></div>
-      <div id="person-editor" hidden>
-        <h3 id="person-title"></h3>
-        <div class="row">
-          <input id="person-display" placeholder="显示名" />
+      <div class="spacer"></div>
+
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="11" cy="11" r="6.5" />
+          <path d="M16 16l4 4" stroke-linecap="round" />
+        </svg>
+        <input id="global-search" placeholder="搜索记忆…" autocomplete="off" />
+      </label>
+
+      <button id="btn-token" class="icon-btn" title="令牌" aria-label="令牌">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+          <circle cx="8" cy="15.5" r="3.2" />
+          <path d="M10.4 13.1L19.5 4M16.5 7l2.2 2.2M14 9.5l2.2 2.2" stroke-linecap="round" />
+        </svg>
+      </button>
+
+      <button id="theme-toggle" class="icon-btn" title="切换明暗" aria-label="切换明暗">
+        <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4" stroke-linecap="round" />
+        </svg>
+        <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z" stroke-linejoin="round" />
+        </svg>
+      </button>
+
+      <span id="conn" class="dot" title="连接中"></span>
+    </header>
+
+    <div class="workspace">
+      <aside class="side">
+        <nav id="nav" class="menu"></nav>
+        <div class="side-foot">
+          <div id="side-persona" class="side-persona">—</div>
+          <div id="side-root" class="muted small">—</div>
         </div>
-        <textarea id="person-sketch" rows="5" placeholder="素描：这个人是谁、怎么说话、在意什么、别碰什么"></textarea>
-        <div class="row">
-          <button id="person-save">保存</button>
-          <span id="person-msg" class="muted"></span>
-        </div>
-      </div>
-    </section>
+      </aside>
 
-    <section id="tab-rules" hidden>
-      <div class="row">
-        <input id="rule-channel" placeholder="频道（留空=只叠全局）" />
-        <button id="rule-load">查看</button>
-      </div>
-      <div id="rule-src" class="muted"></div>
-      <pre id="rule-out" class="box"></pre>
-    </section>
+      <main class="main">
+        <section id="tab-status" class="page">
+          <div class="page-head">
+            <h2>状态</h2>
+            <p class="muted">这台机器上，她现在记得什么。</p>
+          </div>
+          <div id="status-cards" class="stats"></div>
+          <div class="card">
+            <div class="card-head"><h3>人格</h3></div>
+            <div id="personas" class="list"></div>
+          </div>
+        </section>
 
-    <section id="tab-sources" hidden>
-      <div id="sources-out"></div>
-    </section>
+        <section id="tab-card" class="page" hidden>
+          <div class="page-head">
+            <h2>注入预览</h2>
+            <p class="muted">这一轮她真正读到的文字，一个字都不多。</p>
+          </div>
+          <div class="card">
+            <div class="field-row">
+              <input id="card-channel" placeholder="频道，例如 private:10001（可留空）" />
+              <button id="card-load" class="btn">生成</button>
+            </div>
+            <pre id="card-out" class="code"></pre>
+            <div id="card-meta" class="muted small"></div>
+          </div>
+        </section>
 
-    <section id="tab-refusals" hidden>
-      <div id="refusals-out"></div>
-    </section>
-  </main>
+        <section id="tab-memory" class="page" hidden>
+          <div class="page-head">
+            <h2>记忆</h2>
+            <p class="muted">按话题找一条事实，看看它凭什么存在。</p>
+          </div>
+          <div class="card">
+            <div class="field-row">
+              <input id="mem-q" placeholder="按话题搜，例如 备份" />
+              <button id="mem-go" class="btn">搜索</button>
+              <label class="check"><input type="checkbox" id="mem-all" /> 含已失效 / 已隔离</label>
+            </div>
+            <div id="mem-out" class="list"></div>
+          </div>
+        </section>
+
+        <section id="tab-entries" class="page" hidden>
+          <div class="page-head">
+            <h2>条目</h2>
+            <p class="muted">一个主题一个文件，写透不拆碎。</p>
+          </div>
+          <div class="card"><div id="entries-out" class="list"></div></div>
+        </section>
+
+        <section id="tab-proposals" class="page" hidden>
+          <div class="page-head">
+            <h2>提案</h2>
+            <p class="muted">反复出现的主张，会在这里等她长出新习惯。</p>
+            <button id="proposal-scan" class="btn">扫描新提案</button>
+          </div>
+          <div class="card"><div id="proposals-out" class="list"></div></div>
+        </section>
+
+        <section id="tab-people" class="page" hidden>
+          <div class="page-head">
+            <h2>人物</h2>
+            <p class="muted">她对每个人的印象，按人格隔离。</p>
+          </div>
+          <div class="card"><div id="people-out" class="list"></div></div>
+          <div id="person-editor" class="card" hidden>
+            <div class="card-head"><h3 id="person-title"></h3></div>
+            <div class="field-row"><input id="person-display" placeholder="显示名" /></div>
+            <textarea id="person-sketch" rows="5" placeholder="素描：这个人是谁、怎么说话、在意什么、别碰什么"></textarea>
+            <div class="field-row">
+              <button id="person-save" class="btn">保存</button>
+              <span id="person-msg" class="muted small"></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-rules" class="page" hidden>
+          <div class="page-head">
+            <h2>规则</h2>
+            <p class="muted">只管"能不能做"，不塑造人格。</p>
+          </div>
+          <div class="card">
+            <div class="field-row">
+              <input id="rule-channel" placeholder="频道（留空 = 只叠全局）" />
+              <button id="rule-load" class="btn">查看</button>
+            </div>
+            <div id="rule-src" class="muted small"></div>
+            <pre id="rule-out" class="code"></pre>
+          </div>
+        </section>
+
+        <section id="tab-sources" class="page" hidden>
+          <div class="page-head">
+            <h2>来源</h2>
+            <p class="muted">谁还在往这里投递，谁已经沉默了。</p>
+          </div>
+          <div class="card"><div id="sources-out" class="list"></div></div>
+        </section>
+
+        <section id="tab-refusals" class="page" hidden>
+          <div class="page-head">
+            <h2>拒绝记录</h2>
+            <p class="muted">每一次被规则拦下，都留了理由。</p>
+          </div>
+          <div class="card"><div id="refusals-out" class="list"></div></div>
+        </section>
+
+        <section id="page-modules" class="page" hidden>
+          <div class="page-head">
+            <h2>模块</h2>
+            <p class="muted">插件化的扩展位，还没有接进来。</p>
+          </div>
+          <div class="empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+              <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
+              <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
+              <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
+              <rect x="13.5" y="13.5" width="7" height="7" rx="2" stroke-dasharray="3 3" />
+            </svg>
+            <div class="empty-title">这里还空着</div>
+            <div class="muted">模块是给后续能力（QQ 适配器、B站采集、导入导出）预留的位置。<br />现在没有已安装的模块。</div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>
