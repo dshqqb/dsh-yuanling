@@ -31,6 +31,7 @@ import {
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
+import { refreshWeights, setManualWeight, clearManualWeight } from './weights.js'
 import { scan as scanProposals, listProposals, findProposal, approve, reject, rollback, sweep, readPolicy } from './proposals.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
@@ -102,6 +103,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling unshield <id...>          撤销屏蔽
   yuanling person list|new|show|link|merge|split|profile
   yuanling person candidates|confirm <n>|reject <n>
+  yuanling person weight [refresh] | set <uid> <0-100> | auto <uid>
   yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
   yuanling identity correct <uid> --platform bili --id 123
@@ -811,6 +813,39 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         }
         const r = splitIdentity(root, uid, flags.platform, flags.id)
         out(`✓ 已把 ${flags.platform}:${flags.id} 拆到新人物 ${r.uid}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'weight') {
+        const action = _[2]
+        if (action === 'set') {
+          const uid = _[3]
+          const w = _[4]
+          if (!uid || w === undefined) {
+            err('用法：yuanling person weight set <uid> <0-100>')
+            return EXIT.CONFIG
+          }
+          const prof = setManualWeight(root, pid, uid, Number(w))
+          out(`✓ ${uid} 权重 = ${prof.weight}（手动，自动分不再覆盖）`)
+          return EXIT.OK
+        }
+        if (action === 'auto') {
+          const uid = _[3]
+          if (!uid) {
+            err('用法：yuanling person weight auto <uid>')
+            return EXIT.CONFIG
+          }
+          clearManualWeight(root, pid, uid)
+          out(`✓ ${uid} 已恢复自动计分（下次 refresh 重算）`)
+          return EXIT.OK
+        }
+
+        const list = refreshWeights(root, pid)
+        if (!list.length) out('（还没有人物档案）')
+        for (const x of list) {
+          const tag = x.source === 'manual' ? '手动' : '自动'
+          out(`${String(x.weight).padStart(3)}  ${tag}  ${x.uid}${x.changed ? '  ·已更新' : ''}`)
+        }
         return EXIT.OK
       }
 
