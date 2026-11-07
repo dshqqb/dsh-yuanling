@@ -22,7 +22,6 @@
   },
   "files": [
     "index.js",
-    "client.js",
     "mcp-server.mjs",
     "bin/",
     "src/",
@@ -36,7 +35,8 @@
     "cli": "node bin/yuanling.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.2.0-0"
   },
   "keywords": [
     "dsh",
@@ -48,6 +48,14 @@
     "local-first"
   ],
   "author": "yuanling contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitee.com/dshqqb/dsh-yuanling.git"
+  },
+  "homepage": "https://github.com/dshqqb/dsh-yuanling",
+  "bugs": {
+    "url": "https://github.com/dshqqb/dsh-yuanling/issues"
+  },
   "peerDependencies": {
     "@deepseek-ai/schemastery": "*"
   },

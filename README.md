@@ -387,7 +387,15 @@ yuanling purpose close <id>  # 手动放下一件事
 # 本地目录（最稳）
 git clone https://github.com/dshqqb/dsh-yuanling.git D:\dsh-plugins\dsh-yuanling
 dsh plugin --profile <profile> add "D:\dsh-plugins\dsh-yuanling"
+
+# 直接按 git spec 装
+#   ⚠️ 必须带 `git+` 前缀：裸 https:// 会被当成 npm 包名去注册表找，必然失败
+dsh plugin --profile <profile> add "git+https://gitee.com/dshqqb/dsh-yuanling.git"
+# GitHub 是同步镜像，国内有时连不上（Gitee 不通时再换它）
+dsh plugin --profile <profile> add "git+https://github.com/dshqqb/dsh-yuanling.git"
 ```
+
+> 两个仓库内容一致：**Gitee 优先**（国内可达，且 `installBundle` 的 `git ls-remote` 预检只对 github.com 生效，Gitee 会跳过），GitHub 作镜像。
 
 装完**必须重启 DSH**。设置页会出现这些项：
 
