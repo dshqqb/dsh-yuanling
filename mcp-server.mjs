@@ -12,8 +12,10 @@ import readline from 'node:readline'
 import { resolveRoot, validateRoot } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall } from './src/core/memory.js'
+import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
 
-const SERVER_INFO = { name: 'yuanling', version: '0.1.0' }
+const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
+const MAX_IDENTITY_TEXT = 2000
 
 /** 数据根目录：--root 参数 > YUANLING_HOME > 默认位置。 */
 function rootFromArgv(argv = process.argv.slice(2)) {
@@ -75,6 +77,23 @@ const TOOLS = [
       required: ['query'],
     },
   },
+  {
+    name: 'yuanling_person_identity',
+    description:
+      '把学到的身份信息写回人物档案（账号归属）。**只在对方自述、或有明确证据时调用**——别从一句玩笑里推断账号。\n' +
+      'text 用自然语言写整句话（例："QQ 号是 12345，b站叫老张"），解析由核心负责；原文才是正本，解析结果只是派生。\n' +
+      '已经属于别人的账号不会被抢，只会报冲突。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        uid: { type: 'string', description: '人物 id（person_xxx）。和 display 二选一，优先 uid。' },
+        display: { type: 'string', description: '显示名；没有对应人物时会新建一个。' },
+        text: { type: 'string', description: '自然语言身份描述，≤2000 字' },
+        autoLink: { type: 'boolean', description: '是否自动绑定未被占用的账号，默认 true' },
+      },
+      required: ['text'],
+    },
+  },
 ]
 
 function formatFacts(rows) {
@@ -83,6 +102,16 @@ function formatFacts(rows) {
   return rows
     .map((r, i) => `${i + 1}. 〔${r.topic}〕${r.fact?.text ?? ''}\n   证据：${r.fact?.src ?? ''}`)
     .join('\n')
+}
+
+function formatIdentityResult(uid, display, r) {
+  const lines = [`✓ 已写入 ${display ?? uid}（${uid}）的身份描述`]
+  if (r.parsed.items.length) lines.push(`识别：${r.parsed.items.map((x) => `${x.platform}:${x.id}`).join('、')}`)
+  if (r.linked.length) lines.push(`新绑定：${r.linked.map((x) => `${x.platform}:${x.id}`).join('、')}`)
+  for (const c of r.conflicts) lines.push(`冲突：${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
+  if (r.parsed.unparsed.length) lines.push(`没认出：${r.parsed.unparsed.join(' / ')}`)
+  if (!r.parsed.items.length) lines.push('（这段话里没识别出账号）')
+  return lines.join('\n')
 }
 
 function callTool(root, name, args = {}) {
@@ -105,6 +134,28 @@ function callTool(root, name, args = {}) {
     const limit = Math.max(1, Math.min(50, Number(args.limit) || 8))
     const rows = recall(root, pid, query, { limit })
     return { text: formatFacts(rows), count: rows.length }
+  }
+
+  if (name === 'yuanling_person_identity') {
+    const text = String(args.text ?? '').trim()
+    if (!text) throw new Error('缺少 text（用一句自然语言写清楚账号）')
+    if (text.length > MAX_IDENTITY_TEXT) throw new Error(`身份描述太长（≤${MAX_IDENTITY_TEXT} 字）`)
+
+    let uid = String(args.uid ?? '').trim() || null
+    let display = null
+    if (!uid && args.display) {
+      display = String(args.display).trim()
+      const hit = Object.values(loadIdentities(root).people ?? {}).find((p) => p.display === display)
+      uid = hit ? hit.uid : createPerson(root, { display }).uid
+    }
+    if (!uid) throw new Error('需要 uid 或 display')
+
+    const data = loadIdentities(root)
+    if (!data.people?.[uid]) throw new Error(`人物不存在：${uid}`)
+    display = display ?? data.people[uid].display ?? uid
+
+    const r = setIdentityText(root, uid, text, { autoLink: args.autoLink !== false })
+    return { text: formatIdentityResult(uid, display, r), linked: r.linked.length, conflicts: r.conflicts.length }
   }
 
   throw new Error(`未知工具：${name}`)
@@ -140,7 +191,8 @@ function handle(req) {
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
         instructions:
-          '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；需要具体细节时再用 yuanling_recall。',
+          '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；' +
+          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_identity 写回档案。',
       })
       return
     }

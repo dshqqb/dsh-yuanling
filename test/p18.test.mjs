@@ -107,10 +107,10 @@ test('initialize：握手返回 yuanling 与 tools 能力', async () => {
   assert.ok(res.result.capabilities.tools, '必须声明 tools 能力')
 })
 
-test('tools/list：两个工具，schema 都是 object', async () => {
+test('tools/list：三个工具，schema 都是 object', async () => {
   const res = await call('tools/list', {})
   const names = res.result.tools.map((t) => t.name)
-  assert.deepEqual(names.sort(), ['yuanling_context', 'yuanling_recall'])
+  assert.deepEqual(names.sort(), ['yuanling_context', 'yuanling_person_identity', 'yuanling_recall'])
   for (const t of res.result.tools) {
     assert.equal(t.inputSchema.type, 'object')
     assert.ok(t.description, '工具必须有描述，否则模型不知道什么时候调')

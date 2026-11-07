@@ -23,12 +23,29 @@
 | 项目 | 采纳的 | 放弃的 |
 |---|---|---|
 | [dsh-memory-dict](https://github.com/Sleepless256/dsh-memory-dict) | 文件夹 + 纯文本 + JSON 的存储形态；**扁平词条**（一个主题写透，不拆碎、不建层级）；槽位（同槽位新值关闭旧值）；三层查重（全同 → 包含 → bigram ≥ 0.78）；原子写（临时文件 + rename）；常驻预算硬上限 | **全人工写**——每条记忆都得手动敲，用三天就没人写了；**没有时间线**——只知道"现在是这样"，不知道"从什么时候起、到什么时候止" |
-| [surfcore](https://github.com/Mieksido/surfcore) | 拟人遗忘（四级清晰度）；**「最初」机制**（30 天窗口 + 确定性散列，不是随机抽签）；单一写者模型；scope 隐私隔离；回环 + 令牌的管理台；摘要与全量分离；B站只读的边界姿态 | **把 `clarity` 存成字段**、每天降一档——某天定时任务没跑，就永远不降了。原灵改成**纯函数派生**：不存在"漏跑"这回事 |
+| [surfcore](https://github.com/Mieksido/surfcore) | 拟人遗忘（四级清晰度）；**「最初」机制**（30 天窗口 + 确定性散列，不是随机抽签）；单一写者模型；scope 隐私隔离；回环 + 令牌的管理台；摘要与全量分离；B站只读的边界姿态；**目的层**（见下） | **把 `clarity` 存成字段**、每天降一档——某天定时任务没跑，就永远不降了。原灵改成**纯函数派生**：不存在"漏跑"这回事；**2284 行动机机**（9 维需求 + 中文关键词表 + 目标假设树 + 正则读回执）——那是为"单独开模型回合"服务的，我们用不上 |
 | [dsh-soul](https://github.com/icyaaaww/dsh-soul) | 作废不删行；`valid_to / supersedes` 双时间线；变更计划（先列变更、再落盘） | 多档状态机；把"整理"做成一套需要人伺候的流程 |
 | [dsh-agent-soul（ECHO）](https://github.com/cyanwell/dsh-agent-soul) | **没有指针不许进长期层**——这条被原灵当成第一硬规则；只追加账本（append-only） | 全量卡注入——把整本记忆塞进上下文，token 烧得比聊得还快。原灵默认 **8 KB**（1M 上下文下占 0.5%），并且明写裁剪顺序 |
 | [canyueY/dsh-mnemosyne](https://github.com/canyueY/dsh-mnemosyne) | 观察 → 证据 → 记忆的认知链；事实与推断分离；**好评/自评不作晋升依据**；每次结构变更有日志 | **Claim 九态**（提议/支持/合格/已验证/争议…）——一个人自己的记忆不需要九个状态，三档 + 证据 + 时间线足够；**23 个 migration**——迁移脚本比功能还多，说明模型没想清楚 |
 | [DSH-Raising-Plan/dsh-mnemosyne](https://github.com/DSH-Raising-Plan/dsh-mnemosyne) | 兴趣信号分层（被动 / 注意 / 投入 / 明说）；**单次观察永不晋升**；`oppose_discount < 1`（一次反驳抹不掉大量一致证据，但明确否定可触发复核）；内容哈希做幂等键；删除级联 | 重 schema 与强状态机——原灵的状态就是一个字段（`until` 有没有值），其余用时间线和证据表达 |
 | [xiaoman-memory](https://github.com/yunkong-134/xiaoman-memory) | **沉底**：离开常驻与默认检索，权重随时间衰减，但不删 | 用"沉底"替代遗忘语义——沉底只解决"别占位置"，不解决"该不该记得" |
+
+### 从 surfcore 学到的目的层：学了什么、改了什么
+
+surfcore 有一套完整的"目的引擎"（`purpose-engine.js`，2284 行）。它的结论是对的：**活人感不来自频率，来自"每条开口都有来处"和"没说完的话"**。原灵拿走了机制，砍掉了一半的复杂度。
+
+| 维度 | surfcore | 原灵 |
+|---|---|---|
+| 需求维度 | 9 维 + 一张中文关键词表 | **5 维**（陪 / 关心 / 好奇 / 分享 / 自我），信号取自记忆主题与互动间隔——不再维护词表 |
+| 欲望变化 | 半衰期 8 小时回落基线 | **12 小时**（对话密度更低，慢一点更像人）；`connect` 随"多久没说话"每天 +0.4 |
+| 目的来源 | 素材摘要 → 种子 + 目标假设树 | **记忆事实**（带情绪或带槽位、6 小时~7 天前）→ 目的账本 |
+| 能不能解释 | 素材是摘要，答不出"为什么问这个" | **每条目的带 `origin` 指针**，能翻回 raw 里那句原话 |
+| 怎么说出口 | 单独开一个模型回合 + 正则解析 `【待续】` 回执 | 写进卡片 `[惦记]`，**同轮回复里自然带出**——零额外调用 |
+| 防重复 | 三重去重 + pending 14 天 | 6 小时冷却 + 提够 2 次自动放下 + 一轮内相似去重 |
+| 没说完的话 | 靠模型自己写 `【待续】` | 账本里 `open` 状态 + 14 天 TTL，到期没提就 `dropped` |
+| 主动性 | 独立调度器 + 十道闸门 + 双载体 | 复用 `rules.action` 闸门；外发留给 `dsh-yuanling-qq` 模块 |
+
+一句话：**它证明了这件事值得做，也证明了不用写 2284 行。** 原灵用约 300 行做到它的主干，靠的是两样它没有的东西——能回到原话的记忆，和本来就在跑的 agent 回合。
 
 ### 刻意不学的三件事
 
@@ -67,6 +84,11 @@
 ┌───────────────▼─────────────────────────────────────────┐
 │  L2 人格层  SELF.md（骨架，不许自动改） / style.md（可演化）│
 │  实体档案  entities/people|groups                         │
+└───────────────┬─────────────────────────────────────────┘
+                │  记忆里"没说完的事" → 目的
+┌───────────────▼─────────────────────────────────────────┐
+│  L3 目的层  self/drives.json / self/purposes.json         │
+│  想要什么 → 想说什么 → 这一轮说哪句（[惦记]）              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -279,6 +301,72 @@ D:\yuanling\
 
 ---
 
+## 目的层：她惦记什么
+
+活人感不来自"话说得多"，来自"心里存着事"。这一层只干三件事：**想要什么**（drives）→ **想说什么**（purposes）→ **这次说哪句**（selectIntent）。
+
+### 存哪
+
+| 文件 | 存什么 |
+|---|---|
+| `personas/<p>/self/drives.json` | 5 个需求的强度（当前值 + 最近刷新时间） |
+| `personas/<p>/self/purposes.json` | 目的账本：`{id, need, text, origin, due, status, hits}` |
+| 卡片里的 `[惦记]` | 这一轮真正说出口的 1~2 条 |
+
+### 需求：会涨，也会落
+
+| 维度 | 变化 |
+|---|---|
+| 陪（connect） | **越久没和人说话越涨**（每天最多 +0.4，封顶 0.95） |
+| 关心 / 好奇 / 分享 / 自我 | 各有基线，都按 **12 小时半衰期**回落到基线 |
+
+为什么要回落：不回落的欲望会变成"永远黏人"。半个衰期后回到基线，她才有黏一阵、静一阵的节奏——**这是"像人"最省力的来源**。
+
+### 目的：从记忆里挖，不从模型里问
+
+一条事实要变成"惦记"，得同时满足：
+
+- 创建于 **6 小时～7 天前**——刚说的不追问，陈年旧账不翻；
+- 带情绪（`emotional ≥ 8`）或带槽位（`slot` 非空）——平淡的闲聊不记账；
+- 同一份证据只惦记一次（按 `origin` 去重）。
+
+生成的样子：`你上次说「面试没过，很难过」，后来怎么样了？`
+
+**每条都挂 `origin` 指针**。被问"你怎么突然问这个"，能直接翻出那句原话——这是和 surfcore 最大的差别，它的素材是摘要，翻不回原文。
+
+### 说哪句：三层过滤
+
+| 过滤 | 拦的是什么 |
+|---|---|
+| 6 小时冷却 | 刚提过又提 |
+| 提够 2 次自动放下 | 一件事翻来覆去说 |
+| 一轮内相似 ≥ 0.55 只留一条 | 一次注入两条说的是同一件事 |
+
+提够了不会静默消失，而是 `status: done` + `close_reason: 提过 2 次，先放下`——`yuanling purpose list` 里能看见她惦记过什么、说了几次。
+
+### 注入格式
+
+```
+[惦记] 你上次说「面试没过」，后来怎么样了？（想提就提，不想提就别提，别硬塞）
+```
+
+最多 2 条、每条 ≤120 字节，并且**明确写成可选**——宁可她不提，也不要为了满足提示而尬聊。
+
+### 命令
+
+```powershell
+yuanling purpose list        # 账本（open / done / dropped）
+yuanling purpose mine        # 从记忆里挖一遍
+yuanling purpose drives      # 看当前需求强度
+yuanling purpose close <id>  # 手动放下一件事
+```
+
+### 主动外发还没做
+
+这层目前只在"有人说话"时生效——她带着惦记回复。**没人说话时主动开口**需要一次独立回合，那是 QQ 模块（`dsh-yuanling-qq`）的事；核心只负责"想说什么"，不负责"发出去"。
+
+---
+
 ## 遗忘与纠错
 
 | 动作 | 命令 | 说明 |
@@ -322,6 +410,7 @@ dsh plugin --profile <profile> add "D:\dsh-plugins\dsh-yuanling"
 |---|---|
 | `yuanling_context` | 取回记忆卡 + `[惦记]` + 在场人物卡（私聊传 `channel`） |
 | `yuanling_recall` | 按词检索记忆，返回事实与证据指针 |
+| `yuanling_person_identity` | **写**：把学到的账号归属写回档案（原文正本，解析派生；已属别人的号只报冲突） |
 
 **用一条命令登记，不用手改 YAML：**
 
@@ -349,6 +438,8 @@ yuanling mcp uninstall                       # 整块摘掉，其余配置原样
         command: '<node 的绝对路径>'
         args:
           - '<仓库里的 mcp-server.mjs 绝对路径>'
+          - '--root'
+          - '<数据目录，如 D:\yuanling>'
         toolCallTimeoutMs: 30000
 # === yuanling MCP END ===
 ```
@@ -375,7 +466,11 @@ yuanling memory why <factId>              # 这条凭什么存在
 yuanling shield --last 1 [--yes]          # 屏蔽刚才那条
 yuanling proposal scan|list|approve|reject|rollback|sweep
 yuanling person new 张三 --platform qq --id 12345
+yuanling person identity <uid> --text "QQ 号是 12345，b站叫老张"
+yuanling person weight [refresh] | set <uid> 80 | auto <uid>
+yuanling purpose list|mine|drives|close <id>     # 目的账本（惦记）
 yuanling identity claim --platform bili --id abc123 --src-last 1 --channel private:10001
+yuanling mcp status|install|uninstall             # 把记忆登记成 DSH 的 MCP 工具
 yuanling serve --root D:\yuanling         # 管理台
 ```
 
