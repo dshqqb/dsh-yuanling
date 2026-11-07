@@ -32,6 +32,7 @@ import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
 import { refreshWeights, setManualWeight, clearManualWeight } from './weights.js'
+import { findProfiles, mcpStatus, installMcp, uninstallMcp, defaultNodeCmd, defaultServerPath } from './mcpinstall.js'
 import { setIdentityText } from './entities.js'
 import { refreshDrives } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, closePurpose, duePurposes, expirePurposes, purposesPath } from './purposes.js'
@@ -113,6 +114,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling identity correct <uid> --platform bili --id 123
   yuanling proposal scan             把"反复出现的主张"变成提案
   yuanling purpose list|mine|drives|close <id>   目的账本（惦记）
+  yuanling mcp status|install|uninstall         把记忆登记成 DSH 的 MCP 工具
   yuanling proposal list|show|approve|reject|rollback|sweep|policy
   yuanling group show|set <群号> [--name --intro --tone]
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
@@ -542,6 +544,81 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       }
       out(`✓ 已撤销屏蔽；恢复记忆 ${r.restored.length} 条`)
       return EXIT.OK
+    }
+
+    if (cmd === 'mcp') {
+      const sub = _[1] ?? 'status'
+      const profiles = findProfiles()
+
+      const pick = () => {
+        if (flags.dir) {
+          const dir = String(flags.dir)
+          return { name: '(dir)', dir, patchPath: path.join(dir, 'cordis.patch.yml') }
+        }
+        if (flags.profile) {
+          const hit = profiles.find((p) => p.name === String(flags.profile))
+          if (!hit) {
+            err(`没有这个 profile：${flags.profile}（可用：${profiles.map((p) => p.name).join('、') || '无'}）`)
+            return null
+          }
+          return hit
+        }
+        if (profiles.length === 1) return profiles[0]
+        if (!profiles.length) {
+          err('没找到任何 profile（~/.dsh/profiles/*/cordis.patch.yml）；可用 --dir 指定目录')
+          return null
+        }
+        err(`有多个 profile，请用 --profile 指定：${profiles.map((p) => p.name).join('、')}`)
+        return null
+      }
+
+      const target = pick()
+      if (!target) return EXIT.CONFIG
+
+      if (sub === 'status') {
+        const st = mcpStatus({ patchPath: target.patchPath })
+        out(`profile    ${target.name}`)
+        out(`配置文件   ${target.patchPath}`)
+        out(`已登记     ${st.installed ? '是' : '否'}`)
+        if (st.installed) {
+          out(`命令       ${st.nodeCmd}`)
+          out(`服务器     ${st.serverPath}`)
+        } else {
+          out('跑 `yuanling mcp install` 即可登记，无需手改 YAML')
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'install') {
+        const r = installMcp({
+          patchPath: target.patchPath,
+          nodeCmd: flags.node ? String(flags.node) : defaultNodeCmd(),
+          serverPath: flags.server ? String(flags.server) : defaultServerPath(),
+          dryRun: Boolean(flags['dry-run']),
+        })
+        if (!r.changed) {
+          out('✓ 已经登记过，内容没变（幂等）')
+          return EXIT.OK
+        }
+        out(flags['dry-run'] ? '（dry-run）将要写入：' : `✓ 已写入 ${target.patchPath}`)
+        if (r.backup) out(`  备份：${r.backup}`)
+        out('  重启 DSH 后生效。')
+        return EXIT.OK
+      }
+
+      if (sub === 'uninstall') {
+        const r = uninstallMcp({ patchPath: target.patchPath, dryRun: Boolean(flags['dry-run']) })
+        if (!r.changed) {
+          out('✓ 本来就没登记，不用卸')
+          return EXIT.OK
+        }
+        out(flags['dry-run'] ? '（dry-run）将会摘掉登记块' : '✓ 已摘掉登记块（其余配置原样保留）')
+        out('  重启 DSH 后生效。')
+        return EXIT.OK
+      }
+
+      err('用法：yuanling mcp status|install|uninstall [--profile <名字>] [--dir <目录>] [--node <path>] [--server <path>] [--dry-run]')
+      return EXIT.CONFIG
     }
 
     if (cmd === 'purpose') {

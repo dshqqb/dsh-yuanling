@@ -308,6 +308,49 @@ dsh plugin --profile <profile> add "D:\dsh-plugins\dsh-yuanling"
 | `dailyAutoLimit` | 1 | 每天最多自动采纳几条 |
 | `preset` / `logLevel` | true / info | 是否注册 preset、日志级别 |
 
+### 接进 DSH（MCP）
+
+记忆要真被模型用上，需要把它当工具暴露出去。yuanling 自带一个**零依赖的 MCP server**（`mcp-server.mjs`，stdio + 换行 JSON-RPC），提供两个工具：
+
+| 工具 | 干什么 |
+|---|---|
+| `yuanling_context` | 取回记忆卡 + `[惦记]` + 在场人物卡（私聊传 `channel`） |
+| `yuanling_recall` | 按词检索记忆，返回事实与证据指针 |
+
+**用一条命令登记，不用手改 YAML：**
+
+```powershell
+yuanling mcp install      # 自动找到 profile，写进 cordis.patch.yml（幂等）
+yuanling mcp status       # 看装没装、路径对不对
+yuanling mcp uninstall    # 整块摘掉，其余配置原样保留
+```
+
+多 profile 时加 `--profile <名字>`；profile 不在默认位置时用 `--dir <目录>`。改完**重启 DSH** 才生效。
+
+它写进去的东西长这样（标记内由命令维护，标记外是你的地盘）：
+
+```yaml
+# === yuanling MCP BEGIN ===
+# 由 `yuanling mcp install` 维护；整块会被替换，请勿手工编辑内部条目。
+- insert:
+    - id: mcp-yuanling
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: yuanling
+        transport: stdio
+        command: '<node 的绝对路径>'
+        args:
+          - '<仓库里的 mcp-server.mjs 绝对路径>'
+        toolCallTimeoutMs: 30000
+# === yuanling MCP END ===
+```
+
+> 为什么需要命令而不是手改：条目里含**绝对路径**（每台机器都不同）；手改的东西没有幂等保障，重装、换 profile 就会丢；卸载时用户也不知道该删哪几行。写前会留一份 `cordis.patch.yml.bak-yuanling`。
+>
+> 为什么不直接用插件钩子：DSH 给插件的入口只有「排队一个回合」（`sessionController.prompt`），那会把 `[惦记]` 变成一条"用户说的话"，污染对话记录。MCP 是干净的读通道——模型按需调用。
+>
+> **它有个隐性依赖**：模型不一定每轮都会主动调工具。可以观察几天，真不调再考虑在 DSH 预设提示里加一句。
+
 ---
 
 ## 常用命令
