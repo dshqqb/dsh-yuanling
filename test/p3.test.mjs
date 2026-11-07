@@ -7,7 +7,7 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
-import { localIso } from '../src/core/fsx.js'
+import { localIso, ulid } from '../src/core/fsx.js'
 import { parsePointer, resolvePointer } from '../src/core/pointer.js'
 import {
   addFact,
@@ -222,17 +222,23 @@ test('card：有事实时包含骨架 / 最深刻 / 索引', () => {
 test('card：超预算会裁掉「最新」，但绝不动「骨架」', () => {
   const root = tmpRoot()
   const { ptr } = seedRaw(root)
+  // 文本必须唯一：只差序号的话会被 bigram 查重吃掉，卡片根本撑不起来
   for (let i = 0; i < 40; i += 1) {
     addFact(root, PID, {
       topic: `主题${i % 5}`,
-      text: `这是第 ${i} 条相当长的事实描述，用来把卡片撑爆，看看裁剪逻辑是否守规矩。`,
+      text: `第${i}条记录 ${ulid()} 用来把卡片撑爆，看看裁剪逻辑是否守规矩`,
       src: ptr,
       imp: 60 + (i % 30),
     })
   }
-  // 600 字节：放得下"骨架 + 最初 + 索引"，但放不下 10 条「最新」，以此逼出裁剪
-  const card = buildCard(root, PID, { budget: 600 })
-  assert.ok(Buffer.byteLength(card, 'utf8') <= 600, `卡片 ${Buffer.byteLength(card, 'utf8')} 字节超预算`)
+
+  // 先量出这张卡实际多大，再把预算压到刚好放不下——不猜数字
+  const full = buildCard(root, PID, { budget: 1_000_000 })
+  assert.ok(full.includes('[最新]'), '前提：这张卡本来是有「最新」的')
+  const budget = Buffer.byteLength(full, 'utf8') - 20
+
+  const card = buildCard(root, PID, { budget })
+  assert.ok(Buffer.byteLength(card, 'utf8') <= budget, `卡片 ${Buffer.byteLength(card, 'utf8')} 字节仍超预算 ${budget}`)
   assert.match(card, /\[骨架\]/)
   assert.ok(!/\[最新\]/.test(card), '预算不够时必须先砍「最新」')
 })

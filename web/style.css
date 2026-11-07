@@ -241,6 +241,21 @@ textarea { width: 100%; min-width: 0; resize: vertical; line-height: 1.7; }
   max-height: 460px; overflow: auto;
 }
 
+/* ── 柱状图（只画真实数据）──────────────────────────────────────────── */
+
+.chart {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 170px; padding-top: 8px;
+}
+.bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.bar {
+  width: 100%; border-radius: 8px 8px 3px 3px;
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  min-height: 2px;
+}
+.bar.is-empty { background: var(--pill); }
+.bar-label { display: block; text-align: center; font-size: 10.5px; color: var(--muted); margin-top: 6px; height: 14px; }
+
 /* ── 空态 ───────────────────────────────────────────────────────────── */
 
 .empty {

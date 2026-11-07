@@ -7,6 +7,13 @@ import { loadEffectiveRules, recentRefusals } from './rules.js'
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
 import { loadIdentities, readProfile, writeProfile } from './entities.js'
+import { listDays, readDay, today } from './raw.js'
+
+/**
+ * 粗略 token 估算：以中文为主的文本，UTF-8 一个字 3 字节，1 token ≈ 0.7 字。
+ * 折算下来 1 token ≈ 4.3 字节。误差 ±30%，**不是账单**，只用来判断量级。
+ */
+const BYTES_PER_TOKEN = 4.3
 
 export function buildStatus(root) {
   const marker = readMarker(root)
@@ -117,6 +124,55 @@ export function handleApi(root, url) {
 
   if (pathname === '/api/sources') {
     return { status: 200, body: { ok: true, sources: healthReport(root) } }
+  }
+
+  if (pathname === '/api/usage') {
+    const want = Number(searchParams.get('days') ?? 14)
+    const span = Math.min(90, Math.max(1, Number.isFinite(want) ? want : 14))
+
+    // 按天统计原始消息量与文本字节：这是本地能精确算出来的部分
+    const byDate = new Map()
+    for (const d of listDays(root)) {
+      let messages = 0
+      let bytes = 0
+      for (const r of readDay(root, d)) {
+        if ((r.type ?? 'message') !== 'message') continue
+        messages += 1
+        bytes += Buffer.byteLength(String(r.text ?? ''), 'utf8')
+      }
+      byDate.set(d, { messages, bytes })
+    }
+
+    const days = []
+    for (let i = span - 1; i >= 0; i -= 1) {
+      const d = today(new Date(Date.now() - i * 86_400_000))
+      const hit = byDate.get(d) ?? { messages: 0, bytes: 0 }
+      days.push({ date: d, messages: hit.messages, bytes: hit.bytes })
+    }
+
+    const totals = days.reduce(
+      (a, d) => ({ messages: a.messages + d.messages, bytes: a.bytes + d.bytes }),
+      { messages: 0, bytes: 0 },
+    )
+
+    const cardText = contextFor(root, pid, {})
+    const cardBytes = Buffer.byteLength(cardText, 'utf8')
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        span,
+        days,
+        totals: { ...totals, estTokens: Math.round(totals.bytes / BYTES_PER_TOKEN) },
+        card: { bytes: cardBytes, estTokens: Math.round(cardBytes / BYTES_PER_TOKEN) },
+        est: {
+          bytesPerToken: BYTES_PER_TOKEN,
+          note: '本地按字节估算，中文为主时误差约 ±30%；模型侧真实用量需宿主提供 usage。',
+        },
+        cost: { supported: false, note: '未接入：需要宿主给出真实 token 用量与单价，当前不做估算之外的任何推算。' },
+      },
+    }
   }
 
   if (pathname === '/api/proposals') {

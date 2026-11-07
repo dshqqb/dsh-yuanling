@@ -115,3 +115,26 @@ test('静态页：目录穿越拿不到仓库文件', async () => {
   const res = await fetch(`${url}/..%2fpackage.json`)
   assert.equal(res.status, 404)
 })
+
+test('API：usage 给出近 14 天的真实消息量与估算', async () => {
+  const res = await fetch(`${url}/api/usage?days=14`, { headers: auth() })
+  assert.equal(res.status, 200)
+  const d = await res.json()
+
+  assert.equal(d.span, 14)
+  assert.equal(d.days.length, 14)
+  assert.ok(d.totals.messages >= 1, '刚投递过一条消息')
+  assert.ok(d.totals.estTokens >= 1)
+  assert.ok(d.card.bytes > 0)
+  assert.equal(d.cost.supported, false, '费用还没接入，不能假装能算')
+  for (const x of d.days) {
+    assert.match(x.date, /^\d{4}-\d{2}-\d{2}$/)
+    assert.ok(x.messages >= 0)
+  }
+})
+
+test('管理台：页面里有「用量」入口的骨架', async () => {
+  const html = await (await fetch(`${url}/`)).text()
+  assert.match(html, /用量/)
+  assert.match(html, /usage-chart/)
+})

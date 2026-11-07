@@ -16,6 +16,7 @@ const I = {
   shield: '<path d="M12 3.6l7 2.6v5.4c0 4.4-3 7.4-7 8.8-4-1.4-7-4.4-7-8.8V6.2l7-2.6z" stroke-linejoin="round"/>',
   plug: '<path d="M9 3.5v4M15 3.5v4" stroke-linecap="round"/><path d="M6.5 7.5h11v3.2a5.5 5.5 0 01-11 0V7.5z" stroke-linejoin="round"/><path d="M12 16.5v4" stroke-linecap="round"/>',
   ban: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4" stroke-linecap="round"/>',
+  chart: '<path d="M4 20V9M9.3 20V4M14.7 20v-7M20 20v-4" stroke-linecap="round"/>',
 }
 
 const NAV = [
@@ -26,6 +27,7 @@ const NAV = [
   { id: 'proposals', label: '提案', icon: 'spark' },
   { id: 'people', label: '人物', icon: 'user' },
   { id: 'rules', label: '规则', icon: 'shield' },
+  { id: 'usage', label: '用量', icon: 'chart' },
   { id: 'sources', label: '来源', icon: 'plug' },
   { id: 'refusals', label: '拒绝记录', icon: 'ban' },
 ]
@@ -352,6 +354,38 @@ async function loadRules() {
   $('rule-src').textContent = d.sources.length ? `来源：${d.sources.join(' → ')}` : '（无规则文件，全部取默认）'
 }
 
+async function loadUsage() {
+  const d = await api('/api/usage?days=14')
+  $('usage-span').textContent = `${d.days[0]?.date ?? ''} → ${d.days[d.days.length - 1]?.date ?? ''}`
+
+  const box = $('usage-cards')
+  box.innerHTML = ''
+  box.append(
+    stat('消息', d.totals.messages, `近 ${d.span} 天`),
+    stat('估算 token', d.totals.estTokens, '由字节换算'),
+    stat('当前卡片', `${d.card.bytes} B`, `≈ ${d.card.estTokens} token`),
+    stat('费用', '—', '未接入'),
+  )
+
+  // 柱子只画真实数据：没有消息的那天就是 0，不做平滑、不编造
+  const chart = $('usage-chart')
+  chart.innerHTML = ''
+  const max = Math.max(1, ...d.days.map((x) => x.messages))
+  d.days.forEach((x, i) => {
+    const col = el('div', 'bar-col')
+    col.title = `${x.date} · ${x.messages} 条 · ${(x.bytes / 1024).toFixed(1)} KB`
+    const bar = el('div', x.messages ? 'bar' : 'bar is-empty')
+    bar.style.height = `${Math.max(2, Math.round((x.messages / max) * 100))}%`
+    col.append(bar)
+    if (i % 3 === 0 || i === d.days.length - 1) {
+      col.append(el('span', 'bar-label', x.date.slice(5)))
+    }
+    chart.append(col)
+  })
+
+  $('usage-cost').textContent = d.cost.note
+}
+
 async function loadSources() {
   const d = await api('/api/sources')
   const box = $('sources-out')
@@ -399,6 +433,7 @@ const loaders = {
   proposals: loadProposals,
   people: loadPeople,
   rules: loadRules,
+  usage: loadUsage,
   sources: loadSources,
   refusals: loadRefusals,
 }
