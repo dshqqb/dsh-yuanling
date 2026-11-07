@@ -11,7 +11,9 @@ import { exists, isDir, readJson, writeJsonAtomic, localIso, ulid } from './fsx.
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
 
-export const PLATFORMS = ['qq', 'bili', 'pet', 'dsh']
+// 账号平台清单：解析器认得的与绑定层接受的**必须是同一张表**，
+// 否则会出现"描述写对了、绑定报不认识"这种漂移（p15 就是这么挂的）。
+export const PLATFORMS = ['qq', 'bili', 'weibo', 'wechat', 'xhs', 'tg', 'github', 'pet', 'dsh']
 
 export function identitiesPath(root) {
   return path.join(root, P.identities)
@@ -226,7 +228,129 @@ export function ensureFirstMet(root, pid, uid, now = localIso()) {
   return { first: true, profile }
 }
 
-// ── 人物页要用的三个操作 ────────────────────────────────────────────────
+// ── 自然语言身份描述 ────────────────────────────────────────────────────
+//
+// 为什么要用一段话而不是一排输入框：以后加 telegram / 小红书 / github，
+// 只要改下面的别名表，历史记录能重跑，用户不用重填。
+//
+// 纪律：**原文是正本，解析结果是派生。** 解析错了不丢原文；解析器升级后 reparse 一遍即可。
+
+export const PLATFORM_ALIASES = [
+  { platform: 'qq', re: /(?:qq|QQ|企鹅号)/i, value: /[0-9]{4,12}/ },
+  { platform: 'bili', re: /(?:b\s*站|B站|bilibili|哔哩哔哩)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
+  { platform: 'weibo', re: /(?:微博|weibo)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
+  { platform: 'wechat', re: /(?:微信|wechat)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
+  { platform: 'xhs', re: /(?:小红书|xhs)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
+  { platform: 'tg', re: /(?:telegram|tg)/i, value: /@?[A-Za-z0-9_]{3,}/ },
+  { platform: 'github', re: /(?:github)/i, value: /@?[A-Za-z0-9_-]{2,}/ },
+]
+
+/** 去掉"号是 / 账号叫 / uid:" 这类连接词，只留值。 */
+function stripLead(rest) {
+  return rest.replace(
+    /^(?:\s*(?:账号|帐号|号码|号|uid|id|昵称|名字|名称|是|为|叫|有|在)\s*(?:是|为|叫|：|:|=)?\s*)+/i,
+    '',
+  )
+}
+
+/**
+ * 从一段话里解析出账号。
+ * @returns {{items:Array<{platform,id}>, unparsed:string[], segments:number}}
+ */
+export function parseIdentityText(text) {
+  const s = String(text ?? '')
+  const items = []
+  const unparsed = []
+  const segs = s
+    .split(/[\n，,；;、|]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+
+  for (const seg of segs) {
+    let matchedPlatform = null
+    for (const a of PLATFORM_ALIASES) {
+      const m = a.re.exec(seg)
+      if (!m) continue
+      matchedPlatform = a.platform
+      const rest = stripLead(seg.slice(m.index + m[0].length))
+      // "我的 b 站还没注册" 这类话不该解析出一个叫「还没注册」的账号
+      if (/^(还没|没有|没|无|未|不)/.test(rest)) break
+      const v = a.value.exec(rest)
+      if (v && v[0]) {
+        const id = v[0].replace(/^@/, '')
+        if (!items.some((x) => x.platform === a.platform && x.id === id)) items.push({ platform: a.platform, id })
+        matchedPlatform = null // 认出来了
+        break
+      }
+      break // 提到平台但没认出值
+    }
+    if (matchedPlatform) unparsed.push(seg)
+  }
+
+  return { items, unparsed, segments: segs.length }
+}
+
+/**
+ * 写入身份描述：存原文 → 解析 → 把**还没有归属**的账号自动绑上。
+ * 已经被别人占用的账号不抢，记进 conflicts 交给人。
+ */
+export function setIdentityText(root, uid, text, { autoLink = true } = {}) {
+  const data = loadIdentities(root)
+  const person = data.people[uid]
+  if (!person) throw new Error(`人物不存在：${uid}`)
+
+  const parsed = parseIdentityText(text)
+  person.identity_text = String(text ?? '')
+  person.identity_parsed = parsed.items
+  person.identity_unparsed = parsed.unparsed
+  person.identity_parsed_at = localIso()
+  saveIdentities(root, data)
+
+  const linked = []
+  const conflicts = []
+  if (autoLink) {
+    for (const item of parsed.items) {
+      const cur = findByIdentity(root, item.platform, item.id)
+      if (cur && cur.uid === uid) continue
+      if (cur) {
+        conflicts.push({ ...item, owner: cur.uid })
+        continue
+      }
+      linkIdentity(root, uid, {
+        platform: item.platform,
+        id: item.id,
+        state: 'inferred',
+        confidence: 0.8,
+        evidence: ['identity_text'],
+      })
+      linked.push(item)
+    }
+  }
+
+  const fresh = loadIdentities(root)
+  return { person: fresh.people[uid], parsed, linked, conflicts }
+}
+
+/** 重新解析所有人物（解析器升级后跑一次）。 */
+export function reparseIdentityTexts(root, { autoLink = false } = {}) {
+  const data = loadIdentities(root)
+  const out = []
+  for (const person of Object.values(data.people)) {
+    if (!person.identity_text) continue
+    const parsed = parseIdentityText(person.identity_text)
+    person.identity_parsed = parsed.items
+    person.identity_unparsed = parsed.unparsed
+    person.identity_parsed_at = localIso()
+    out.push({ uid: person.uid, items: parsed.items.length, unparsed: parsed.unparsed.length })
+  }
+  saveIdentities(root, data)
+  if (autoLink) {
+    for (const row of out) {
+      setIdentityText(root, row.uid, loadIdentities(root).people[row.uid].identity_text, { autoLink })
+    }
+  }
+  return out
+}
 
 /**
  * 重要人物：这是"她多在意他"的判断，所以存在人格档案里（pinned 布尔）。

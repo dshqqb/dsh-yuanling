@@ -368,6 +368,9 @@ async function openPersonEditor(p) {
   $('person-editor').hidden = false
   $('person-title').textContent = `${d2.person.display}（${p.uid}）`
   $('person-display').value = d2.person.display || ''
+  $('person-identity').value = d2.person.identity_text || ''
+  const parsedBits = (d2.person.identity_parsed ?? []).map((x) => `${x.platform}:${x.id}`)
+  $('person-identity-msg').textContent = parsedBits.length ? `已识别：${parsedBits.join('、')}` : ''
   $('person-sketch').value = d2.profile?.sketch || ''
   $('person-weight').value = d2.profile?.weight_source === 'manual' ? d2.profile.weight : ''
   $('person-msg').textContent = d2.profile ? '' : '（还没有档案，保存后会新建）'
@@ -404,6 +407,16 @@ async function savePerson() {
     display: $('person-display').value,
     sketch: $('person-sketch').value,
   })
+
+  // 身份描述：原文存下来，解析由核心做；没归属的账号会自动绑上
+  const text = $('person-identity').value
+  const r = await postApi('/api/person/identity', { uid: state.personUid, text })
+  const bits = []
+  if (r.parsed.length) bits.push(`识别出 ${r.parsed.map((x) => `${x.platform}:${x.id}`).join('、')}`)
+  if (r.linked.length) bits.push(`新绑定 ${r.linked.length} 个`)
+  if (r.conflicts.length) bits.push(`${r.conflicts.length} 个账号已属于别人，没有抢`)
+  if (r.unparsed.length) bits.push(`没认出：${r.unparsed.join(' / ')}`)
+  $('person-identity-msg').textContent = bits.join('；')
 
   const raw = $('person-weight').value.trim()
   if (raw !== '') {

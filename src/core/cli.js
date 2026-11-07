@@ -32,6 +32,7 @@ import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
 import { refreshWeights, setManualWeight, clearManualWeight } from './weights.js'
+import { setIdentityText } from './entities.js'
 import { scan as scanProposals, listProposals, findProposal, approve, reject, rollback, sweep, readPolicy } from './proposals.js'
 
 const EXIT = { OK: 0, GENERAL: 1, CONFIG: 2, ROOT: 3, INTEGRITY: 4, LOCKED: 5 }
@@ -104,6 +105,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling person list|new|show|link|merge|split|profile
   yuanling person candidates|confirm <n>|reject <n>
   yuanling person weight [refresh] | set <uid> <0-100> | auto <uid>
+  yuanling person identity <uid> [--text "QQ 号是 12345，b站叫老张"] [--no-link]
   yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
   yuanling identity correct <uid> --platform bili --id 123
@@ -813,6 +815,34 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         }
         const r = splitIdentity(root, uid, flags.platform, flags.id)
         out(`✓ 已把 ${flags.platform}:${flags.id} 拆到新人物 ${r.uid}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'identity') {
+        const uid = _[2]
+        if (!uid) {
+          err('用法：yuanling person identity <uid> [--text "QQ 号是 12345，b站叫老张"]')
+          return EXIT.CONFIG
+        }
+        const text = flags.text === undefined ? null : String(flags.text)
+        if (text === null) {
+          const data = loadIdentities(root)
+          const person = data.people[uid]
+          if (!person) {
+            err(`没有这个人物：${uid}`)
+            return EXIT.CONFIG
+          }
+          out(person.identity_text || '（还没有身份描述）')
+          for (const it of person.identity_parsed ?? []) out(`  解析：${it.platform}:${it.id}`)
+          for (const s of person.identity_unparsed ?? []) out(`  没认出：${s}`)
+          return EXIT.OK
+        }
+        const r = setIdentityText(root, uid, text, { autoLink: !flags['no-link'] })
+        out(`✓ 已保存身份描述（解析出 ${r.parsed.items.length} 个账号）`)
+        for (const it of r.parsed.items) out(`  ${it.platform}:${it.id}`)
+        for (const it of r.linked) out(`  + 已绑定 ${it.platform}:${it.id}`)
+        for (const c of r.conflicts) out(`  ! ${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
+        for (const s of r.parsed.unparsed) out(`  没认出：${s}`)
         return EXIT.OK
       }
 

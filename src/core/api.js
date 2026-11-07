@@ -6,7 +6,7 @@ import { healthReport } from './inbox.js'
 import { loadEffectiveRules, recentRefusals } from './rules.js'
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
-import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin } from './entities.js'
+import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
 import { listDays, readDay, today } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 
@@ -257,6 +257,23 @@ export function handleApiWrite(root, url, body) {
         return { status: 200, body: { ok: true, proposal: rollback(root, pid, id) } }
       }
       return { status: 400, body: { ok: false, error: `未知动作：${action}` } }
+    }
+
+    if (pathname === '/api/person/identity') {
+      const uid = String(b.uid ?? '')
+      if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
+      const r = setIdentityText(root, uid, String(b.text ?? ''), { autoLink: b.autoLink !== false })
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          identityText: r.person.identity_text,
+          parsed: r.parsed.items,
+          unparsed: r.parsed.unparsed,
+          linked: r.linked,
+          conflicts: r.conflicts,
+        },
+      }
     }
 
     if (pathname === '/api/person/pin') {
