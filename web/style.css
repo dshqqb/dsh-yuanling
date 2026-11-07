@@ -208,6 +208,17 @@ input:not([type='checkbox']), textarea {
 input:not([type='checkbox']):focus, textarea:focus { border-color: var(--accent); }
 textarea { width: 100%; min-width: 0; resize: vertical; line-height: 1.7; }
 
+/* 顶栏搜索：胶囊本身就是输入框，别再叠一层底色（否则会出现"框里还有个框"） */
+.search input:not([type='checkbox']) {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  min-width: 0;
+  height: 100%;
+}
+.search input:not([type='checkbox']):focus { border-color: transparent; }
+
 .check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
 .check input { accent-color: var(--accent); }
 
