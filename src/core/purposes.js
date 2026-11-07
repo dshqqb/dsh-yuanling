@@ -134,6 +134,62 @@ export function duePurposes(items, drives = {}, { now = Date.now(), limit = 2 } 
   return open.slice(0, Math.max(0, limit))
 }
 
+/** 同一条目的冷却窗口：刚提过就别再提，否则每次对话都在追同一件事。 */
+export const SELECT_RECENT_MS = 6 * 3_600_000
+/** 同一条目的最大提及次数，超过就自动放下。 */
+export const SELECT_MAX_HITS = 2
+
+/**
+ * 挑这一轮要说哪几条「惦记」。
+ *
+ * 三层过滤，对应三种真实的骚扰：
+ *   ① 刚提过（6 小时内）→ 冷却
+ *   ② 已经提够次数 → 放下（由调用方关掉）
+ *   ③ 一轮里两条话说的是同一件事 → 只留一条
+ *
+ * @returns {{picked:Array, exhausted:string[], cooled:number}}
+ */
+export function selectIntent(
+  items,
+  drives = {},
+  { now = Date.now(), limit = 2, recentMs = SELECT_RECENT_MS, maxHits = SELECT_MAX_HITS } = {},
+) {
+  const exhausted = []
+  let cooled = 0
+  const pool = []
+
+  for (const p of Array.isArray(items) ? items : []) {
+    if (!p || p.status !== 'open') continue
+    if (Date.parse(p.due) > now) continue
+
+    const hits = Number(p.hits ?? 0)
+    if (hits >= maxHits) {
+      exhausted.push(p.id)
+      continue
+    }
+    const last = p.last_hit ? Date.parse(p.last_hit) : 0
+    if (last && now - last < recentMs) {
+      cooled += 1
+      continue
+    }
+    pool.push(p)
+  }
+
+  pool.sort(
+    (a, b) =>
+      (Number(drives[b.need]) || 0) - (Number(drives[a.need]) || 0) ||
+      String(b.created).localeCompare(String(a.created)),
+  )
+
+  const picked = []
+  for (const p of pool) {
+    if (picked.length >= Math.max(0, limit)) break
+    if (picked.some((q) => textSimilarity(q.text, p.text) >= 0.55)) continue
+    picked.push(p)
+  }
+  return { picked, exhausted, cooled }
+}
+
 export function closePurpose(doc, id, { now = Date.now(), reason = '' } = {}) {
   const items = Array.isArray(doc.items) ? doc.items : []
   const hit = items.find((p) => p.id === id)

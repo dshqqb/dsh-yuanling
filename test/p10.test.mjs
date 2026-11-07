@@ -52,8 +52,9 @@ const styleText = (root) => fs.readFileSync(path.join(root, styleRel(PID)), 'utf
 test('重复：同一句话再说一次不新增事实，但累计 repeat', () => {
   const root = tmpRoot()
   const src = seedRaw(root)
+  const t2 = daysAgo(2) // 只算一次：断言时再算会跨秒
   const a = addFact(root, PID, { topic: '说话方式', text: '别用颜文字', src, now: daysAgo(3) })
-  const b = addFact(root, PID, { topic: '说话方式', text: '别用颜文字', src, now: daysAgo(2) })
+  const b = addFact(root, PID, { topic: '说话方式', text: '别用颜文字', src, now: t2 })
 
   assert.equal(a.added, true)
   assert.equal(b.added, false)
@@ -62,7 +63,7 @@ test('重复：同一句话再说一次不新增事实，但累计 repeat', () =
   const facts = listEntries(root, PID).flatMap((e) => e.facts)
   assert.equal(facts.length, 1, '不该多出一条事实')
   assert.equal(facts[0].repeat, 2)
-  assert.equal(facts[0].last_seen, daysAgo(2))
+  assert.equal(facts[0].last_seen, t2)
 })
 
 test('重复：证据会累积，便于日后解释"为什么提这条"', () => {

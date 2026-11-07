@@ -12,7 +12,7 @@ import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
 import { refreshDrives } from './drives.js'
-import { readPurposes, writePurposes, minePurposes, duePurposes, expirePurposes, markHit } from './purposes.js'
+import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markHit, closePurpose, SELECT_MAX_HITS } from './purposes.js'
 import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readGroup, readProfile } from './entities.js'
 import {
   ageDays,
@@ -670,11 +670,19 @@ function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMI
     const expired = expirePurposes(mined, { now })
     if (mined.added.length || expired) writePurposes(root, pid, mined)
 
-    const due = duePurposes(mined.items, drives, { now, limit })
-    if (!due.length) return null
-    if (markHit(mined, due.map((p) => p.id))) writePurposes(root, pid, mined)
+    const { picked, exhausted } = selectIntent(mined.items, drives, { now, limit })
 
-    return `[惦记] ${due.map((p) => p.text).join('；')}（想提就提，不想提就别提，别硬塞）`
+    let dirty = false
+    // 提够次数的自动放下：留着只会变成"每次都在追同一件事"
+    for (const id of exhausted) {
+      const r = closePurpose(mined, id, { now, reason: `提过 ${SELECT_MAX_HITS} 次，先放下` })
+      if (r.changed) dirty = true
+    }
+    if (picked.length && markHit(mined, picked.map((p) => p.id))) dirty = true
+    if (dirty) writePurposes(root, pid, mined)
+
+    if (!picked.length) return null
+    return `[惦记] ${picked.map((p) => p.text).join('；')}（想提就提，不想提就别提，别硬塞）`
   } catch {
     return null
   }
