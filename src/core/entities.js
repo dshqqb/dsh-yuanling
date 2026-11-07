@@ -226,6 +226,80 @@ export function ensureFirstMet(root, pid, uid, now = localIso()) {
   return { first: true, profile }
 }
 
+// ── 人物页要用的三个操作 ────────────────────────────────────────────────
+
+/**
+ * 重要人物：这是"她多在意他"的判断，所以存在人格档案里（pinned 布尔）。
+ * 不做人数上限——重要人物是你的判断，不是系统配额。
+ */
+export function setPinned(root, pid, uid, pinned = true) {
+  if (!readProfile(root, pid, uid)) throw new Error('这个人还没有档案，先让她认识他')
+  return writeProfile(root, pid, uid, {
+    pinned: Boolean(pinned),
+    __reason: pinned ? '标为重要人物' : '取消重要人物',
+  })
+}
+
+/**
+ * 管理员：这是"谁是主人"的客观事实，全库唯一，存在 identities 里。
+ * 换人必须先卸任——不允许悄悄顶掉。
+ */
+export function setAdmin(root, uid = null) {
+  const data = loadIdentities(root)
+  if (uid) {
+    if (!data.people[uid]) throw new Error(`人物不存在：${uid}`)
+    const current = Object.values(data.people).find((p) => p.tier === 'admin' && p.uid !== uid)
+    if (current) throw new Error(`${current.display} 还是管理员，先卸任再任命`)
+    data.people[uid].tier = 'admin'
+  } else {
+    for (const p of Object.values(data.people)) {
+      if (p.tier === 'admin') delete p.tier
+    }
+  }
+  saveIdentities(root, data)
+  return { adminUid: uid }
+}
+
+/** 读取当前管理员（没有就 null）。 */
+export function currentAdmin(root) {
+  const data = loadIdentities(root)
+  const hit = Object.values(data.people).find((p) => p.tier === 'admin')
+  return hit ? { uid: hit.uid, display: hit.display } : null
+}
+
+/**
+ * 人物页列表：管理员 → 重要人物 → 其余（按权重或按时间）。
+ */
+export function listPeopleForUi(root, pid, { sort = 'weight' } = {}) {
+  const data = loadIdentities(root)
+  const rows = Object.values(data.people).map((person) => {
+    const profile = readProfile(root, pid, person.uid)
+    return {
+      uid: person.uid,
+      display: profile?.display || person.display || person.uid,
+      admin: person.tier === 'admin',
+      pinned: Boolean(profile?.pinned),
+      weight: Number(profile?.weight ?? 0),
+      weightSource: profile?.weight_source ?? 'auto',
+      sketch: profile?.sketch ?? '',
+      firstMet: profile?.first_met ?? null,
+      lastMet: profile?.last_met ?? null,
+      hasProfile: Boolean(profile),
+      identities: person.identities ?? [],
+    }
+  })
+
+  const timeOf = (r) => String(r.lastMet ?? r.firstMet ?? '')
+  rows.sort(
+    (a, b) =>
+      Number(b.admin) - Number(a.admin) ||
+      Number(b.pinned) - Number(a.pinned) ||
+      (sort === 'time' ? timeOf(b).localeCompare(timeOf(a)) : b.weight - a.weight) ||
+      timeOf(b).localeCompare(timeOf(a)),
+  )
+  return rows
+}
+
 // ── 群 ──────────────────────────────────────────────────────────────────
 
 export function groupRel(pid, gid) {

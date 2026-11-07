@@ -256,6 +256,31 @@ textarea { width: 100%; min-width: 0; resize: vertical; line-height: 1.7; }
 .bar.is-empty { background: var(--pill); }
 .bar-label { display: block; text-align: center; font-size: 10.5px; color: var(--muted); margin-top: 6px; height: 14px; }
 
+/* ── 人物页：分段栏位 / 拖拽 ─────────────────────────────────────────── */
+
+.seg { display: flex; gap: 2px; padding: 3px; background: var(--pill); border-radius: 999px; margin-left: auto; }
+.seg button {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: 12.5px;
+}
+.seg button.is-active { background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+
+.zone {
+  background: var(--card); border-radius: var(--r); padding: 16px 20px;
+  margin-bottom: 16px; box-shadow: var(--shadow);
+}
+.zone-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.zone-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.zone-body { display: flex; flex-direction: column; gap: 8px; min-height: 62px; border-radius: 14px; }
+.zone-body.drop-target { outline: 1px dashed transparent; transition: outline-color 0.15s; padding: 4px; margin: -4px; }
+.zone-body.drop-hot { outline-color: var(--accent); background: rgba(47, 128, 255, 0.06); }
+.zone-empty { color: var(--muted); font-size: 12.5px; padding: 14px 4px; }
+
+.item.is-draggable { cursor: grab; }
+.item.dragging { opacity: 0.45; }
+
+input.narrow { min-width: 0; width: 110px; }
+
 /* ── 空态 ───────────────────────────────────────────────────────────── */
 
 .empty {

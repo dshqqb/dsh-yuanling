@@ -149,13 +149,36 @@
         <section id="tab-people" class="page" hidden>
           <div class="page-head">
             <h2>人物</h2>
-            <p class="muted">她对每个人的印象，按人格隔离。</p>
+            <p class="muted">她对每个人的印象。这里的排序只影响这张列表，不决定谁进上下文。</p>
+            <div class="seg" id="people-sort">
+              <button data-sort="weight" class="is-active">按权重</button>
+              <button data-sort="time">按时间</button>
+            </div>
           </div>
-          <div class="card"><div id="people-out" class="list"></div></div>
+
+          <div class="zone">
+            <div class="zone-head"><h3>管理员</h3><span class="muted small">全库唯一，换人要先卸任</span></div>
+            <div id="admin-slot" class="zone-body"></div>
+          </div>
+
+          <div class="zone">
+            <div class="zone-head"><h3>重要人物</h3><span class="muted small">把人物卡拖进来即置顶，没有人数量上限</span></div>
+            <div id="pinned-slot" class="zone-body drop-target"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>其余</h3><span class="muted small" id="people-count"></span></div>
+            <div id="people-out" class="list"></div>
+          </div>
+
           <div id="person-editor" class="card" hidden>
             <div class="card-head"><h3 id="person-title"></h3></div>
             <div class="field-row"><input id="person-display" placeholder="显示名" /></div>
             <textarea id="person-sketch" rows="5" placeholder="素描：这个人是谁、怎么说话、在意什么、别碰什么"></textarea>
+            <div class="field-row">
+              <input id="person-weight" type="number" min="0" max="100" placeholder="权重 0-100" class="narrow" />
+              <button id="person-weight-auto" class="btn ghost small">恢复自动</button>
+            </div>
             <div class="field-row">
               <button id="person-save" class="btn">保存</button>
               <span id="person-msg" class="muted small"></span>

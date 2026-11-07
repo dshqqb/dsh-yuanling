@@ -6,8 +6,9 @@ import { healthReport } from './inbox.js'
 import { loadEffectiveRules, recentRefusals } from './rules.js'
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
-import { loadIdentities, readProfile, writeProfile } from './entities.js'
+import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin } from './entities.js'
 import { listDays, readDay, today } from './raw.js'
+import { setManualWeight, clearManualWeight } from './weights.js'
 
 /**
  * 粗略 token 估算：以中文为主的文本，UTF-8 一个字 3 字节，1 token ≈ 0.7 字。
@@ -180,18 +181,15 @@ export function handleApi(root, url) {
   }
 
   if (pathname === '/api/people') {
+    const sort = searchParams.get('sort') === 'time' ? 'time' : 'weight'
     const data = loadIdentities(root)
     return {
       status: 200,
       body: {
         ok: true,
-        people: Object.values(data.people).map((p) => ({
-          uid: p.uid,
-          display: p.display,
-          aliases: p.aliases ?? [],
-          identities: p.identities ?? [],
-          hasProfile: Boolean(readProfile(root, pid, p.uid)),
-        })),
+        sort,
+        admin: currentAdmin(root),
+        people: listPeopleForUi(root, pid, { sort }),
         pending: data.pending ?? [],
       },
     }
@@ -259,6 +257,31 @@ export function handleApiWrite(root, url, body) {
         return { status: 200, body: { ok: true, proposal: rollback(root, pid, id) } }
       }
       return { status: 400, body: { ok: false, error: `未知动作：${action}` } }
+    }
+
+    if (pathname === '/api/person/pin') {
+      const uid = String(b.uid ?? '')
+      if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
+      const pinned = b.pinned === undefined ? true : Boolean(b.pinned)
+      const profile = setPinned(root, pid, uid, pinned)
+      return { status: 200, body: { ok: true, pinned: profile.pinned } }
+    }
+
+    if (pathname === '/api/person/admin') {
+      const uid = b.uid === null || b.uid === undefined || b.uid === '' ? null : String(b.uid)
+      const r = setAdmin(root, uid)
+      return { status: 200, body: { ok: true, admin: currentAdmin(root), uid: r.adminUid } }
+    }
+
+    if (pathname === '/api/person/weight') {
+      const uid = String(b.uid ?? '')
+      if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
+      if (b.weight === null || b.weight === undefined) {
+        const profile = clearManualWeight(root, pid, uid)
+        return { status: 200, body: { ok: true, weight: profile.weight, source: profile.weight_source } }
+      }
+      const profile = setManualWeight(root, pid, uid, Number(b.weight))
+      return { status: 200, body: { ok: true, weight: profile.weight, source: profile.weight_source } }
     }
 
     if (pathname === '/api/person') {

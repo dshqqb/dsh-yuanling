@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id)
 const tokenKey = 'yuanling.token'
 const themeKey = 'yuanling.theme'
 
-const state = { token: localStorage.getItem(tokenKey) || '', tab: 'status', mode: 'core' }
+const state = { token: localStorage.getItem(tokenKey) || '', tab: 'status', mode: 'core', peopleSort: 'weight' }
 
 // ── 图标（内联，不引图标库）──────────────────────────────────────────
 const I = {
@@ -302,37 +302,99 @@ async function loadProposals() {
   }
 }
 
-async function loadPeople() {
-  const d = await api('/api/people')
-  const box = $('people-out')
-  box.innerHTML = ''
-  if (!d.people.length) {
-    box.append(el('div', 'muted small', '还没有人物档案。可以先执行 yuanling person new 建一个。'))
-    return
+function personCard(p, { draggable = false } = {}) {
+  const n = el('div', 'item' + (draggable ? ' is-draggable' : ''))
+  if (draggable) {
+    n.draggable = true
+    n.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', p.uid)
+      e.dataTransfer.effectAllowed = 'move'
+      n.classList.add('dragging')
+    })
+    n.addEventListener('dragend', () => n.classList.remove('dragging'))
   }
-  for (const p of d.people) {
-    const n = el('div', 'item')
-    const body = el('div', 'body')
-    body.append(el('div', 't', p.display))
-    body.append(el('div', 's', `${p.uid} · ${p.identities.map((x) => `${x.platform}:${x.id}`).join('、') || '无账号'}`))
-    n.append(body)
 
-    const acts = el('div', 'actions')
+  const body = el('div', 'body')
+  const head = el('div', 't')
+  const tags = el('span')
+  if (p.admin) tags.append(el('span', 'tag purple', '管理员'))
+  if (p.pinned) tags.append(el('span', 'tag ok', '重要'))
+  tags.append(el('span', p.weightSource === 'manual' ? 'tag warn' : 'tag', `${p.weight}${p.weightSource === 'manual' ? ' 手动' : ''}`))
+  head.append(tags, document.createTextNode(p.display))
+
+  const accts = p.identities.map((x) => `${x.platform}:${x.id}`).join('、') || '无账号'
+  body.append(head, el('div', 's', `${p.uid} · ${accts}${p.sketch ? ' · ' + p.sketch.slice(0, 40) : ''}`))
+  n.append(body)
+
+  const acts = el('div', 'actions')
+  if (!p.admin) {
     acts.append(
-      mkBtn('编辑素描', 'small ghost', async () => {
-        const d2 = await api(`/api/person?uid=${encodeURIComponent(p.uid)}`)
-        state.personUid = p.uid
-        $('person-editor').hidden = false
-        $('person-title').textContent = `${d2.person.display}（${p.uid}）`
-        $('person-display').value = d2.person.display || ''
-        $('person-sketch').value = d2.profile?.sketch || ''
-        $('person-msg').textContent = d2.profile ? '' : '（还没有档案，保存后会新建）'
-        $('person-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      mkBtn('设为管理员', 'small ghost', async () => {
+        await postApi('/api/person/admin', { uid: p.uid })
+        await loadPeople()
       }),
     )
-    n.append(acts)
-    box.append(n)
+  } else {
+    acts.append(
+      mkBtn('卸任', 'small ghost', async () => {
+        await postApi('/api/person/admin', { uid: null })
+        await loadPeople()
+      }),
+    )
   }
+  if (p.pinned) {
+    acts.append(
+      mkBtn('移出重要', 'small ghost', async () => {
+        await postApi('/api/person/pin', { uid: p.uid, pinned: false })
+        await loadPeople()
+      }),
+    )
+  } else if (!p.admin) {
+    acts.append(
+      mkBtn('设为重要', 'small ghost', async () => {
+        await postApi('/api/person/pin', { uid: p.uid, pinned: true })
+        await loadPeople()
+      }),
+    )
+  }
+  acts.append(mkBtn('编辑', 'small ghost', () => openPersonEditor(p)))
+  n.append(acts)
+  return n
+}
+
+async function openPersonEditor(p) {
+  const d2 = await api(`/api/person?uid=${encodeURIComponent(p.uid)}`)
+  state.personUid = p.uid
+  $('person-editor').hidden = false
+  $('person-title').textContent = `${d2.person.display}（${p.uid}）`
+  $('person-display').value = d2.person.display || ''
+  $('person-sketch').value = d2.profile?.sketch || ''
+  $('person-weight').value = d2.profile?.weight_source === 'manual' ? d2.profile.weight : ''
+  $('person-msg').textContent = d2.profile ? '' : '（还没有档案，保存后会新建）'
+  $('person-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function loadPeople() {
+  const d = await api(`/api/people?sort=${state.peopleSort || 'weight'}`)
+
+  const adminSlot = $('admin-slot')
+  adminSlot.innerHTML = ''
+  const admins = d.people.filter((p) => p.admin)
+  if (!admins.length) adminSlot.append(el('div', 'zone-empty', '还没指定管理员。在下面任意一张卡上点「设为管理员」。'))
+  for (const p of admins) adminSlot.append(personCard(p))
+
+  const pinnedSlot = $('pinned-slot')
+  pinnedSlot.innerHTML = ''
+  const pinned = d.people.filter((p) => p.pinned && !p.admin)
+  if (!pinned.length) pinnedSlot.append(el('div', 'zone-empty', '把下面的人物卡拖到这里，或点「设为重要」。'))
+  for (const p of pinned) pinnedSlot.append(personCard(p))
+
+  const rest = d.people.filter((p) => !p.admin && !p.pinned)
+  $('people-count').textContent = `共 ${d.people.length} 人`
+  const box = $('people-out')
+  box.innerHTML = ''
+  if (!rest.length) box.append(el('div', 'muted small', '没有其他人物了。'))
+  for (const p of rest) box.append(personCard(p, { draggable: true }))
 }
 
 async function savePerson() {
@@ -342,6 +404,12 @@ async function savePerson() {
     display: $('person-display').value,
     sketch: $('person-sketch').value,
   })
+
+  const raw = $('person-weight').value.trim()
+  if (raw !== '') {
+    await postApi('/api/person/weight', { uid: state.personUid, weight: Number(raw) })
+  }
+
   $('person-msg').textContent = '已保存（进版本历史，可回滚）'
   await loadPeople()
 }
@@ -508,6 +576,46 @@ $('person-save').addEventListener('click', () => {
   savePerson().catch((err) => {
     $('person-msg').textContent = `失败：${err.message}`
   })
+})
+
+$('person-weight-auto').addEventListener('click', async () => {
+  if (!state.personUid) return
+  try {
+    await postApi('/api/person/weight', { uid: state.personUid, weight: null })
+    $('person-weight').value = ''
+    $('person-msg').textContent = '已恢复自动计分'
+    await loadPeople()
+  } catch (err) {
+    $('person-msg').textContent = `失败：${err.message}`
+  }
+})
+
+$('people-sort').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-sort]')
+  if (!b) return
+  state.peopleSort = b.dataset.sort
+  for (const x of $('people-sort').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
+  loadPeople().catch(() => {})
+})
+
+// 拖进「重要人物」即置顶
+const pinnedSlot = $('pinned-slot')
+pinnedSlot.addEventListener('dragover', (e) => {
+  e.preventDefault()
+  pinnedSlot.classList.add('drop-hot')
+})
+pinnedSlot.addEventListener('dragleave', () => pinnedSlot.classList.remove('drop-hot'))
+pinnedSlot.addEventListener('drop', async (e) => {
+  e.preventDefault()
+  pinnedSlot.classList.remove('drop-hot')
+  const uid = e.dataTransfer.getData('text/plain')
+  if (!uid) return
+  try {
+    await postApi('/api/person/pin', { uid, pinned: true })
+    await loadPeople()
+  } catch (err) {
+    alert(`失败：${err.message}`)
+  }
 })
 
 // ── 启动 ──────────────────────────────────────────────────────────────
