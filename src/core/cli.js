@@ -11,7 +11,7 @@ import { exists, localIso } from './fsx.js'
 import { drain, healthReport } from './inbox.js'
 import { sealDay, verifyDay, listDays, today, prevDate, recentMessages } from './raw.js'
 import { history, revertTo, scanExternalEdits, snapshotCurrent, stats as versionStats } from './version.js'
-import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, DEFAULT_SPACE } from './memory.js'
+import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, DEFAULT_SPACE, CARD_BUDGET_BYTES } from './memory.js'
 import { shield, unshield, listShields, recentRecordIds, rebuildShields } from './shield.js'
 import {
   loadIdentities,
@@ -475,7 +475,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       const text = buildCard(root, pid)
       out(text || '（卡片为空：还没有事实）')
       out('')
-      out(`—— ${Buffer.byteLength(text, 'utf8')} 字节 / 预算 800`)
+      out(`—— ${Buffer.byteLength(text, 'utf8')} 字节 / 预算 ${CARD_BUDGET_BYTES}`)
       return EXIT.OK
     }
 

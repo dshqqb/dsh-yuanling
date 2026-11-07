@@ -1,7 +1,7 @@
 // src/core/api.js —— 管理台的只读 API。
 // 写操作（屏蔽、回滚）留在 CLI 与后续版本；P8 先把"看得见"做出来。
 import { readMarker, listPersonas } from './persona.js'
-import { recall, listEntries, openEntry, contextFor, buildCard } from './memory.js'
+import { recall, listEntries, openEntry, contextFor, buildCard, CARD_BUDGET_BYTES } from './memory.js'
 import { healthReport } from './inbox.js'
 import { loadEffectiveRules, recentRefusals } from './rules.js'
 import { shield, unshield } from './shield.js'
@@ -40,9 +40,10 @@ export function handleApi(root, url) {
 
   if (pathname === '/api/card') {
     const channel = searchParams.get('channel') || null
-    const budget = Number(searchParams.get('budget') ?? 800)
+    const budgetParam = searchParams.get('budget')
+    const budget = budgetParam ? Number(budgetParam) : CARD_BUDGET_BYTES
     const text = contextFor(root, pid, { channel, budget })
-    return { status: 200, body: { ok: true, channel, text, bytes: Buffer.byteLength(text, 'utf8') } }
+    return { status: 200, body: { ok: true, channel, text, budget, bytes: Buffer.byteLength(text, 'utf8') } }
   }
 
   if (pathname === '/api/memory') {

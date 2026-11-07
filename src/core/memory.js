@@ -24,8 +24,13 @@ import {
 } from './retention.js'
 
 export const DEFAULT_SPACE = '日常'
-export const CARD_BUDGET_BYTES = 800
+// 1M 上下文下 8KB 只占 0.5%，放得下；但预算的作用是逼出取舍，不是省钱。
+export const CARD_BUDGET_BYTES = 8192
 export const RECENT_DAYS = 14
+
+// 各段配额：宁少勿滥——一条对的记忆胜过十条平庸的。
+export const QUOTA = { first: 3, deep: 6, recent: 10, people: 3 }
+export const PERSON_BUDGET_BYTES = 600
 
 // ── 路径 ────────────────────────────────────────────────────────────────
 
@@ -435,14 +440,65 @@ function byteLen(s) {
   return Buffer.byteLength(String(s), 'utf8')
 }
 
+/** 读这个人格下所有人物档案。 */
+function listPersonProfiles(root, pid) {
+  const dir = path.join(root, P.personas, pid, 'entities', 'people')
+  if (!exists(dir)) return []
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => readJson(path.join(dir, f), null))
+    .filter(Boolean)
+}
+
 /**
- * 组装每轮注入的卡片（文档 §12.3）。
- *
- * 三条带各自排序、按配额混装：
- *   最初 2 行（永不衰减、永不淘汰）/ 最深刻 3 行 / 最新 5 行
- * 预算 800 字节，从后往前裁：先砍「最新」，再砍「最深刻」，至死不动「最初」。
+ * 排人物：管理员 → 重要人物 → 其余按权重，权重相同看最近互动。
+ * 权重是"她多在意这个人"，不是"这个人多活跃"。
  */
-export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
+function rankPeople(root, pid, { skipUid = null } = {}) {
+  const data = loadIdentities(root)
+  return listPersonProfiles(root, pid)
+    .filter((p) => p.uid && p.uid !== skipUid)
+    .map((p) => {
+      const person = data.people[p.uid]
+      const tier = person?.tier === 'admin' ? 'admin' : p.tier === 'important' ? 'important' : 'normal'
+      return {
+        p,
+        person,
+        tier,
+        rank: tier === 'admin' ? 3 : tier === 'important' ? 2 : 1,
+        weight: Number(p.weight ?? 0),
+        rec: String(p.last_met ?? p.updated_at ?? p.first_met ?? ''),
+        display: p.display || person?.display || p.uid,
+      }
+    })
+    .sort((a, b) => b.rank - a.rank || b.weight - a.weight || b.rec.localeCompare(a.rec))
+}
+
+/** 单人一行，硬上限 PERSON_BUDGET_BYTES。 */
+function personLine(x) {
+  const name = x.tier === 'admin' ? `★${x.display}` : x.display
+  const acct = (x.person?.identities ?? [])[0]
+  const head = acct ? `${name}（${acct.platform}:${acct.id}）` : name
+  const bits = [head]
+  if (x.p.sketch) bits.push(String(x.p.sketch))
+  if (x.p.first_met) bits.push(`初识 ${String(x.p.first_met).slice(0, 10)}`)
+
+  let s = bits.join('：')
+  while (byteLen(s) > PERSON_BUDGET_BYTES) s = s.slice(0, -1)
+  return s
+}
+
+/**
+ * 组装每轮注入的卡片。
+ *
+ * 各段按配额混装，总预算默认 8KB：
+ *   最初 3 / 最深刻 6 / 最新 10 / 人物 3（每人 ≤600B）
+ * 裁剪顺序：最新 → 最深刻 → 人物，**永不动「最初」**。
+ * 注意：预算是**软上限**。当「骨架 + 最初 + 索引」本身就超过预算时，卡片会超出而不是继续裁——
+ * 「最初」是不可压缩的底线，宁可超几个字节，也不能把她最早认识你的那几件事挤掉。
+ */
+export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.now(), skipPersonUid = null } = {}) {
   const entries = listEntries(root, pid)
   const counts = recallCounts(root, pid, { now })
 
@@ -472,9 +528,10 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
     }
   }
 
-  const firstPick = first.sort((a, b) => String(a.created).localeCompare(String(b.created))).slice(0, 2)
-  const deepPick = deep.sort((a, b) => b.retention - a.retention).slice(0, 3)
-  const recentPick = recent.sort((a, b) => String(b.created).localeCompare(String(a.created))).slice(0, 5)
+  const firstPick = first.sort((a, b) => String(a.created).localeCompare(String(b.created))).slice(0, QUOTA.first)
+  const deepPick = deep.sort((a, b) => b.retention - a.retention).slice(0, QUOTA.deep)
+  const recentPick = recent.sort((a, b) => String(b.created).localeCompare(String(a.created))).slice(0, QUOTA.recent)
+  const peoplePick = rankPeople(root, pid, { skipUid: skipPersonUid }).slice(0, QUOTA.people)
 
   const lines = []
   const id = identityLine(root, pid)
@@ -482,21 +539,22 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   if (firstPick.length) lines.push('[最初] ' + firstPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (deepPick.length) lines.push('[最深刻] ' + deepPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (recentPick.length) lines.push('[最新] ' + recentPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
+  if (peoplePick.length) lines.push('[人物] ' + peoplePick.map(personLine).join('；'))
   lines.push(`[索引] ${active} 条事实 / ${entries.length} 个主题${shielded ? ` / ${shielded} 条已隔离` : ''}`)
 
-  // 裁：先丢「最新」，再丢「最深刻」，**永不动「最初」**
+  // 裁：最新 → 最深刻 → 人物，**永不动「最初」**
   while (byteLen(lines.join('\n')) > budget) {
-    const i = lines.findIndex((l) => l.startsWith('[最新]'))
-    if (i >= 0) {
-      lines.splice(i, 1)
-      continue
+    const order = ['[最新]', '[最深刻]', '[人物]']
+    let removed = false
+    for (const tag of order) {
+      const i = lines.findIndex((l) => l.startsWith(tag))
+      if (i >= 0) {
+        lines.splice(i, 1)
+        removed = true
+        break
+      }
     }
-    const j = lines.findIndex((l) => l.startsWith('[最深刻]'))
-    if (j >= 0) {
-      lines.splice(j, 1)
-      continue
-    }
-    break
+    if (!removed) break
   }
   return lines.join('\n')
 }
@@ -506,11 +564,13 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
  * 人格不变，变的是"这一轮该想起谁"。
  */
 export function contextFor(root, pid, { channel = null, budget = CARD_BUDGET_BYTES, now = Date.now() } = {}) {
-  const lines = [buildCard(root, pid, { budget, now })]
+  // 正在对话的人不重复出现在「人物」段里——他是这一轮的对方，不是背景
+  const channelUid = channel ? personForChannel(root, channel) : null
+  const lines = [buildCard(root, pid, { budget, now, skipPersonUid: channelUid })]
   if (channel) {
     const { kind, id } = parseChannel(channel)
     if (kind === 'private') {
-      const uid = personForChannel(root, channel)
+      const uid = channelUid
       if (uid) {
         const p = readProfile(root, pid, uid)
         if (p) {

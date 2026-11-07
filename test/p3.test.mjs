@@ -230,9 +230,11 @@ test('card：超预算会裁掉「最新」，但绝不动「骨架」', () => {
       imp: 60 + (i % 30),
     })
   }
-  const card = buildCard(root, PID)
-  assert.ok(Buffer.byteLength(card, 'utf8') <= CARD_BUDGET_BYTES, `卡片 ${Buffer.byteLength(card, 'utf8')} 字节超预算`)
+  // 600 字节：放得下"骨架 + 最初 + 索引"，但放不下 10 条「最新」，以此逼出裁剪
+  const card = buildCard(root, PID, { budget: 600 })
+  assert.ok(Buffer.byteLength(card, 'utf8') <= 600, `卡片 ${Buffer.byteLength(card, 'utf8')} 字节超预算`)
   assert.match(card, /\[骨架\]/)
+  assert.ok(!/\[最新\]/.test(card), '预算不够时必须先砍「最新」')
 })
 
 // ── 杂项 ────────────────────────────────────────────────────────────────

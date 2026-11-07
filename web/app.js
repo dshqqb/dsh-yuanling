@@ -192,7 +192,7 @@ async function loadCard() {
   const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
   const d = await api(`/api/card${q}`)
   $('card-out').textContent = d.text || '（空）'
-  $('card-meta').textContent = `${d.bytes} 字节 / 预算 800${d.channel ? ` · 频道 ${d.channel}` : ''}`
+  $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.channel ? ` · 频道 ${d.channel}` : ''}`
 }
 
 async function loadMemory() {
