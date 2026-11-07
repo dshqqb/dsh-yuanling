@@ -134,6 +134,23 @@ function backupOf(patchPath) {
 }
 
 /**
+ * 把"文件被占用"翻译成人话。
+ * Windows 上 DSH 正跑着时，profile 的 cordis.patch.yml 是热加载的，rename 会 EPERM；
+ * 直接甩 EPERM 没人看得懂，用户会以为是权限不够。
+ */
+export function friendlyWriteError(error) {
+  const code = error?.code
+  if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+    const e = new Error(
+      `写入失败：文件被占用（${code}）。如果 DSH 正在运行，请先退出 DSH 再执行——它占着 profile 的 cordis.patch.yml。`,
+    )
+    e.cause = error
+    return e
+  }
+  return error
+}
+
+/**
  * 安装（幂等）。**写前先备份**，备份文件固定名，不产生一堆垃圾。
  * @returns {{patchPath:string, changed:boolean, backup:string|null, restartRequired:boolean}}
  */
@@ -156,7 +173,11 @@ export function installMcp({
     const backup = backupOf(patchPath)
     fs.copyFileSync(patchPath, backup)
     ensureDir(path.dirname(patchPath))
-    writeFileAtomic(patchPath, after)
+    try {
+      writeFileAtomic(patchPath, after)
+    } catch (error) {
+      throw friendlyWriteError(error)
+    }
     return { patchPath, changed: true, backup, restartRequired: true }
   }
   return { patchPath, changed, backup: null, restartRequired: changed }
@@ -174,7 +195,11 @@ export function uninstallMcp({ patchPath, dryRun = false } = {}) {
   if (!dryRun) {
     const backup = backupOf(patchPath)
     fs.copyFileSync(patchPath, backup)
-    writeFileAtomic(patchPath, r.text)
+    try {
+      writeFileAtomic(patchPath, r.text)
+    } catch (error) {
+      throw friendlyWriteError(error)
+    }
     return { patchPath, changed: true, backup, restartRequired: true }
   }
   return { patchPath, changed: true, restartRequired: true }

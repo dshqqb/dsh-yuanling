@@ -546,17 +546,33 @@ $('mode-modules').addEventListener('click', () => setMode('modules'))
 $('theme-toggle').addEventListener('click', toggleTheme)
 
 $('btn-token').addEventListener('click', () => showTokenBar($('tokenbar').hidden))
-$('token-save').addEventListener('click', () => {
+$('token-save').addEventListener('click', async () => {
   state.token = $('token-input').value.trim()
   try {
     localStorage.setItem(tokenKey, state.token)
   } catch {}
-  showTokenBar(false)
+
+  const msg = $('token-msg')
   if (!state.token) {
     setConn(false, '令牌为空')
+    msg.textContent = '令牌为空'
     return
   }
-  openTab(state.tab)
+
+  // 明确的反馈：成功才收起输入条，失败把原因留在原地——
+  // 之前这里静默失败，用户只会看到"点了没反应"。
+  msg.textContent = '正在验证…'
+  try {
+    await api('/api/status')
+    msg.textContent = '✓ 已连接'
+    setConn(true)
+    showTokenBar(false)
+    await openTab(state.tab)
+  } catch (error) {
+    const reason = String(error?.message ?? error) === 'unauthorized' ? '令牌不匹配（HTTP 401）' : String(error?.message ?? error)
+    msg.textContent = `✗ ${reason}`
+    setConn(false, reason)
+  }
 })
 
 $('global-search').addEventListener('keydown', (e) => {

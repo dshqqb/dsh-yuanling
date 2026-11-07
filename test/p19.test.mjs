@@ -5,7 +5,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { MARK_BEGIN, MARK_END, buildBlock, applyBlock, stripBlock, installMcp, uninstallMcp, mcpStatus, findProfiles } from '../src/core/mcpinstall.js'
+import {
+  MARK_BEGIN,
+  MARK_END,
+  buildBlock,
+  applyBlock,
+  stripBlock,
+  installMcp,
+  uninstallMcp,
+  mcpStatus,
+  findProfiles,
+  friendlyWriteError,
+} from '../src/core/mcpinstall.js'
 import { main } from '../src/core/cli.js'
 
 function tmpDir() {
@@ -185,6 +196,16 @@ test('install：指定数据目录时写进 args，status 能读回来', () => {
   assert.ok(text.includes("'--root'"))
   assert.ok(text.includes("'D:\\yuanling'"))
   assert.equal(mcpStatus({ patchPath }).dataRoot, 'D:\\yuanling')
+})
+
+test('写盘被占用：EPERM 被翻译成「先退出 DSH」', () => {
+  const err = friendlyWriteError(Object.assign(new Error('rename EPERM'), { code: 'EPERM' }))
+  assert.match(err.message, /文件被占用/)
+  assert.match(err.message, /退出 DSH/)
+
+  // 其它错误原样返回，不要乱翻译
+  const other = Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+  assert.equal(friendlyWriteError(other), other)
 })
 
 test('CLI：数据目录没初始化时，mcp 仍然可用（它跟数据目录无关）', async () => {

@@ -4,11 +4,25 @@
   "description": "原灵 —— DSH 的长期记忆与人格底座（目录骨架 / 原始层 / 版本 / 记忆 / 规则 / 管理台 / 演化提案）",
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./web/client.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
   "bin": {
     "yuanling": "bin/yuanling.js"
   },
   "files": [
     "index.js",
+    "client.js",
     "mcp-server.mjs",
     "bin/",
     "src/",
@@ -17,11 +31,6 @@
     "README.md",
     "SECURITY.md"
   ],
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  },
   "scripts": {
     "test": "node --test",
     "cli": "node bin/yuanling.js"

@@ -80,9 +80,9 @@ function serveStatic(res, pathname) {
 
 /**
  * @param {string} root
- * @param {{token?: string}} opts
+ * @param {{token?: string, meta?: object}} opts
  */
-export function createServer(root, { token = readToken(root) } = {}) {
+export function createServer(root, { token = readToken(root), meta = null } = {}) {
   if (!token) throw new Error('控制台令牌不存在，先跑 yuanling init 或 yuanling token --reset')
 
   return http.createServer(async (req, res) => {
@@ -122,6 +122,15 @@ export function createServer(root, { token = readToken(root) } = {}) {
     }
 
     // 2) 健康检查（给脚本用）
+    // 免令牌的 /root：排查"管理台到底在服务哪个数据目录"。
+    // 之前踩过：设置页改成 D:\yuanling 后没重启，控制台仍在服务旧目录，
+    // 于是令牌永远对不上（两边是不同的 console.token），而界面上毫无提示。
+    if (url.pathname === '/root') {
+      // meta 里带着"这个进程以为自己拿到的配置"，用来分辨
+      // 「设置页读的是新配置、进程还活在新配置上」到底哪一步没生效。
+      return json(res, 200, { ok: true, service: 'yuanling', root, meta })
+    }
+
     if (url.pathname === '/health') {
       if (given !== token) return json(res, 401, { ok: false, error: 'bad token' })
       return json(res, 200, { ok: true, service: 'yuanling', sources: healthReport(root) })
@@ -163,8 +172,8 @@ export function createServer(root, { token = readToken(root) } = {}) {
  * 启动并监听。port=0 时由系统分配。
  * @returns {Promise<{server:http.Server, port:number, url:string}>}
  */
-export function listen(root, { port = 17777, host = '127.0.0.1' } = {}) {
-  const server = createServer(root)
+export function listen(root, { port = 17777, host = '127.0.0.1', meta = null } = {}) {
+  const server = createServer(root, { meta })
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {

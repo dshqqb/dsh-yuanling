@@ -9,27 +9,61 @@
 //   ③ 按配置决定是否起管理台服务（回环）
 //   ④ 把状态打到日志里，方便排障
 
-import z from '@deepseek-ai/schemastery'
+import { createRequire } from 'node:module'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { resolveRoot, validateRoot } from './src/core/paths.js'
 import { scaffold } from './src/core/scaffold.js'
 import { readMarker } from './src/core/persona.js'
 import { checkFormat } from './src/core/manifest.js'
 import { exists, localIso, readJson, writeJsonAtomic } from './src/core/fsx.js'
+import { listEntries } from './src/core/memory.js'
+import {
+  API_PREFIX,
+  NS,
+  pickRow,
+  applyPatch,
+  readConsoleToken,
+  folderPickerScript,
+  pickPathFromStdout,
+  unwrapConfigValue,
+  describeConfigValue,
+} from './src/core/settingsapi.js'
+import { findProfiles, installMcp } from './src/core/mcpinstall.js'
 
-export const name = 'yuanling'
+// ⚠️ 不能用 `import z from '@deepseek-ai/schemastery'`：
+//    这个包只发布了 lib/index.cjs，package.json 的 import 条件指向不存在的
+//    lib/index.mjs，纯 ESM import 会直接抛模块解析错误——而宿主只会报
+//    "dsh-yuanling: import failed"，看不出根因。
+//    必须用 createRequire 走 CJS 入口（surfcore 的 qq-mode.js 也踩过同一个坑）。
+const require = createRequire(import.meta.url)
+const z = require('@deepseek-ai/schemastery')
 
-/** P9 起会加 tools / systemPrompt；现在只依赖宿主配置。 */
-export const inject = []
+// 必须和包名、cordis.patch.yml 里的 id 一致：宿主按 id 去重，三处不一致会被当成
+// 两个插件实例（客户端 bundle 会执行两次，直接把 Web 启动搞挂）。
+export const name = 'dsh-yuanling'
+
+/** 设置页要挂在宿主的 webServer 上，所以必须声明依赖。 */
+export const inject = ['webServer']
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])
 
 export const Config = z.object({
-  enabled: z.boolean().default(true).description('总开关。关闭后不写盘、不启动服务，数据原样保留。'),
+  // ⚠️ `volatile` 不是装饰，是硬要求：DSH 的 settings.update 拒绝写入
+  //    「entry 里没有任何 volatile 字段」的插件
+  //    （报 Plugin entry "dsh-yuanling" has no volatile fields）。
+  //    只有标了 volatile 的字段才允许在运行时热改——设置页能改的就是这两个。
+  enabled: z
+    .boolean()
+    .default(true)
+    .description('总开关。关闭后不写盘、不启动服务，数据原样保留。')
+    .extra('volatile', true),
   dataDir: z
     .string()
     .default('')
-    .description('数据目录的绝对路径，例如 D:\\yuanling。留空则用 ~/.dsh/yuanling。'),
+    .description('数据目录的绝对路径，例如 D:\\yuanling。留空则用 ~/.dsh/yuanling。')
+    .extra('volatile', true),
   consoleEnabled: z.boolean().default(true).description('是否启动管理台（http://127.0.0.1:<端口>）。'),
   consoleHost: z.string().default('127.0.0.1').description('监听地址。默认只允许回环；改成 0.0.0.0 必须同时打开 allowRemote。'),
   consolePort: z.number().default(17777).description('管理台端口（0 = 随机）。改动需重启。'),
@@ -75,13 +109,236 @@ function syncPolicy(root, config) {
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  */
+function sendJson(res, status, body) {
+  try {
+    res.statusCode = status
+    res.setHeader('content-type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify(body))
+  } catch {
+    res.statusCode = 500
+    res.end('{}')
+  }
+}
+
+function readBody(req, limit = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks = []
+    req.on('data', (c) => {
+      size += c.length
+      if (size > limit) {
+        reject(new Error('请求体太大'))
+        req.destroy()
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+/** 改数据目录时同步 MCP 条目的 --root（幂等、有备份）。 */
+function syncMcpRoot(dir) {
+  const target = findProfiles()[0]
+  if (!target) return { changed: false, skipped: 'no-profile' }
+  try {
+    const r = installMcp({ patchPath: target.patchPath, dataRoot: dir })
+    return { changed: r.changed, patchPath: target.patchPath, backup: r.backup }
+  } catch (error) {
+    return { changed: false, error: String(error?.message ?? error) }
+  }
+}
+
+function statusOf(root, consoleUrl) {
+  const out = { root, rootOk: false, rootError: '', active: '', facts: 0, consoleUrl }
+  try {
+    if (!exists(root)) {
+      out.rootError = '目录不存在（原灵不会自动创建它）'
+      return out
+    }
+    const check = validateRoot(root)
+    if (!check.ok) {
+      const first = check.errors?.[0]
+      out.rootError = `${first?.code ?? ''} ${first?.message ?? ''}`.trim()
+      return out
+    }
+    out.rootOk = true
+    const marker = readMarker(root)
+    out.active = marker?.active ?? ''
+    if (out.active) {
+      try {
+        out.facts = listEntries(root, out.active).reduce((n, e) => n + (e.facts?.length ?? 0), 0)
+      } catch {
+        out.facts = 0
+      }
+    }
+  } catch (error) {
+    out.rootError = String(error?.message ?? error)
+  }
+  return out
+}
+
+/** 设置页的同源 API：GET 读配置，POST 写配置（客户端拿不到 settings 服务，只能走这里）。 */
+function registerSettingsApi(ctx, config, state) {
+  const webServer = ctx?.webServer
+  if (!webServer?.register) {
+    log('warn', config, '宿主没有 webServer，设置页不可用')
+    return
+  }
+
+  const handler = async (req, res) => {
+    try {
+      const conn = ctx.get?.('connection')
+      if (conn && typeof conn.requestRejection === 'function') {
+        const code = conn.requestRejection(req)
+        if (code !== undefined && code !== null && code !== false) {
+          res.statusCode = typeof code === 'number' ? code : 403
+          res.end()
+          return
+        }
+      }
+
+      const settings = ctx.get?.('settings')
+      const rows = typeof settings?.describe === 'function' ? settings.describe({ redactSecrets: true }) : []
+      const row = pickRow(rows)
+      const rawLive = row?.value ?? config
+      // 同上：设置页读出来的值也可能被包过一层
+      const live = { ...(rawLive ?? {}), dataDir: unwrapConfigValue(rawLive?.dataDir) }
+      const url = new URL(String(req.url ?? '/'), 'http://localhost')
+
+      // 一键复制令牌：只在这条同源路由上给出（已过 requestRejection，且只本机可访问）
+      if (url.searchParams.get('token') === '1') {
+        const { root: tokenRoot } = resolveRoot({ env: process.env, config: live })
+        const token = readConsoleToken(tokenRoot)
+        sendJson(
+          res,
+          token ? 200 : 404,
+          token ? { ok: true, token } : { ok: false, error: '还没有令牌：先 yuanling init，或 yuanling token --reset' },
+        )
+        return
+      }
+
+      // 原生「选择目录」：浏览器拿不到绝对路径，只能由宿主进程弹 Windows 对话框
+      if (url.searchParams.get('browse') === 'dir') {
+        if (process.platform !== 'win32') {
+          sendJson(res, 200, { ok: false, error: '只有 Windows 支持原生选择框，请手动填路径' })
+          return
+        }
+        await new Promise((resolve) => {
+          const child = execFile(
+            'powershell.exe',
+            ['-STA', '-NoProfile', '-Command', folderPickerScript()],
+            { windowsHide: true, timeout: 180_000 },
+            (error, stdout) => {
+              const picked = pickPathFromStdout(stdout)
+              if (error && !picked) sendJson(res, 200, { ok: false, error: `选择框打不开：${String(error.message ?? error).slice(0, 160)}` })
+              else if (!picked) sendJson(res, 200, { ok: false, cancelled: true })
+              else sendJson(res, 200, { ok: true, path: picked })
+              resolve()
+            },
+          )
+          child.on('error', () => {
+            sendJson(res, 200, { ok: false, error: '无法启动 PowerShell（可能不在本机桌面）' })
+            resolve()
+          })
+        })
+        return
+      }
+
+      // 客户端探针：设置页的 apply() 有没有被调用，落一行到 system/log/client.log。
+      // 客户端报错在浏览器里，我们读不到；写文件是唯一可观测的通道。
+      if (String(req.url ?? '').includes('ping=1')) {
+        try {
+          const { root: pingRoot } = resolveRoot({ env: process.env, config: live })
+          const dir = path.join(pingRoot, 'system', 'log')
+          fs.mkdirSync(dir, { recursive: true })
+          fs.appendFileSync(
+            path.join(dir, 'client.log'),
+            `${localIso()} ${req.method} ${String(req.headers?.['user-agent'] ?? '').slice(0, 60)}\n`,
+          )
+        } catch {
+          /* 探针失败不影响主流程 */
+        }
+      }
+
+      if (req.method === 'GET') {
+        const { root } = resolveRoot({ env: process.env, config: live })
+        sendJson(res, 200, {
+          ok: true,
+          config: {
+            enabled: live?.enabled !== false,
+            dataDir: live?.dataDir ?? '',
+            consoleHost: String(live?.consoleHost ?? '127.0.0.1'),
+            consolePort: Number(live?.consolePort ?? 17777),
+          },
+          status: statusOf(root, state.consoleUrl),
+        })
+        return
+      }
+
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: '只支持 GET / POST' })
+        return
+      }
+      if (!String(req.headers['content-type'] ?? '').toLowerCase().includes('application/json')) {
+        sendJson(res, 415, { ok: false, error: '写操作必须是 application/json' })
+        return
+      }
+
+      const raw = await readBody(req)
+      const body = raw ? JSON.parse(raw) : {}
+      const r = await applyPatch({
+        settings,
+        body,
+        current: live,
+        // 写回时用实际命中的 ns：早期版本 id 是 `yuanling`，老 profile 里可能还留着
+        ns: row?.ns ?? NS,
+        validate: (dir) => validateRoot(dir),
+        syncMcp: (dir) => syncMcpRoot(dir),
+      })
+      sendJson(res, 200, { ok: true, ...r })
+    } catch (error) {
+      sendJson(res, error?.status ?? 500, { ok: false, error: String(error?.message ?? error) })
+    }
+  }
+
+  try {
+    webServer.register({ kind: 'prefix', path: API_PREFIX, handler })
+  } catch (error) {
+    log('error', config, `注册设置页 API 失败：${error?.message ?? error}`)
+  }
+}
+
 export function apply(ctx, config) {
+  const state = { consoleUrl: '' }
+
+  // 设置页的 API 必须**先挂上**，即便当前 enabled=false——
+  // 否则用户在设置页关掉之后，就再也没有入口把它打开。
+  registerSettingsApi(ctx, config, state)
+
   if (!config.enabled) {
     log('info', config, '已禁用（enabled=false），不写盘、不启动服务')
     return
   }
 
-  const { root, source } = resolveRoot({ env: process.env, config })
+  // 宿主会把"被设置页改过"的字段包成惰性访问器（{ get: fn }），先解包再解析路径。
+  // 不解包的后果：dataDir 变成 "[object Object]" / "" → 回落默认目录 →
+  // 管理台换了另一份 console.token → 用户永远看到"令牌不匹配"。
+  //
+  // 双保险：优先用 settings 服务里的真值——那条路一直是好的（设置页能显示数据就是证据），
+  // 而 apply() 收到的 config 可能是包装过的。
+  const fromConfig = unwrapConfigValue(config?.dataDir)
+  let fromSettings = ''
+  try {
+    const settingsSvc = ctx.get?.('settings')
+    const rowsNow = typeof settingsSvc?.describe === 'function' ? settingsSvc.describe({ redactSecrets: true }) : []
+    fromSettings = unwrapConfigValue(pickRow(rowsNow)?.value?.dataDir)
+  } catch {
+    /* settings 服务不可用就只用 config */
+  }
+  const cfg = { ...config, dataDir: fromSettings || fromConfig }
+  const { root, source } = resolveRoot({ env: process.env, config: cfg })
 
   // 目录不存在时：
   //   · 走默认路径 → 可以自动建（首次运行的正常路径）
@@ -151,9 +408,24 @@ export function apply(ctx, config) {
 
   let server = null
   import('./src/core/server.js')
-    .then(({ listen }) => listen(root, { port: Number(config.consolePort) || 0, host }))
+    .then(({ listen }) =>
+      listen(root, {
+        port: Number(config.consolePort) || 0,
+        host,
+        // 自证：/root 会把这段原样吐出来，用来排查"配置改了但进程还用旧值"
+        meta: {
+          source,
+          dataDir: String(cfg.dataDir ?? ''),
+          dataDirRaw: describeConfigValue(config?.dataDir),
+          enabled: config.enabled !== false,
+          envHome: process.env.YUANLING_HOME ?? null,
+          pid: process.pid,
+        },
+      }),
+    )
     .then((started) => {
       server = started.server
+      state.consoleUrl = started.url
       log('info', config, `管理台：${started.url}`)
     })
     .catch((err) => {

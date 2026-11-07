@@ -1,5 +1,8 @@
 # 原灵：把自己挂进 profile 的那一层配置。
-# id 是这一行的唯一标识；name 是包名，装载器按 profile 的 node_modules 解析。
+#
+# ⚠️ id 必须与包名一致（dsh-yuanling）。
+#    宿主按 id 去重：profile.bundles 里已经有 dsh-yuanling，这里再 insert 一条 id
+#    不同的，就会被当成两个插件实例 → 客户端 bundle 执行两次 → Web 启动失败。
 - insert:
-    - id: yuanling
+    - id: dsh-yuanling
       name: dsh-yuanling
