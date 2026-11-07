@@ -428,18 +428,110 @@ export function why(root, pid, factId) {
 
 // ── 卡片 ────────────────────────────────────────────────────────────────
 
-function identityLine(root, pid) {
-  const p = path.join(root, P.personas, pid, 'persona', 'SELF.md')
-  if (!exists(p)) return ''
-  const lines = fs.readFileSync(p, 'utf8').split('\n')
-  const picks = []
-  for (const line of lines) {
-    const m = /^\s*-\s*(名字|存在的原因)\s*[:：]\s*(.+)$/.exec(line)
-    if (m) picks.push(m[2].trim())
+/**
+ * 从 SELF.md 抽「骨架」。
+ *
+ * 只有三段进上下文（其余段落是人看的）：
+ *   核心身份 → 名字 + 存在的原因
+ *   说话方式 → 三行（语气 / 口癖 / 不做的表达）
+ *   价值观   → 按优先级排的条目
+ *
+ * 为什么要把「说话方式」也注入：语气是最直接影响输出的东西，不进去等于白写。
+ * 为什么不全篇注入：骨架会抢记忆的预算，「最初 3 条」是更硬的底线。
+ */
+export const SKELETON_BYTES = { core: 120, speak: 200, values: 160 }
+
+/** 按 `## 标题` 切段，返回 { 标题: 正文 }。 */
+function splitSections(text) {
+  const out = {}
+  let title = ''
+  let buf = []
+  const flush = () => {
+    if (title) out[title] = buf.join('\n')
   }
-  if (picks.length) return picks.join('，').slice(0, 120)
-  const firstBullet = lines.find((l) => /^\s*-\s+\S/.test(l))
-  return firstBullet ? firstBullet.replace(/^\s*-\s*/, '').trim().slice(0, 120) : ''
+  for (const line of String(text ?? '').split('\n')) {
+    const m = /^##\s+(.+?)\s*$/.exec(line)
+    if (m) {
+      flush()
+      title = m[1]
+      buf = []
+      continue
+    }
+    if (title) buf.push(line)
+  }
+  flush()
+  return out
+}
+
+function clipBytes(s, maxBytes) {
+  let t = String(s ?? '').trim()
+  while (Buffer.byteLength(t, 'utf8') > maxBytes) t = t.slice(0, -1)
+  return t
+}
+
+/** 列表项（`- 标签：值`）。值本身是 `<…>` 占位符时整条跳过。 */
+function bullets(section) {
+  const out = []
+  for (const line of String(section ?? '').split('\n')) {
+    const m = /^\s*-\s+(.+)$/.exec(line)
+    if (!m) continue
+    const raw = m[1].trim()
+    if (!raw) continue
+    // 值部分才是占位符（`- 语气：<例：短句…>`）时，这条不算内容
+    const value = raw.replace(/^.*?[:：]\s*/, '')
+    if (/^<.*>$/.test(raw) || /^<.*>$/.test(value)) continue
+    out.push(raw)
+  }
+  return out
+}
+
+/** 价值观：`1. xxx` 的条目。 */
+function numbered(section) {
+  const out = []
+  for (const line of String(section ?? '').split('\n')) {
+    const m = /^\s*\d+\s*[.、]\s*(.+)$/.exec(line)
+    if (!m) continue
+    const raw = m[1].trim()
+    if (!raw || /^<.*>$/.test(raw)) continue
+    out.push(raw)
+  }
+  return out
+}
+
+/** 返回若干净的行（不含标签前缀），由 buildCard 逐行加标签。 */
+function identityLines(root, pid) {
+  const p = path.join(root, P.personas, pid, 'persona', 'SELF.md')
+  if (!exists(p)) return []
+
+  const text = fs.readFileSync(p, 'utf8')
+  const sections = splitSections(text)
+  const coreSection = sections['核心身份'] ?? ''
+  const speakSection = Object.entries(sections).find(([k]) => k.startsWith('说话方式'))?.[1] ?? ''
+  const valueSection = Object.entries(sections).find(([k]) => k.startsWith('价值观'))?.[1] ?? ''
+
+  const core = []
+  for (const line of coreSection.split('\n')) {
+    const m = /^\s*-\s*(名字|存在的原因)\s*[:：]\s*(.+)$/.exec(line)
+    if (m && !/^<.*>$/.test(m[2].trim())) core.push(m[2].trim())
+  }
+
+  const out = []
+  // 每条先去掉自己的句末标点，再统一用「；」连接——否则会出现「。；」
+  const clean = (s) => s.replace(/[。；;、]$/, '')
+
+  if (core.length) out.push(`[骨架] ${clipBytes(core.map(clean).join('，'), SKELETON_BYTES.core)}`)
+
+  const speak = bullets(speakSection)
+  if (speak.length) out.push(`[说话] ${clipBytes(speak.map(clean).join('；'), SKELETON_BYTES.speak)}`)
+
+  const values = numbered(valueSection)
+  if (values.length) out.push(`[在乎] ${clipBytes(values.map(clean).join('；'), SKELETON_BYTES.values)}`)
+
+  if (out.length) return out
+
+  // 兜底：结构不规范的老文件，至少把第一个条目当骨架
+  const firstBullet = text.split('\n').find((l) => /^\s*-\s+\S/.test(l))
+  return firstBullet ? [`[骨架] ${clipBytes(firstBullet.replace(/^\s*-\s*/, ''), SKELETON_BYTES.core)}`] : []
 }
 
 function byteLen(s) {
@@ -611,8 +703,7 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   const recentPick = recent.sort((a, b) => String(b.created).localeCompare(String(a.created))).slice(0, QUOTA.recent)
 
   const lines = []
-  const id = identityLine(root, pid)
-  if (id) lines.push(`[骨架] ${id}`)
+  lines.push(...identityLines(root, pid))
   if (firstPick.length) lines.push('[最初] ' + firstPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (deepPick.length) lines.push('[最深刻] ' + deepPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (recentPick.length) lines.push('[最新] ' + recentPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))

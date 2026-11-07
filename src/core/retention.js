@@ -9,6 +9,12 @@ import { P } from './paths.js'
 
 export const PROTECT_DAYS = 7 // 新事保护期
 export const RECENT_WINDOW_DAYS = 14 // 「最新」带的窗口
+/**
+ * 「最初」的保留下限。origin 事实哪怕重要度只有 1，也不许沉到 gone——
+ * 否则低重要度的那条"第一印象"会被 clarity 过滤掉，整个「最初」段凭空消失。
+ * 45 = 「模糊」档的下限，够低（不抢别的段），又够高（永远看得见）。
+ */
+export const ORIGIN_FLOOR = 45
 export const ACCESS_WINDOW_DAYS = 90 // 统计召回次数的时间窗
 
 const STRONG =
@@ -54,6 +60,8 @@ export function retentionOf(fact, { recall = 0, now = Date.now() } = {}) {
   if (age <= 2) r += 8
   const k = fact.origin ? 0 : imp >= 65 ? 0.12 : 0.35
   r -= Math.max(0, age - PROTECT_DAYS) * k
+  // 最初不沉底：她最早认识你的那几件事，不该因为"当时没写重要度"而消失
+  if (fact.origin && r < ORIGIN_FLOOR) r = ORIGIN_FLOOR
   return Number(r.toFixed(2))
 }
 
