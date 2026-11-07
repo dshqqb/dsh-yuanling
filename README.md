@@ -320,10 +320,12 @@ dsh plugin --profile <profile> add "D:\dsh-plugins\dsh-yuanling"
 **用一条命令登记，不用手改 YAML：**
 
 ```powershell
-yuanling mcp install      # 自动找到 profile，写进 cordis.patch.yml（幂等）
-yuanling mcp status       # 看装没装、路径对不对
-yuanling mcp uninstall    # 整块摘掉，其余配置原样保留
+yuanling mcp install --root "D:\yuanling"   # 自动找到 profile 写进去（幂等）；--root 指定读哪份记忆
+yuanling mcp status                          # 看装没装、路径对不对
+yuanling mcp uninstall                       # 整块摘掉，其余配置原样保留
 ```
+
+`--root` 很关键：它会被写进 `args`，MCP 服务器就用这份数据。**不传的话吃 `YUANLING_HOME`，再不然用默认位置**——默认位置若没 `init` 过，工具会报"数据目录不可用"。
 
 多 profile 时加 `--profile <名字>`；profile 不在默认位置时用 `--dir <目录>`。改完**重启 DSH** 才生效。
 
@@ -349,7 +351,7 @@ yuanling mcp uninstall    # 整块摘掉，其余配置原样保留
 >
 > 为什么不直接用插件钩子：DSH 给插件的入口只有「排队一个回合」（`sessionController.prompt`），那会把 `[惦记]` 变成一条"用户说的话"，污染对话记录。MCP 是干净的读通道——模型按需调用。
 >
-> **它有个隐性依赖**：模型不一定每轮都会主动调工具。可以观察几天，真不调再考虑在 DSH 预设提示里加一句。
+> **它有个隐性依赖**：模型不一定每轮都会主动调工具。目前的做法是把工具描述写得足够强硬（`【每轮必调】…不调用就等于失忆`），外加 `initialize` 里的 `instructions`——**不碰宿主预设提示**。观察几天，真不调再考虑升级。
 
 ---
 

@@ -51,7 +51,10 @@ function quote(s) {
 }
 
 /** 生成标记块（含前后标记行）。 */
-export function buildBlock({ nodeCmd = defaultNodeCmd(), serverPath = defaultServerPath() } = {}) {
+export function buildBlock({ nodeCmd = defaultNodeCmd(), serverPath = defaultServerPath(), dataRoot = null } = {}) {
+  const args = [serverPath]
+  // 数据目录用参数传，不靠宿主 env：这样换机器/换目录都不用改宿主
+  if (dataRoot) args.push('--root', dataRoot)
   return [
     MARK_BEGIN,
     '# 由 `yuanling mcp install` 维护；整块会被替换，请勿手工编辑内部条目。',
@@ -63,7 +66,7 @@ export function buildBlock({ nodeCmd = defaultNodeCmd(), serverPath = defaultSer
     '        transport: stdio',
     `        command: ${quote(nodeCmd)}`,
     '        args:',
-    `          - ${quote(serverPath)}`,
+    ...args.map((a) => `          - ${quote(a)}`),
     '        toolCallTimeoutMs: 30000',
     MARK_END,
   ].join('\n')
@@ -96,7 +99,10 @@ export function stripBlock(text) {
   return { text: joined ? `${joined}\n` : '', changed: true }
 }
 
-/** 当前状态：有没有块、里面的路径是什么。 */
+/**
+ * 当前状态：有没有块、里面的路径是什么。
+ * **只在标记块内解析**——文件里还排着别人的 MCP 条目（snowluma 那几条就在我们前面）。
+ */
 export function mcpStatus({ patchPath }) {
   let text = ''
   try {
@@ -104,15 +110,22 @@ export function mcpStatus({ patchPath }) {
   } catch {
     return { exists: false, installed: false, patchPath }
   }
-  const installed = text.includes(MARK_BEGIN) && text.includes(MARK_END)
-  const nodeMatch = /command: '([^']*)'/.exec(text)
-  const argMatch = /args:\s*\n\s*- '([^']*)'/.exec(text)
+  const begin = text.indexOf(MARK_BEGIN)
+  const end = text.indexOf(MARK_END)
+  const installed = begin >= 0 && end > begin
+  const block = installed ? text.slice(begin, end) : ''
+
+  const nodeMatch = /command: '([^']*)'/.exec(block)
+  // args 是若干单引号行；顺序 [serverPath, '--root', dataRoot]
+  const argv = [...block.matchAll(/^\s{4,}- '([^']*)'$/gm)].map((m) => m[1])
+
   return {
     exists: true,
     installed,
     patchPath,
     nodeCmd: installed ? (nodeMatch?.[1] ?? '') : '',
-    serverPath: installed ? (argMatch?.[1] ?? '') : '',
+    serverPath: installed ? (argv[0] ?? '') : '',
+    dataRoot: installed ? (argv[2] ?? '') : '',
   }
 }
 
@@ -124,12 +137,18 @@ function backupOf(patchPath) {
  * 安装（幂等）。**写前先备份**，备份文件固定名，不产生一堆垃圾。
  * @returns {{patchPath:string, changed:boolean, backup:string|null, restartRequired:boolean}}
  */
-export function installMcp({ patchPath, nodeCmd = defaultNodeCmd(), serverPath = defaultServerPath(), dryRun = false } = {}) {
+export function installMcp({
+  patchPath,
+  nodeCmd = defaultNodeCmd(),
+  serverPath = defaultServerPath(),
+  dataRoot = null,
+  dryRun = false,
+} = {}) {
   if (!patchPath) throw new Error('缺少 profile 的 cordis.patch.yml 路径')
   if (!fs.existsSync(patchPath)) throw new Error(`找不到 ${patchPath}（profile 是否装好？可用 --dir 指定）`)
 
   const before = fs.readFileSync(patchPath, 'utf8')
-  const block = buildBlock({ nodeCmd, serverPath })
+  const block = buildBlock({ nodeCmd, serverPath, dataRoot })
   const after = applyBlock(before, block)
   const changed = after !== before
 

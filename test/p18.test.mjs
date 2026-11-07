@@ -86,8 +86,9 @@ before(async () => {
   linkIdentity(root, p.uid, { platform: 'qq', id: '10001' })
   writeProfile(root, PID, p.uid, { sketch: '话不多，爱较真' })
 
-  child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, YUANLING_HOME: root },
+  // 用 --root 传数据目录：这正是 mcp install 写进 args 的形式
+  child = spawn(process.execPath, [SERVER, '--root', root], {
+    env: { ...process.env, YUANLING_HOME: '' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   call = makeClient(child)
@@ -114,6 +115,13 @@ test('tools/list：两个工具，schema 都是 object', async () => {
     assert.equal(t.inputSchema.type, 'object')
     assert.ok(t.description, '工具必须有描述，否则模型不知道什么时候调')
   }
+})
+
+test('tools/list：context 的描述写明「每轮必调」——不靠宿主提示也能提醒模型', async () => {
+  const res = await call('tools/list', {})
+  const ctxTool = res.result.tools.find((t) => t.name === 'yuanling_context')
+  assert.match(ctxTool.description, /每轮必调/)
+  assert.match(ctxTool.description, /不调用就等于失忆/)
 })
 
 test('yuanling_context：私聊取回记忆卡与在场的人', async () => {

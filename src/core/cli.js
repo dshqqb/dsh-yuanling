@@ -162,22 +162,25 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       return EXIT.OK
     }
 
-    // 以下命令都要求 root 已经存在：不存在就拒绝，绝不自动新建
-    const check = validateRoot(root)
-    if (!check.ok) {
-      err('✗ 数据目录不可用：')
-      for (const e of check.errors) err(`  · ${e.code}: ${e.message}`)
-      const missing = check.errors.some((e) => e.code === 'ROOT_MISSING')
-      if (missing) {
-        err('')
-        err('  这个路径还没有被初始化。先运行：')
-        err(`    yuanling init --root "${root}"`)
-        err('  （如果它本该已经存在，检查盘符是否插好、dataDir 是否指错——原灵不会替你新建目录）')
-      } else {
-        err('')
-        err('  提示：检查目录权限，或换一个当前用户可写的位置。')
+    // 以下命令都要求 root 已经存在：不存在就拒绝，绝不自动新建。
+    // 例外：mcp —— 它只改 profile 的 cordis.patch.yml，跟数据目录无关。
+    if (cmd !== 'mcp') {
+      const check = validateRoot(root)
+      if (!check.ok) {
+        err('✗ 数据目录不可用：')
+        for (const e of check.errors) err(`  · ${e.code}: ${e.message}`)
+        const missing = check.errors.some((e) => e.code === 'ROOT_MISSING')
+        if (missing) {
+          err('')
+          err('  这个路径还没有被初始化。先运行：')
+          err(`    yuanling init --root "${root}"`)
+          err('  （如果它本该已经存在，检查盘符是否插好、dataDir 是否指错——原灵不会替你新建目录）')
+        } else {
+          err('')
+          err('  提示：检查目录权限，或换一个当前用户可写的位置。')
+        }
+        return EXIT.ROOT
       }
-      return EXIT.ROOT
     }
 
     if (cmd === 'status') {
@@ -583,6 +586,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         if (st.installed) {
           out(`命令       ${st.nodeCmd}`)
           out(`服务器     ${st.serverPath}`)
+          out(`数据目录   ${st.dataRoot || '（未指定：用 YUANLING_HOME 或默认位置）'}`)
         } else {
           out('跑 `yuanling mcp install` 即可登记，无需手改 YAML')
         }
@@ -594,6 +598,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
           patchPath: target.patchPath,
           nodeCmd: flags.node ? String(flags.node) : defaultNodeCmd(),
           serverPath: flags.server ? String(flags.server) : defaultServerPath(),
+          // --data-root 优先；也接受 --root（和别的命令习惯一致）
+          dataRoot: flags['data-root'] ? String(flags['data-root']) : flags.root ? String(flags.root) : null,
           dryRun: Boolean(flags['dry-run']),
         })
         if (!r.changed) {

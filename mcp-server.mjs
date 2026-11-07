@@ -15,9 +15,16 @@ import { contextFor, recall } from './src/core/memory.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.1.0' }
 
-/** 数据根目录：YUANLING_HOME 优先，其次默认位置。 */
+/** 数据根目录：--root 参数 > YUANLING_HOME > 默认位置。 */
+function rootFromArgv(argv = process.argv.slice(2)) {
+  const i = argv.indexOf('--root')
+  if (i >= 0 && argv[i + 1]) return argv[i + 1]
+  const eq = argv.find((a) => a.startsWith('--root='))
+  return eq ? eq.slice('--root='.length) : null
+}
+
 function openRoot() {
-  const { root } = resolveRoot({}) // 注意：返回 { root, source }，不是字符串
+  const { root } = resolveRoot({ cli: rootFromArgv() }) // 注意：返回 { root, source }，不是字符串
   const check = validateRoot(root)
   if (!check.ok) {
     const first = check.errors?.[0]
@@ -35,13 +42,15 @@ const TOOLS = [
   {
     name: 'yuanling_context',
     description:
-      '读取原灵的长期记忆上下文（记忆卡 + 惦记的事 + 当前在场人物卡）。在开始一轮新对话、或需要"想起"过去时调用。返回纯文本，直接当作背景信息使用。',
+      '【每轮必调】读取原灵的长期记忆：记忆卡 + 惦记着的事 + 当前在场人物卡。\n' +
+      '规则：每次开始新一轮对话、或对方提到过去的人/事时，**先调用本工具再开口**——不调用就等于失忆。\n' +
+      '不需要对方要求，这是你的常规动作。返回纯文本，直接当作背景信息使用。',
     inputSchema: {
       type: 'object',
       properties: {
         channel: {
           type: 'string',
-          description: '会话频道，如 private:10001 或 group:123456。不传则只返回记忆卡。',
+          description: '会话频道，如 private:10001 或 group:123456。私聊/群聊都应尽量传，这样才能带出对应的人物卡。',
         },
         participants: {
           type: 'array',
@@ -54,7 +63,9 @@ const TOOLS = [
   },
   {
     name: 'yuanling_recall',
-    description: '按关键词检索原灵的长期记忆，返回命中的事实与其证据指针（指针可用来解释"为什么记得"）。',
+    description:
+      '按关键词检索原灵的长期记忆，返回命中的事实与其证据指针。\n' +
+      '当需要确认某件具体的事、或想在回答里说明"我为什么记得"时调用；比 yuanling_context 更细。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -129,7 +140,7 @@ function handle(req) {
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
         instructions:
-          '这是原灵（yuanling）的长期记忆。开始一轮对话前，先调用 yuanling_context 取回记忆；需要具体细节时用 yuanling_recall。',
+          '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；需要具体细节时再用 yuanling_recall。',
       })
       return
     }

@@ -5,17 +5,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import {
-  MARK_BEGIN,
-  MARK_END,
-  buildBlock,
-  applyBlock,
-  stripBlock,
-  installMcp,
-  uninstallMcp,
-  mcpStatus,
-  findProfiles,
-} from '../src/core/mcpinstall.js'
+import { MARK_BEGIN, MARK_END, buildBlock, applyBlock, stripBlock, installMcp, uninstallMcp, mcpStatus, findProfiles } from '../src/core/mcpinstall.js'
+import { main } from '../src/core/cli.js'
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p19-'))
@@ -160,4 +151,53 @@ test('findProfiles：只认有 cordis.patch.yml 的目录', () => {
   const list = findProfiles(home)
   assert.equal(list.length, 1)
   assert.equal(list[0].name, 'desktop')
+})
+
+test('status：文件里还排着别人的 MCP 条目时，只认自己块内的路径', () => {
+  const dir = tmpDir()
+  const withForeign = `# === qq-bridge MCP BEGIN ===
+- insert:
+    - id: mcp-snowluma
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: snowluma
+        transport: stdio
+        command: 'D:\\Program Files\\nodejs\\node.exe'
+        args:
+          - 'D:\\doc\\surfcore\\src\\mcp-snowluma-safe.js'
+# === qq-bridge MCP END ===
+`
+  const patchPath = writePatch(dir, withForeign)
+  installMcp({ patchPath, nodeCmd: 'node', serverPath: '/tmp/y/mcp-server.mjs', dataRoot: '/tmp/data' })
+
+  const st = mcpStatus({ patchPath })
+  assert.match(st.serverPath, /mcp-server\.mjs/, '不能读到 snowluma 的路径')
+  assert.ok(!st.serverPath.includes('mcp-snowluma-safe'))
+  assert.equal(st.dataRoot, '/tmp/data')
+})
+
+test('install：指定数据目录时写进 args，status 能读回来', () => {
+  const dir = tmpDir()
+  const patchPath = writePatch(dir)
+  installMcp({ patchPath, nodeCmd: 'node', serverPath: '/tmp/m.mjs', dataRoot: 'D:\\yuanling' })
+
+  const text = fs.readFileSync(patchPath, 'utf8')
+  assert.ok(text.includes("'--root'"))
+  assert.ok(text.includes("'D:\\yuanling'"))
+  assert.equal(mcpStatus({ patchPath }).dataRoot, 'D:\\yuanling')
+})
+
+test('CLI：数据目录没初始化时，mcp 仍然可用（它跟数据目录无关）', async () => {
+  const dir = tmpDir()
+  writePatch(dir)
+  // 故意不给 root：真机上首次跑 mcp install 就是这种状态
+  const prev = process.env.YUANLING_HOME
+  process.env.YUANLING_HOME = path.join(dir, 'not-initialized')
+  try {
+    const code = await main(['mcp', 'status', '--dir', dir])
+    assert.equal(code, 0, '不该因为没有数据目录就失败')
+  } finally {
+    if (prev === undefined) delete process.env.YUANLING_HOME
+    else process.env.YUANLING_HOME = prev
+  }
 })
