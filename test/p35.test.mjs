@@ -57,7 +57,7 @@ function makeTgz(files = { 'yuanling.module.json': JSON.stringify(MANIFEST, null
 }
 
 /** 假 fetch：按 URL 路由，返回预置 JSON 或字节。 */
-function fakeFetch({ releases = {}, tgz = null, status = 200 } = {}) {
+function fakeFetch({ releases = {}, tags = null, tgz = null, status = 200 } = {}) {
   const calls = []
   const impl = async (url) => {
     const u = String(url)
@@ -71,6 +71,10 @@ function fakeFetch({ releases = {}, tgz = null, status = 200 } = {}) {
         arrayBuffer: async () => tgz,
         json: async () => ({}),
       }
+    }
+    // tags 端点：只在"没有发行版"的失败路径上才会被问到
+    if (/\/tags(?:\?|$)/.test(u)) {
+      return jsonRes(Array.isArray(tags) ? tags.map((name) => ({ name })) : [], tags ? 200 : 404)
     }
     if (/releases/.test(u)) {
       for (const [key, val] of Object.entries(releases)) {
@@ -224,7 +228,9 @@ test('url：直链就原样用，不去查发行版（省一次请求）', async
 })
 
 test('url：库没发行版 / 资产没 tgz / 库不存在，三句话都要能照着做', async () => {
-  const empty = await resolveInstallUrl('https://gitee.com/o/r', { fetchImpl: fakeFetch({ releases: { 'gitee.com': [] } }) }).catch((e) => e)
+  const empty = await resolveInstallUrl('https://gitee.com/o/r', {
+    fetchImpl: fakeFetch({ releases: { 'gitee.com/api/v5/repos/o/r/releases': [] }, tags: [] }),
+  }).catch((e) => e)
   assert.match(empty.message, /还没有发行版/)
   assert.match(empty.message, /pack\.mjs/, '要告诉人包怎么来')
 
@@ -243,6 +249,33 @@ test('url：库没发行版 / 资产没 tgz / 库不存在，三句话都要能�
   }).catch((e) => e)
   assert.equal(missing.code, 'E_NO_REPO')
   assert.match(missing.message, /404/)
+})
+
+test('url：只有 tag 没有发行版时，错误要说清"tag 不等于能装"', async () => {
+  // 这是最常见的坑：开发者以为推 tag 就够了，但模块装的是 release 里的 .tgz 资产
+  const fetchImpl = fakeFetch({
+    releases: { 'gitee.com/api/v5/repos/o/r/releases': [] },
+    tags: ['v0.1.0', 'v0.1.1'],
+  })
+  const err = await resolveInstallUrl('https://gitee.com/o/r', { fetchImpl }).catch((e) => e)
+  assert.match(err.message, /有 tag 但没有发行版/)
+  assert.match(err.message, /v0\.1\.1/, '要把找到的 tag 列出来，便于判断"是不是我推错了"')
+  assert.match(err.message, /光有 tag 不够/)
+})
+
+test('url：Gitee 列表是旧→新升序——拿满再排序，才认得出最新版', async () => {
+  // Gitee 返回升序，若只取前 N 条会拿到最老的那批（真踩过：per_page=1 看到的是 v0.1.0）
+  const fetchImpl = fakeFetch({
+    releases: {
+      'gitee.com/api/v5/repos/o/r/releases': [
+        { tag_name: 'v0.1.0', created_at: '2026-11-08T18:40:00+08:00', assets: [{ name: 'a-0.1.0.tgz', browser_download_url: 'https://g/a-0.1.0.tgz' }] },
+        { tag_name: 'v0.1.1', created_at: '2026-11-09T00:08:00+08:00', assets: [{ name: 'a-0.1.1.tgz', browser_download_url: 'https://g/a-0.1.1.tgz' }] },
+      ],
+    },
+  })
+  const r = await resolveInstallUrl('https://gitee.com/o/r', { fetchImpl })
+  assert.equal(r.ref, 'v0.1.1', '要挑最新的那个，不是列表里第一个')
+  assert.match(String(fetchImpl.calls[0]), /per_page=100/, '要拿满，别只取前几条')
 })
 
 test('url：http（非本机）/ 看不懂的地址都要在下载前就拒', async () => {

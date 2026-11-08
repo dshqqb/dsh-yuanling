@@ -180,8 +180,8 @@ function buildNav() {
       b.append(el('span', `tag ${stateCls} nav-tag`.trim(), stateText))
       b.title = `${m.name || m.id}（${m.id}） · v${m.version} · ${stateText}`
       b.addEventListener('click', () => openModule(m.id))
-      // 自动检查发现新版就挂个角标（不弹窗，不打断）
-      if (m._hasUpdate) b.append(el('span', 'tag ok nav-tag', `v${m._hasUpdate}`))
+      // 有新版挂个版本角标（不弹窗，不打断）。数据来自 state.modules[].update
+      if (m.update) b.append(el('span', 'tag ok nav-tag', `v${m.update}`))
       nav.append(b)
     }
     return
@@ -1305,8 +1305,11 @@ async function openModule(id) {
   const d = await api(`/api/module?id=${encodeURIComponent(id)}`)
   const m = d.module
   // 留住详情：列表里没有 uiTabs / configFields，点 tab 时要靠这一份判断页型
+  // 同时把"有没有新版"带过来（列表那份可能已经被自动检查标过）
+  m.update = state.modules.find((x) => x.id === id)?.update ?? null
   state.moduleDetail = m
   showModuleView(id, id)
+  renderUpdateBadge()
 
   $('module-title').textContent = moduleDisplayName(m)
   $('module-subtitle').textContent = `${m.id} · v${m.version}${m.description ? ` · ${m.description}` : ''}`
@@ -1453,7 +1456,13 @@ $('module-toggle').addEventListener('change', async () => {
   }
 })
 
-/** 检查更新：只查元数据（不下载），有新版就弹窗问要不要更新。 */
+/**
+ * 检查更新：只查元数据（不下载），有新版就弹窗问要不要更新。
+ *
+ * "有没有新版"只存在一个地方：`state.modules[].update`。
+ * DOM 上的角标每次由 renderUpdateBadge() 从数据推导——之前把 DOM 的 hidden 当状态存，
+ * 结果手动查完（已是最新）清掉了角标，列表一重建又按内存里的旧标记挂回来（真踩过）。
+ */
 $('module-check-update').addEventListener('click', async () => {
   const id = state.moduleId
   if (!id) return
@@ -1463,20 +1472,20 @@ $('module-check-update').addEventListener('click', async () => {
   msg.textContent = '正在查发行版…（只查版本，不下载）'
   try {
     const r = await postApi('/api/modules/check-update', { id })
+    setUpdateState(id, r.hasUpdate ? r.latest : null)
+
     if (!r.hasUpdate) {
       msg.textContent = `已是最新（本地 ${r.current}，远端 ${r.latest ?? '—'}）`
-      $('module-update-badge').hidden = true
       return
     }
     msg.textContent = `发现新版本 ${r.latest}（当前 ${r.current}）`
-    $('module-update-badge').hidden = false
     if (confirm(`「${id}」有新版本 ${r.latest}（当前 ${r.current}）。\n\n现在更新吗？更新会重新下载并覆盖当前版本，模块会短暂重启。`)) {
       msg.textContent = '正在下载并安装…'
       await postApi('/api/modules/install-url', { url: r.repo })
+      setUpdateState(id, null)
       await loadModules()
       await openModule(id)
       $('module-msg').textContent = '✓ 已更新'
-      $('module-update-badge').hidden = true
     }
   } catch (err) {
     msg.textContent = `检查失败：${err.message}`
@@ -1484,6 +1493,27 @@ $('module-check-update').addEventListener('click', async () => {
     btn.disabled = false
   }
 })
+
+/** 记下某个模块有没有新版（null = 没有/未知）。同时刷新菜单角标与详情角标。 */
+function setUpdateState(id, latest) {
+  const m = state.modules.find((x) => x.id === id)
+  if (m) m.update = latest || null
+  if (state.moduleDetail && state.moduleDetail.id === id) state.moduleDetail.update = latest || null
+  renderUpdateBadge()
+  buildNav()
+}
+
+/** 详情页右上角那个"有新版本"标签：只从数据推导，不接受命令式开关。 */
+function renderUpdateBadge() {
+  const badge = $('module-update-badge')
+  if (!badge) return
+  const latest = state.moduleDetail?.update ?? null
+  badge.hidden = !latest
+  if (latest) {
+    badge.textContent = `有新版本 ${latest}`
+    badge.title = '点「检查更新」查看并更新'
+  }
+}
 
 /**
  * 自动检查更新：进模块模式时顺手查一次，**6 小时内不重复查**。
@@ -1509,11 +1539,8 @@ async function autoCheckUpdates() {
     if (!m.repo) continue // 本地装的没法查
     try {
       const r = await postApi('/api/modules/check-update', { id: m.id })
-      if (r.hasUpdate) {
-        // 只在列表上打一个角标，不弹窗——自动检查不该打断人
-        m._hasUpdate = r.latest
-        if (state.moduleView === m.id) $('module-update-badge').hidden = false
-      }
+      // 统一走 setUpdateState：它同时管内存与两处角标
+      setUpdateState(m.id, r.hasUpdate ? r.latest : null)
     } catch {
       /* 查不到就算了：网络问题不该冒泡到界面 */
     }

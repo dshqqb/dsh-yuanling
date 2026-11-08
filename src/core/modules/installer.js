@@ -140,7 +140,7 @@ export async function resolveInstallUrl(raw, { fetchImpl = globalThis.fetch, tim
   const api =
     repo.host === 'github.com'
       ? `https://api.github.com/repos/${repo.owner}/${repo.repo}/releases`
-      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/releases?per_page=20`
+      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/releases?per_page=100`
 
   let releases = null
   try {
@@ -172,6 +172,17 @@ export async function resolveInstallUrl(raw, { fetchImpl = globalThis.fetch, tim
 
   const list = Array.isArray(releases) ? releases : []
   if (!list.length) {
+    // 区分"只是没建发行版"和"推了 tag 但没建发行版"——后者最常见：
+    // 开发者以为推 tag 就够了，但模块装在 release 的 .tgz 资产上，tag 本身没有包。
+    const tags = await peekTags(repo, fetchImpl, timeoutMs)
+    if (tags.length) {
+      throw new Error(
+        `这个库有 tag 但没有发行版（release）：${repoUrl}\n` +
+          `找到 tag：${tags.slice(0, 5).join(' / ')}\n` +
+          '模块装的是发行版里的 .tgz 附件，光有 tag 不够——去建一个 release，把 tgz 作为附件传上去；\n' +
+          '或者直接填那个 .tgz 的直链。',
+      )
+    }
     throw new Error(
       `这个库还没有发行版：${repoUrl}\n` +
         '去库里建一个发行版（Release），把 scripts/pack.mjs 打出来的 .tgz 作为附件传上去，再回来装；\n' +
@@ -239,7 +250,7 @@ export async function checkUpdate(repoUrl, currentVersion, { fetchImpl = globalT
   const api =
     repo.host === 'github.com'
       ? `https://api.github.com/repos/${repo.owner}/${repo.repo}/releases`
-      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/releases?per_page=20`
+      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/releases?per_page=100`
 
   let list = []
   try {
@@ -283,6 +294,31 @@ function _apiHeaders(host) {
   return host === 'github.com'
     ? { 'user-agent': 'yuanling-module-installer', accept: 'application/vnd.github+json' }
     : { 'user-agent': 'yuanling-module-installer', accept: 'application/json' }
+}
+
+/**
+ * 看这个库有没有 tag（只在"没有发行版"的失败路径上问一次）。
+ * 目的不是拿 tag 来装——tag 里没有打好的 tgz——而是把错误说准：
+ * "推了 tag 却没建 release"和"什么都没发"是两种不同的坑。
+ */
+async function peekTags(repo, fetchImpl, timeoutMs) {
+  if (typeof fetchImpl !== 'function') return []
+  const api =
+    repo.host === 'github.com'
+      ? `https://api.github.com/repos/${repo.owner}/${repo.repo}/tags`
+      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/tags?per_page=20`
+  try {
+    const res = await fetchImpl(api, {
+      headers: _apiHeaders(repo.host),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+    })
+    if (!res.ok) return []
+    const json = await res.json()
+    return (Array.isArray(json) ? json : []).map((t) => String(t?.name ?? '')).filter(Boolean)
+  } catch {
+    // 探测失败不该盖住原本的错误信息
+    return []
+  }
 }
 
 /**
