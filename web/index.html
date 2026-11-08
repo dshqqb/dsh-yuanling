@@ -238,71 +238,116 @@
         </section>
 
         <section id="page-modules" class="page" hidden>
-          <div class="page-head">
-            <h2>模块</h2>
-            <p class="muted">模块是独立进程，只通过标准协议与核心交换数据；能力（能不能收、能不能发）由这里授予。</p>
-            <div class="seg" id="module-refresh-wrap">
-              <button id="module-refresh" class="is-active">刷新</button>
-            </div>
-          </div>
-
-          <div class="card" id="module-summary-card">
-            <div id="module-summary" class="stat-row"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <h3>已安装</h3>
-              <span class="muted small" id="module-count"></span>
-            </div>
-            <div id="module-list" class="list"></div>
-          </div>
-
-          <div id="module-detail" class="card" hidden>
-            <div class="card-head">
-              <h3 id="module-title"></h3>
-              <button id="module-close" class="btn ghost small">关闭</button>
-            </div>
-
-            <div id="module-meta" class="kv"></div>
-
-            <div class="subhead">能力</div>
-            <div id="module-caps" class="list"></div>
-
-            <div class="subhead">配置</div>
-            <div id="module-config" class="muted small"></div>
-
-            <div class="subhead">日志</div>
-            <pre id="module-log" class="logbox"></pre>
-
-            <div class="field-row">
-              <button id="module-export" class="btn ghost small">导出 tgz</button>
-              <button id="module-toggle" class="btn ghost small">停用</button>
-              <button id="module-uninstall" class="btn ghost small danger">卸载</button>
-              <span id="module-msg" class="muted small"></span>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head"><h3>安装新模块</h3></div>
-            <div class="field-row">
-              <input id="module-file" placeholder="库的网址（https://gitee.com/owner/repo）或 .tgz 直链，也可以填本地 .tgz 路径" />
-              <button id="module-install" class="btn">安装</button>
-            </div>
-            <div class="muted small">填库的网址会自动去它的发行版里找 .tgz 包；国内优先用 Gitee。</div>
-            <div class="muted small" id="module-install-msg"></div>
-            <div id="module-grant-box" hidden>
-              <div class="subhead">这个模块声明的能力（默认未授予）</div>
-              <ul id="module-grant-list" class="list"></ul>
-              <div class="field-row">
-                <button id="module-grant-all" class="btn ghost small">全部授予</button>
-                <button id="module-grant-skip" class="btn ghost small">先不授予</button>
-                <span id="module-grant-msg" class="muted small"></span>
+          <div id="module-console">
+            <div class="page-head">
+              <h2>控制台</h2>
+              <p class="muted">模块是独立进程，只通过标准协议与核心交换数据；能力（能不能收、能不能发）由这里授予。</p>
+              <div class="seg" id="module-refresh-wrap">
+                <button id="module-refresh" class="is-active">刷新</button>
               </div>
             </div>
+
+            <div class="card" id="module-summary-card">
+              <div id="module-summary" class="stat-row"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head"><h3>安装新模块</h3></div>
+              <div class="field-row">
+                <input id="module-file" placeholder="库的网址（https://gitee.com/owner/repo）或 .tgz 直链，也可以填本地 .tgz 路径" />
+                <button id="module-install" class="btn">安装</button>
+              </div>
+              <div class="muted small">填库的网址会自动去它的发行版里找 .tgz 包；国内优先用 Gitee。</div>
+              <div class="muted small" id="module-install-msg"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>已安装</h3>
+                <span class="muted small" id="module-count"></span>
+              </div>
+              <div id="module-list" class="list"></div>
+            </div>
+          </div>
+
+          <div id="module-detail" hidden>
+            <div class="page-head">
+              <h2 id="module-title"></h2>
+              <p class="muted" id="module-subtitle"></p>
+              <div class="seg">
+                <button id="module-back" class="is-active">← 回控制台</button>
+                <button id="module-refresh-one">刷新</button>
+              </div>
+            </div>
+
+            <!-- tab 条：前两个永远是概况/日志，第三个起由模块提供（协议待定） -->
+            <div class="seg module-tabs" id="module-tabs"></div>
+
+            <div id="module-panel-brief">
+              <div class="card">
+                <div class="card-head"><h3>概况</h3></div>
+                <div id="module-meta" class="kv"></div>
+                <div class="field-row" id="module-actions">
+                  <button id="module-toggle" class="btn ghost small">停用</button>
+                  <button id="module-export" class="btn ghost small">导出 tgz</button>
+                  <button id="module-uninstall" class="btn ghost small danger">卸载</button>
+                  <span id="module-msg" class="muted small"></span>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <h3>能力</h3>
+                  <span class="muted small">授予之后它才能做对应的事</span>
+                </div>
+                <div id="module-caps" class="list"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <h3>规则与配置</h3>
+                  <span class="muted small" id="module-config-hint"></span>
+                </div>
+                <div id="module-rules" class="muted small"></div>
+                <div id="module-config-form" class="config-form"></div>
+                <div class="field-row" id="module-config-actions" hidden>
+                  <button id="module-config-save" class="btn small">保存并重启模块</button>
+                  <span id="module-config-msg" class="muted small"></span>
+                </div>
+              </div>
+            </div>
+
+            <div id="module-panel-log" hidden>
+              <div class="card">
+                <div class="card-head">
+                  <h3>日志</h3>
+                  <span class="muted small" id="module-log-hint"></span>
+                </div>
+                <pre id="module-log" class="logbox"></pre>
+              </div>
+            </div>
+
+            <!-- 模块自定义 tab 的内容区（协议定了之后由模块下发的控件渲染） -->
+            <div id="module-panel-custom" hidden></div>
           </div>
         </section>
       </main>
+    </div>
+  </div>
+
+  <!-- 安装后的授权弹窗：一次列全、一个决定。不逐条勾选——逐条只会让人闭眼按回车。 -->
+  <div id="grant-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="grant-modal-title">授予能力</h3>
+      </div>
+      <p class="muted small" id="grant-modal-desc">这个模块申请下面这些能力。授予之后它才能做对应的事；不授予它就装上空转，随时可以回来补授。</p>
+      <div id="grant-modal-list" class="list"></div>
+      <div class="modal-foot">
+        <button id="grant-modal-skip" class="btn ghost small">先不授予</button>
+        <button id="grant-modal-ok" class="btn small">全部授予</button>
+      </div>
+      <div class="muted small" id="grant-modal-msg"></div>
     </div>
   </div>
 

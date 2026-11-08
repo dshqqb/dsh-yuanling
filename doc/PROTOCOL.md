@@ -1,6 +1,8 @@
-# PROTOCOL · 原灵模块协议（v1.1）
+# PROTOCOL · 原灵模块协议（v1.2）
 
-> 状态：**v1.1 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过；v1.1 的两刀都已落地：① `sources` 声明、`provide.source` 能力、安装即空授权；② `source.fetch` 与模型工具 `yuanling_sources` / `yuanling_fetch`。
+> 状态：**v1.2 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> v1.1：① `sources` 声明、`provide.source` 能力、安装即空授权；② `source.fetch` 与模型工具 `yuanling_sources` / `yuanling_fetch`。
+> v1.2：③ manifest 增 `ui.tabs`，新增只读 op `ui.get`——模块能给管理台加标签页，但**只能给数据，不能给标记**（见 §3.5 / §5.2.3）。
 > 谱系：glm v0.1 → ds v0.2 → glm v0.3 → ds v0.3-ds → **本文（合并定稿）**。三方评审的全部结论已并入正文，修订史见文末附录；`PROTOCOL_glm.md`、`PROTOCOL_ds.md`、`PROTOCOL_ds_0.3.md` 为历史评审稿，已归档。
 > spike 逼出来的东西优先于本文任何一段推演。
 >
@@ -107,6 +109,8 @@
 
 其余字段（description、name）变化静默通过。注册表记 `installedRef` 与 `version`；旧版本目录保留，回滚 = 把注册表指回去。核心**永不**因模块崩溃而自动更新。
 
+**`ui` 也静默通过**（v1.2）：标签页的名称、顺序、增删都属于"展示"，不该让用户为改个名字重新走一遍安装确认。代价是它不能承载任何能力语义——`ui.tabs` 里只能声明渲染形态，做不了别的事（§3.5）。
+
 更新时的授权：**取交集**（新 manifest 里已不声明的能力自动失效），**不自动扩权**——新增的能力仍需人再点一次。
 
 ### 2.3 切换模块网址
@@ -199,10 +203,18 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 ### 3.1 config：配置归核心
 
 - 模块只声明 schema（JSON Schema 子集：`type / properties / required / enum / default / description`）。
-- 实际值存 `system/modules/<id>/config.json`，由管理台按 schema 渲染。
+- 实际值存 `system/modules/<id>/config.json`，由管理台按 schema 渲染——**是表单，不是一段 JSON**（v1.1 落地）。
 - 模块通过 `config.get` 取值，**不自己读文件**；cookie / token 一类只存在核心侧。
 - `config.schema` 是版本 diff 的一部分：新增必填项 → 更新时要求人补。
 - **配置变更的生效方式只有一种**：核心发 `shutdown`，再按新配置重新 spawn + `init`。模块永不热更新。
+- **核心在写盘前按 schema 校验**（v1.1 落地，`modules/configschema.js`）：
+  - 必填项缺失/空白 → 拒绝，并指出是哪个字段；
+  - 类型可转换（`"123"` → `123`、`"true"` → `true`），转不了就报错，**不静默变 NaN**；
+  - `enum` 之外的值拒绝；
+  - 未在 `properties` 里声明的键**丢弃并如实报告**（否则用户会以为存上了）；
+  - 子集外的关键字（`pattern`、`oneOf`…）**忽略并标出来**，不假装支持。
+- 设置密码类字段（`sessdata` / `token` / `cookie`…）时页面用密码框；schema 里可用 `"x-secret": true` 显式声明。
+- 保存成功 → 核心**重启该模块**（停用状态的不重启，等启用时再读）。启动失败不算保存失败：配置已经落盘，失败只在响应里多一个 `runtime.error`。
 
 ### 3.2 id 保留字
 
@@ -229,9 +241,40 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | `gateway` | 收消息 → `ingest`；接收 `send` | ✅ 实现 |
 | `actuator` | 由核心触发产出媒体（TTS / 绘图 / 视频） | ⬜ **接口写死，调用返回 `E_UNSUPPORTED`**（§5.2.1） |
 | `enricher` | 加工管道（转写 / 翻译 / 摘要） | ⬜ 只保留类型名，顺序语义未定 |
-| `ui` | 管理台扩展 UI | ❌ 删除。将来只允许"声明式面板：模块出 JSON，核心渲染" |
+| `ui` | 管理台扩展 UI | ❌ 删除。UI 走 v1.2 的 `ui.tabs`——**模块出 JSON，核心渲染**（§3.5） |
 
 `presence` capability 一并删除——语义没想清楚的能力不该存在。
+
+### 3.5 `ui`：模块能给管理台加只读标签页（v1.2）
+
+```jsonc
+"api": "1.2",
+"ui": {
+  "tabs": [
+    { "id": "stats", "label": "统计", "kind": "kv"   },   // 键值对
+    { "id": "queue", "label": "待办", "kind": "list" },   // 列表
+    { "id": "notes", "label": "说明", "kind": "text" }    // 一段文字
+  ]
+}
+```
+
+**核心只认三种 `kind`**（封闭词表）：`kv` / `list` / `text`。模块**给不出** HTML、JS、CSS、样式或布局——它只能表达"给我画一个键值对/列表/一段文字"，画法由核心定。
+
+为什么这么死：管理台握着 `console.token`，能读全部记忆、改规则、卸模块。模块一旦能在页面里执行脚本，等于拿到整个记忆库的钥匙。这条线不值得为了"界面灵活"让路。
+
+约束：
+
+| 项 | 规则 |
+|---|---|
+| `id` | `^[a-z][a-z0-9-]{1,23}$`，不可重复，**不能是 `brief` / `log`**（核心保留） |
+| `label` | 必填，≤16 字，不能叫「概况」「日志」 |
+| `kind` | `kv` / `list` / `text`，缺省 `text` |
+| 数量 | 最多 **5 个** |
+| 位置 | 固定排在「概况」「日志」之后 |
+
+**`ui` 不进 §2.2 的 diff 清单**：调整一个 tab 的名字，不该让人重新确认一次安装。正因为它"改了不提示"，校验才卡得这么紧（kind 封闭、不许占核心 tab、不许内嵌标记）。
+
+`ui` 需要 `api ≥ "1.2"`，与 `sources` 需要 `1.1` 同理——旧核心装上去只会得到一个永远不会来的 `ui.get`。
 
 ## §4 传输与帧
 
@@ -266,6 +309,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | `init`（等 `ready`） | 30s | 冷启动含依赖初始化 |
 | `ingest` / `media.put.file` / `media.get` / `propose.fact` | 10s | 核心侧是本地写 |
 | `send` | 30s | 平台 API 慢是常态；按 10s 误判 undelivered 会真丢回复 |
+| `ui.get`（v1.2） | 15s | 允许模块现查一次自己的状态；比默认 10s 宽一点，又不至于卡住页面 |
 | `source.fetch`（v1.1） | 30s | 模块这一侧会去联网（B 站 / 网页），按 send 那一档，不能套 10s 默认 |
 | `actuate` | 300s | 语音/视频生成轻松超过 10s，一刀切会杀掉正常生成 |
 | `shutdown` | `deadline_ms` 自带 | 核心关停前预告 |
@@ -302,6 +346,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | `ping` | `{}` | `{}`（同一 id 的普通响应） | 心跳，见 §8.1 |
 | `actuate` | `{kind, input, trace}` | `{path, mime, size}` | **v1 一律 `E_UNSUPPORTED`**；形状见 §5.2.1 |
 | `source.fetch` | `{source, params, limit, trace}` | 标准 inbox 信封 `{v:1, source, acct, items[]}` | **v1.1 已实现**；需模块声明 `provide.source` + `sources`；见 §5.2.2 |
+| `ui.get` | `{tab}` | `{data}`（按 manifest 声明的 kind） | **v1.2 已实现**；只读；需 manifest 声明 `ui.tabs`；见 §5.2.3 |
 | `shutdown` | `{reason, deadline_ms}` | — | 预告关停；超时强杀 |
 
 **`send` 的字段语义**：
@@ -365,6 +410,27 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 失败语义：`E_NO_ROUTE`（没有模块声明这个 source，**或那个模块此刻没在运行**——不返回空结果冒充"确实没有"）/ `E_NO_CAP`（模块没被授予 `provide.source`）/ `E_RATE`（超频：每模块每分钟 10 次）/ `E_PROTO`（信封版本不对）/ `E_UNSUPPORTED`（模块没实现）。**一律不重试、不猜**；取不到就是取不到。
 
 **模型这一侧的实现约束**（v1.1 落地时的选择）：模块进程只活在被 DSH 加载的那个插件进程里，而模型工具跑在独立的 MCP 进程里。所以取数走一条内网回环：MCP 进程读 `system/console.json` 拿到控制台地址（端口可以是随机分配的，不能假定 17777）→ 带 `console.token` POST `/api/sources/fetch` → 插件宿主把它转成 `source.fetch`。控制台没在跑时**如实报"控制台没在运行"**，不假装"没有数据"。
+
+#### 5.2.3 `ui.get` 的形状（v1.2，已实现）
+
+```jsonc
+// 核心 → 模块：把某个自定义 tab 的数据给我
+{ "op":"ui.get", "id":"…", "data":{ "tab":"stats" } }
+
+// 模块 → 核心：按 manifest 里声明的 kind 回数据，**只回数据**
+{ "id":"…", "ok":true, "result":{ "data":{ "在线":7, "队列":2 } } }          // kind: kv
+{ "id":"…", "ok":true, "result":{ "data":[{ "title":"任务一", "sub":"排队中" }] } } // kind: list
+{ "id":"…", "ok":true, "result":{ "data":{ "text":"一段说明" } } }            // kind: text
+```
+
+规则：
+
+1. **`tab` 必须是 manifest 里声明过的 id**，否则 `E_NO_ROUTE`；核心不信模块临时发明的 tab。
+2. **kind 由 manifest 决定，不由响应决定**：声明 `kv` 却回数组 → `E_BAD_REQUEST`，整块拒。半截渲染的数据比不渲染更误导人。
+3. **限幅**：`list`/`kv` 最多 200 行、单字段 500 字、`text` 最多 16KB，超了截断并在响应里标 `truncated`。tab 是给人看的，不是数据传输通道。
+4. **只读**：`ui.get` 不改变任何状态。模块要"被点一下做点什么"是 v1.3 的事（`ui.action`，必须白名单 action id + 每次记审计），现在没有。
+5. 模块没在跑 → `E_NO_ROUTE`，**不返回空内容**：页面显示"这个 tab 是空的"会让人以为模块坏了。
+6. 超时 15s：这个 op 允许模块现查一次状态（比如读自己的队列），比默认的 10s 宽一点。
 
 ### 5.3 capability：封闭词表
 
@@ -577,3 +643,4 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 | 合并稿 + ds 校订 | ① `YUANLING_TMP` 语义统一：它就是模块自己的临时目录（`system/tmp/<id>/`），删掉三处 `YUANLING_TMP/<id>/` 的自相矛盾写法；② §2.2 的 diff 触发清单补 `kind` 与 `entry.os`（改 kind 等于改行为，改 os 等于改能否启动）；③ 全篇去引文，只留规范正文与修订史 |
 | **v1.0 冻结（2026-11-08）** | 实现落地后回填的三处：① §2.1 安装方式从 `git clone` 改为**发行包 tgz**（不依赖 git、不跑构建脚本、可回滚），并写明"模块装在数据目录内"的决策与代价；② 新增 §2.1.1 整体导出；③ §17 改为逐条状态表，标注每条由哪个测试验证、哪两条必须有人在桌面环境跑。七条 spike 全过，去掉"候选稿"标记 |
 | **v1.1（2026-11-08）** | ① 新增 §0.1 **原始层语义**：raw 只保证"记录与收到一致、不丢"，不做真伪判断与可信度分级；② manifest 增 `sources`（带 `api ≥ 1.1` 约束），能力词表增 `provide.source`，新增 core→module 的 `source.fetch`（§5.2.2）；③ **安装即空授权**：装完 `granted: []`，一次列出全部能力、一次确认，非 TTY 默认拒绝——修掉 v1.0 "文档说要点、代码闭眼给"的差口；④ 注册表补 `granted` / `sources` 两个字段的权威说明；⑤ 顺带修掉一个真 bug：raw 去重时回的指针指向**新生成的 id**（那个 id 根本没有落盘），现在回的是原来那条的 id；⑥ §2.1 **支持填"库的网址"直接安装**（查发行版 → 挑 .tgz 资产），源码归档（.zip/.tar.gz）不认 |
+| **v1.2（2026-11-08）** | ① 新增 §3.5 `ui`：模块能给管理台加**只读标签页**（`kv` / `list` / `text` 三种封闭形态，最多 5 个，不许占核心的「概况」「日志」）；② 新增 core→module 的 `ui.get`（§5.2.3，15s，限幅 200 行 / 16KB）；③ 明确 **`ui` 不进 §2.2 的 diff 清单**——改个标签名不该让人重新确认安装，所以校验反而卡得更紧；④ 明确"模块只能给数据、不能给标记"：拒绝任何 HTML/JS/CSS 下发（管理台握着 console.token，这条线不能松）；⑤ 管理台按 `config.schema` 渲染**真表单**并保存后自动重启模块（§3.1 补充） |

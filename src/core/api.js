@@ -10,7 +10,9 @@ import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, 
 import { listDays, readDay, today } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 import fs from 'node:fs'
-import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule } from './modules/manage.js'
+import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
+import { validateConfig, describeFields } from './modules/configschema.js'
+import { readRegistry } from './modules/registry.js'
 import { listSources } from './modules/sources.js'
 import { installFromBytes, fetchModuleBytes } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
@@ -371,6 +373,41 @@ export function handleApiWrite(root, url, body) {
       }
     }
 
+    // 保存模块配置：先按模块自己的 schema 校验，再落盘。
+    // 落盘之后由 server.js 触发重启（配置只在 init 时下发，不热更新）。
+    if (pathname === '/api/modules/config') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      if (!readRegistry(root).modules[id]) {
+        return { status: 404, body: { ok: false, error: `没有这个模块：${id}` } }
+      }
+      const schema = readConfigSchema(root, id)
+      const checked = validateConfig(schema, b.config ?? {})
+      if (!checked.ok) {
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            error: '配置不符合模块声明的 schema',
+            errors: checked.errors,
+            fields: describeFields(schema),
+          },
+        }
+      }
+      writeModuleConfig(root, id, checked.value)
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          id,
+          config: checked.value,
+          // 丢掉的未知键要如实说：用户会以为是"保存了但没生效"
+          dropped: checked.unknown,
+          unsupported: checked.unsupported,
+        },
+      }
+    }
+
     if (pathname === '/api/modules/grant-all') {
       const id = String(b.id ?? '')
       if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
@@ -406,6 +443,34 @@ export function handleApiWrite(root, url, body) {
   }
 
   return { status: 404, body: { ok: false, error: 'no such api' } }
+}
+
+/**
+ * 模块自定义 tab 的数据（协议 v1.2 的 `/api/modules/ui`）。
+ *
+ * 为什么是 async 独立函数：要跟**活着的模块进程**要数据，而进程只存在于插件宿主里，
+ * `handleApiWrite` 是无状态的、拿不到它。和 install-url 一样由 server.js await 这一条。
+ */
+export async function handleModuleUi(root, body, { onUiGet } = {}) {
+  const b = body && typeof body === 'object' ? body : {}
+  const id = String(b.id ?? '').trim()
+  const tab = String(b.tab ?? '').trim()
+  if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+  if (!tab) return { status: 400, body: { ok: false, error: '缺少 tab' } }
+  if (!onUiGet) {
+    return {
+      status: 503,
+      body: { ok: false, error: '这个进程没有模块宿主（CLI 起的控制台取不到模块界面数据）' },
+    }
+  }
+  try {
+    const r = await onUiGet(id, tab)
+    return { status: 200, body: { ok: true, ...r } }
+  } catch (error) {
+    const code = error?.code ?? ''
+    const status = code === 'E_NO_ROUTE' ? 404 : code === 'E_BAD_REQUEST' ? 400 : 400
+    return { status, body: { ok: false, code, error: String(error?.message ?? error) } }
+  }
 }
 
 /**

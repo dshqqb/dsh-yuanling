@@ -3,7 +3,7 @@
 // 纯函数，不碰文件系统：给它一个已解析的对象，回 {ok, errors[]}。
 // 校验规则逐条对应 §3.3，宁可拒装，也不让一个坏的 manifest 进注册表。
 export const API_MAJOR = 1
-export const API_MINOR = 1
+export const API_MINOR = 2
 
 /** §3.2 id 保留字：模块 id 会成为 raw 的来源名，撞名会污染原始层。 */
 export const RESERVED_IDS = [
@@ -128,6 +128,66 @@ function validateSources(raw, moduleId, err) {
   return out
 }
 
+/** §3.4（v1.2）：`ui.tabs` 的渲染形态。**封闭三选一**，模块不能自带 HTML。 */
+export const UI_KINDS = ['list', 'kv', 'text']
+/** 最多几个自定义 tab：管理台的 tab 条再长就没法用了。 */
+export const UI_MAX_TABS = 5
+/** 核心保留的 tab id：`brief` / `log` 已经被核心占了。 */
+export const UI_RESERVED = ['brief', 'log']
+
+/**
+ * v1.2 §3.5：`ui` 的形状。
+ *
+ * 为什么只允许三种 kind、且只传数据不传标记：管理台持有 console.token，
+ * 能读全部记忆、改规则、卸模块。模块一旦能下发 HTML/JS，等于拿到整个库的钥匙。
+ * 所以这里的原则是——**模块只说"给我画一个列表/键值对/一段文字"**，画法由核心定。
+ */
+function validateUi(raw, err) {
+  const ui = raw.ui
+  if (!ui || typeof ui !== 'object' || Array.isArray(ui)) {
+    err('ui', 'BAD_FORMAT', 'ui 必须是对象')
+    return null
+  }
+  if (ui.tabs === undefined) return { tabs: [] }
+  if (!Array.isArray(ui.tabs)) {
+    err('ui.tabs', 'BAD_FORMAT', 'ui.tabs 必须是数组')
+    return null
+  }
+  if (ui.tabs.length > UI_MAX_TABS) {
+    err('ui.tabs', 'TOO_MANY', `最多 ${UI_MAX_TABS} 个自定义 tab（收到 ${ui.tabs.length} 个）`)
+  }
+
+  const seen = new Set()
+  const tabs = []
+  ui.tabs.forEach((t, i) => {
+    const at = `ui.tabs[${i}]`
+    if (!t || typeof t !== 'object' || Array.isArray(t)) {
+      err(at, 'BAD_FORMAT', '每项必须是对象')
+      return
+    }
+    if (!isString(t.id)) err(`${at}.id`, 'MISSING', 'id 必填')
+    else if (!/^[a-z][a-z0-9-]{1,23}$/.test(t.id)) {
+      err(`${at}.id`, 'BAD_FORMAT', 'id 只能是小写字母/数字/连字符（2~24 字符，首字母是字母）')
+    } else if (UI_RESERVED.includes(t.id)) {
+      err(`${at}.id`, 'RESERVED', `「${t.id}」是核心保留的 tab id`)
+    } else if (seen.has(t.id)) {
+      err(`${at}.id`, 'DUPLICATE', `tab id 重复：${t.id}`)
+    }
+    if (!isString(t.label)) err(`${at}.label`, 'MISSING', 'label 必填（tab 上显示的名字）')
+    else if (String(t.label).length > 16) err(`${at}.label`, 'TOO_LONG', 'label 最多 16 个字')
+    else if (String(t.label) === '概况' || String(t.label) === '日志') {
+      err(`${at}.label`, 'RESERVED', '「概况」「日志」是核心的 tab 名')
+    }
+    if (t.kind !== undefined && !UI_KINDS.includes(String(t.kind))) {
+      err(`${at}.kind`, 'UNKNOWN', `kind 只能是 ${UI_KINDS.join(' / ')}`)
+    }
+    if (isString(t.id)) seen.add(t.id)
+    tabs.push({ id: t.id, label: t.label, kind: String(t.kind ?? 'text') })
+  })
+
+  return { tabs }
+}
+
 /**
  * @param {object} raw 已 JSON.parse 的 manifest
  * @returns {{ok:boolean, errors:Array<{field:string,code:string,message:string}>, manifest?:object}}
@@ -196,6 +256,18 @@ export function validateManifest(raw) {
     sources = validateSources(raw, raw.id, err)
   }
 
+  // ui（v1.2）：模块能往管理台加只读的标签页。它**不进 §2.2 的 diff 清单**——
+  // 调整一个 tab 的名字不该让人重新确认一次安装。但正因为"改了不提示"，这里要卡得很紧：
+  // 只允许固定的三种渲染形态，不允许任何 HTML/JS/样式。
+  let ui = null
+  if (raw.ui !== undefined) {
+    const s = parseSemver(raw.api)
+    if (s && s.minor < 2) {
+      err('api', 'INCOMPATIBLE', '声明了 ui 就必须写 api "1.2" 或更高（ui.get 是 v1.2 的 op）')
+    }
+    ui = validateUi(raw, err)
+  }
+
   // routes：两种语法（前缀 / 精确），且不能与别人的重叠 —— 重叠检查需要外部信息，这里只验形状
   if (raw.routes !== undefined) {
     if (!Array.isArray(raw.routes)) err('routes', 'BAD_FORMAT', 'routes 必须是数组')
@@ -231,6 +303,7 @@ export function validateManifest(raw) {
       permissions: raw.permissions ?? [],
       routes: raw.routes ?? [],
       sources,
+      ui,
       config: raw.config ?? null,
     },
   }

@@ -59,14 +59,16 @@ README.md                可选
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `id` | ✅ | 小写字母开头，`[a-z0-9-]`，2~32 字符。**它会成为 raw 的来源名**（`raw/<月>/<日>/<id>.ndjson`），所以 `system` / `raw` / `media` / `rules` 这些是保留字，撞了会被拒装 |
+| `name` | ⬜ | **给人看的显示名，由你自己定**。管理台左侧菜单就显示它（超过 16 字会被截断加省略号，完整名在鼠标悬停提示里）。不写就回退到 `id`，并去掉 `dsh-yuanling-` / `yuanling-` 前缀（`dsh-yuanling-qq` → `qq`）。**核心不会从仓库名或 id 反推**——包名不等于你希望用户看到的名字 |
 | `version` | ✅ | 完整 semver（`1.2.3`）。更新时用来判断新旧 |
 | `api` | ✅ | 协议版本。核心实现 **1.1**（也接受 1.0）；**主版本必须相同**，次版本不能高于核心。声明 `sources` 就必须 ≥ `1.1` |
 | `kind` | ⬜ | `gateway`（收消息，v1 唯一实现）/ `actuator`（由核心触发生成内容，v1 接口留、调用回 `E_UNSUPPORTED`）/ `enricher`（加工管道，语义未定） |
 | `entry.command` | ✅ | 非空数组，`[0]` 是命令名，**不能含路径分隔符**。`"node"` 会被核心换成本机的 node 可执行文件；用别的命令就写裸名字 |
 | `capabilities` | ⬜ | 封闭词表，见下节 |
 | `sources` | ⬜ | v1.1：声明"我这儿有什么数据可以被要"（`id` / `title` / `params`）。`id` 必须形如 `<模块id>.<名字>` |
-| `config` | ⬜ | 声明了就给 `schema`（JSON Schema 子集），核心据此渲染表单并保管值 |
-| `routes` | ⬜ | 模块自己提供的 HTTP 路由（管理台扩展），不能与已装模块重叠 |
+| `config` | ⬜ | 声明了就给 `schema`（JSON Schema 子集），**管理台据此渲染表单**（输入框 / 数字 / 开关 / 下拉），保存前核心会按 schema 校验，存进 `system/modules/<id>/config.json`，改完自动重启模块。名字像密钥的字段（`sessdata`/`token`/`cookie`…）会显示成密码框，也可以用 `"x-secret": true` 显式声明 |
+| `routes` | ⬜ | **认领的频道前缀**（`group:*` / `group:<id>` 这两种写法），决定哪些频道的消息归你 `ingest`。它**不是** HTTP 路由、也不是管理台扩展点 |
+| `ui` | ⬜ | v1.2：给管理台加**只读标签页**，`tabs: [{id, label, kind}]`；`kind` 只认 `kv` / `list` / `text`。**不能下发 HTML/JS**——模块只描述"画什么"，画法由核心定 |
 
 ### 能力：申请什么，才可能拿到什么
 
@@ -146,6 +148,7 @@ stdout 与 stdin 上都是 **NDJSON**：一行一条 JSON，UTF-8 无 BOM，行�
 | `ping` | 回 `{}` | — | ✅ |
 | `send` | 真的把消息投出去 | `send` + 被授予 | ✅ |
 | `source.fetch` | 按 `data.source` 交一批数据（**标准 inbox 信封**） | `provide.source` + `sources` + 被授予 | ✅ v1.1 |
+| `ui.get` | 按 `data.tab` 交这个标签页的数据（`kv`/`list`/`text` 三选一） | `ui.tabs` 里声明过 | ✅ v1.2 |
 | `actuate` | 生成语音/视频 | `actuate` | ⬜ 回 `E_UNSUPPORTED` |
 | `shutdown` | 收尾退出 | — | ✅ |
 

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { exists, ensureDir, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { ingest, healthReport } from './inbox.js'
-import { handleApi, handleApiWrite, handleModuleInstallFromUrl } from './api.js'
+import { handleApi, handleApiWrite, handleModuleInstallFromUrl, handleModuleUi } from './api.js'
 const BODY_LIMIT = 4 * 1024 * 1024
 const WEB_ROOT = fileURLToPath(new URL('../../web/', import.meta.url))
 
@@ -105,10 +105,33 @@ export function clearConsoleRuntime(root) {
 }
 
 /**
- * @param {string} root
- * @param {{token?: string, meta?: object, onSourceFetch?: Function}} opts
+ * 模块被改动之后"顺手拉起它"。
+ *
+ * 为什么必须有这一下：模块进程只在**插件启动那一刻**被拉起来（startEnabled）。
+ * 用户在管理台装完一个模块时，那个时机早就过去了——于是页面显示"已停止"，
+ * 日志文件都不存在，看起来像"装坏了"。同理，点「启用」也只改注册表、不启动进程。
+ *
+ * 这里只做"尝试"：模块被停用、已在跑、或它自己起不来，都由 ModuleService 那边如实返回，
+ * 不影响这次写操作本身成功。所以失败也只是少了个 started 字段，不会让安装报错。
  */
-export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null } = {}) {
+export async function kickModule(body, notify, opts = {}) {
+  if (!notify || !body || body.ok === false) return body
+  const id = body.id ?? body.module ?? null
+  if (!id) return body
+  try {
+    const r = await notify(id, opts)
+    if (r && typeof r === 'object') return { ...body, runtime: r }
+  } catch (err) {
+    return { ...body, runtime: { error: String(err?.message ?? err) } }
+  }
+  return body
+}
+
+/**
+ * @param {string} root
+ * @param {{token?: string, meta?: object, onSourceFetch?: Function, onModuleChanged?: Function}} opts
+ */
+export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null, onModuleChanged = null, onUiGet = null } = {}) {
   if (!token) throw new Error('控制台令牌不存在，先跑 yuanling init 或 yuanling token --reset')
 
   return http.createServer(async (req, res) => {
@@ -207,11 +230,23 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
         // 时间给足：Gitee/GitHub 查一次 + 下载一个 20KB 的包，但国内网络会慢。
         if (url.pathname === '/api/modules/install-url') {
           const w = await handleModuleInstallFromUrl(root, body)
+          return json(res, w.status, await kickModule(w.body, onModuleChanged))
+        }
+
+        // 模块自定义 tab 的数据：同样要跟活着的模块进程说话，所以也由宿主注入回调。
+        if (url.pathname === '/api/modules/ui') {
+          const w = await handleModuleUi(root, body, { onUiGet })
           return json(res, w.status, w.body)
         }
 
         const w = handleApiWrite(root, url, body)
-        return json(res, w.status, w.body)
+        // 只有模块的写操作才尝试拉起进程：别的接口（屏蔽、提案……）返回的 id 不是模块 id。
+        // 配置变更要**重启**（协议 §3.1：配置只在 init 时下发，跑着的还是旧配置），其余只需确保在跑。
+        const restart = url.pathname === '/api/modules/config'
+        const kicked = url.pathname.startsWith('/api/modules/')
+          ? await kickModule(w.body, onModuleChanged, { restart })
+          : w.body
+        return json(res, w.status, kicked)
       }
 
       const r = handleApi(root, url)
@@ -235,10 +270,12 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
  *
  * @returns {Promise<{server:http.Server, port:number, url:string}>}
  */
-export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null } = {}) {
+export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null, onModuleChanged = null, onUiGet = null } = {}) {
   const server = createServer(root, {
     meta,
     onSourceFetch,
+    onModuleChanged,
+    onUiGet,
     ...(token === undefined ? {} : { token }),
   })
   return new Promise((resolve, reject) => {

@@ -239,12 +239,11 @@ test('host：模块自杀 → 识别崩溃 → 按退避重启', skipIfSandboxed
   const states = []
   const host = makeHost({ onState: (e) => states.push(e.state) })
   host.start()
-  await new Promise((r) => setTimeout(r, 250))
+  await waitFor(() => Boolean(host.child), 3000, '进程起来')
 
   host.request('die', {}, { timeoutMs: 500 }).catch(() => {})
-  await new Promise((r) => setTimeout(r, 400))
-  assert.ok(states.includes('crashed') || states.includes('restarting'), `实际 ${states.join(',')}`)
-  assert.ok(host.restarts >= 1, '应该重启过一次')
+  // 固定 sleep 在并行跑时不够：崩溃识别 + 退避重启可能还没走到（这条曾偶发红）
+  await waitFor(() => host.restarts >= 1 && (states.includes('crashed') || states.includes('restarting')), 8000, '崩溃并重启')
   host.dispose()
 })
 

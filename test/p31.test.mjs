@@ -20,6 +20,7 @@ const css = read('web/style.css')
 test('模块页：必要元素都在', () => {
   for (const id of [
     'page-modules',
+    'module-console',
     'module-summary',
     'module-list',
     'module-count',
@@ -27,17 +28,34 @@ test('模块页：必要元素都在', () => {
     'module-title',
     'module-meta',
     'module-caps',
-    'module-config',
+    // 配置从"打印一段 JSON"改成了真表单（2026-11-08）：
+    // 表单容器要有、保存按钮要有，旧的只读文本节点不再存在
+    'module-config-form',
+    'module-config-save',
+    'module-config-msg',
+    'module-rules',
     'module-log',
+    'module-tabs',
+    'module-panel-brief',
+    'module-panel-log',
     'module-export',
     'module-toggle',
     'module-uninstall',
     'module-file',
     'module-install',
     'module-install-msg',
+    'grant-modal',
+    'grant-modal-ok',
   ]) {
     assert.match(html, new RegExp(`id="${id}"`), `缺少 #${id}`)
   }
+})
+
+test('模块页：配置是表单不是只读文本，且能保存', () => {
+  assert.match(app, /renderConfigForm/, '要按 schema 渲染控件')
+  assert.match(app, /\/api\/modules\/config/, '保存要走配置接口')
+  assert.match(app, /module-config-save/, '要有保存按钮的绑定')
+  assert.match(html, /data-config-key|config-form/, '表单容器')
 })
 
 test('模块页：不再是"这里还空着"的占位', () => {

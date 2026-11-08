@@ -4,7 +4,7 @@
 :root {
   --r: 20px;
   --r-sm: 12px;
-  --sidebar: 220px;
+  --sidebar: 240px;
   --accent: #2f80ff;
   --accent-2: #6aa8ff;
   --ok: #35c759;
@@ -334,22 +334,101 @@ input.narrow { min-width: 0; width: 110px; }
 
 /* ── 窄屏：侧栏收成图标条（不是隐藏）──────────────────────────────── */
 
-@media (max-width: 900px) {
-  :root { --sidebar: 56px; }
-  .brand { width: auto; }
-  .brand-name { display: none; }
-  .side { padding: 4px 6px 16px 10px; }
-  .nav-item { justify-content: center; padding: 11px 0; }
-  .nav-item .label { display: none; }
+/* ── 模块模式：左侧菜单分组与状态点 ─────────────────────────────────── */
+
+.nav-group {
+  margin: 14px 0 2px;
+  padding: 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  text-transform: uppercase;
+  /* 分组标题不许折行：侧栏一变窄，"已安装"就会竖着排成一列 */
+  white-space: nowrap;
+}
+.nav-hint { padding: 6px 12px; }
+/* 菜单文字一律单行、超长打点：模块名由模块自己定，长度不可控 */
+.nav-item .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+/* 菜单项右侧的状态点：已运行绿、已崩溃红、已停止灰 */
+.nav-tag { margin-left: auto; margin-right: 0; flex: 0 0 auto; }
+:root[data-theme='light'] .nav-tag { opacity: 0.9; }
+
+/* 模块详情的 tab 条 */
+.module-tabs { margin: 0 0 16px; flex-wrap: wrap; }
+.module-tabs button { white-space: nowrap; }
+
+/* ── 模块配置表单 ─────────────────────────────────────────────────── */
+
+.config-form { display: flex; flex-direction: column; gap: 12px; margin: 10px 0 4px; }
+
+.config-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+}
+.config-label { font-size: 13px; font-weight: 550; }
+.config-desc { grid-column: 2 / -1; margin-top: -4px; }
+
+@media (max-width: 720px) {
+  .config-row { grid-template-columns: 1fr; }
+  .config-desc { grid-column: auto; }
+}
+
+/* ── 弹窗（安装后的授权确认）─────────────────────────────────────── */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+.modal[hidden] { display: none; }
+
+.modal-card {
+  width: min(520px, 100%);
+  max-height: 82vh;
+  overflow: auto;
+  padding: 20px 22px;
+  background: var(--card);
+  border-radius: var(--r);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.modal-head h3 { margin: 0; font-size: 16px; }
+.modal-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* ── 窄屏：只收窄侧栏，**不隐藏文字** ───────────────────────────────
+   曾经这里按"窗口窄就把侧栏压成图标条"来做——结果是窗口一窄，
+   侧栏只剩图标、右上角搜索框的输入框也被 display:none（只剩一个没反应的放大镜）。
+   模块菜单需要看得见名字，所以现在宁可窄一点也保留文字。 */
+@media (max-width: 1100px) {
+  :root { --sidebar: 204px; }
+  .side { padding: 4px 8px 16px 12px; }
   .side-foot { display: none; }
   .main { padding: 4px 16px 32px 6px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .search { min-width: 0; width: 40px; padding: 0; justify-content: center; }
-  .search input { display: none; }
   .mode { padding: 6px 11px; }
+  .search { min-width: 0; }
+}
+
+@media (max-width: 900px) {
+  .crumb { display: none; }
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 560px) {
   .stats { grid-template-columns: 1fr; }
-  .crumb { display: none; }
+  .stat-row { grid-template-columns: 1fr; }
 }

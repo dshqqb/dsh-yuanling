@@ -9,9 +9,38 @@ const state = {
   mode: 'core',
   peopleSort: 'weight',
   moduleId: null,
+  // 模块模式下的左侧菜单：控制台 + 每个已装模块。列表缓存在这里，回车/点击都不用再请求
+  modules: [],
+  moduleView: 'console',
+  moduleTab: 'brief',
 }
 
-// ── 图标（内联，不引图标库）──────────────────────────────────────────
+/**
+ * 左侧菜单里显示的模块名。
+ *
+ * 来源是**模块自己声明的 `manifest.name`**——名字归模块定，核心不猜（也不该从
+ * 仓库名或 id 反推：`dsh-yuanling-qq` 只是包名，不一定是它想让人看到的名字）。
+ *
+ * 模块没写 name 时才退回 id，并去掉常见前缀（`dsh-yuanling-qq` → `qq`）。
+ * 无论哪条路径，最多显示 16 个字，超了截断加省略号——侧栏宽度有限，
+ * 让它撑开或折行都比截断难看得多。完整名字放 title 提示里。
+ */
+const NAME_MAX = 16
+
+function moduleDisplayName(m) {
+  const declared = String(m.name ?? '').trim()
+  // manage.js 在模块没写 name 时会把 id 填进来，所以"等于 id"就视为没声明
+  if (declared && declared !== m.id) return clipName(declared)
+
+  const id = String(m.id ?? '')
+  const hit = /^(?:dsh-yuanling|yuanling)-([a-z0-9-]+)$/i.exec(id)
+  return clipName(hit ? hit[1] : id)
+}
+
+function clipName(s) {
+  const str = String(s ?? '')
+  return str.length > NAME_MAX ? `${str.slice(0, NAME_MAX)}…` : str
+}
 const I = {
   gauge: '<circle cx="12" cy="12" r="3.2"/><path d="M12 4v2.2M12 17.8V20M4 12h2.2M17.8 12H20M6.3 6.3l1.6 1.6M16.1 16.1l1.6 1.6M17.7 6.3l-1.6 1.6M7.9 16.1l-1.6 1.6" stroke-linecap="round"/>',
   layers: '<path d="M12 3.5l8 4.2-8 4.2-8-4.2 8-4.2z"/><path d="M4 12.3l8 4.2 8-4.2" stroke-linejoin="round"/>',
@@ -23,6 +52,8 @@ const I = {
   plug: '<path d="M9 3.5v4M15 3.5v4" stroke-linecap="round"/><path d="M6.5 7.5h11v3.2a5.5 5.5 0 01-11 0V7.5z" stroke-linejoin="round"/><path d="M12 16.5v4" stroke-linecap="round"/>',
   ban: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4" stroke-linecap="round"/>',
   chart: '<path d="M4 20V9M9.3 20V4M14.7 20v-7M20 20v-4" stroke-linecap="round"/>',
+  // 模块菜单项用立方体：和"控制台"的插头区分开，一眼能看出"这是一个模块"
+  box: '<path d="M12 3.2l7.5 4.2-7.5 4.2-7.5-4.2 7.5-4.2z" stroke-linejoin="round"/><path d="M4.5 7.4v6.6l7.5 4.2 7.5-4.2V7.4" stroke-linejoin="round"/>',
 }
 
 const NAV = [
@@ -123,10 +154,34 @@ function mkBtn(label, cls, onClick) {
 function buildNav() {
   const nav = $('nav')
   nav.innerHTML = ''
+
+  // 模块模式：最上面是「控制台」，下面是每个已装模块。点击模块直接进详情。
   if (state.mode !== 'core') {
-    nav.append(el('div', 'muted small', '（还没有已安装的模块）'))
+    const consoleBtn = el('button', 'nav-item' + (state.moduleView === 'console' ? ' is-active' : ''))
+    consoleBtn.append(icon('plug'), el('span', 'label', '控制台'))
+    consoleBtn.addEventListener('click', () => openModuleConsole())
+    nav.append(consoleBtn)
+
+    if (!state.modules.length) {
+      nav.append(el('div', 'muted small nav-hint', '还没有已安装的模块'))
+      return
+    }
+
+    const head = el('div', 'nav-group', '已安装')
+    nav.append(head)
+
+    for (const m of state.modules) {
+      const [stateText, stateCls] = STATE_LABELS[m.state] ?? [m.state, '']
+      const b = el('button', 'nav-item' + (state.moduleView === m.id ? ' is-active' : ''))
+      b.append(icon('box'), el('span', 'label', moduleDisplayName(m)))
+      b.append(el('span', `tag ${stateCls} nav-tag`.trim(), stateText))
+      b.title = `${m.name || m.id}（${m.id}） · v${m.version} · ${stateText}`
+      b.addEventListener('click', () => openModule(m.id))
+      nav.append(b)
+    }
     return
   }
+
   for (const item of NAV) {
     const b = el('button', 'nav-item' + (item.id === state.tab ? ' is-active' : ''))
     b.dataset.tab = item.id
@@ -140,14 +195,18 @@ function setMode(mode) {
   state.mode = mode
   $('mode-core').classList.toggle('is-active', mode === 'core')
   $('mode-modules').classList.toggle('is-active', mode !== 'core')
-  buildNav()
   if (mode === 'core') {
+    $('page-modules').hidden = true
+    state.moduleView = 'console'
+    buildNav()
     openTab(state.tab)
     return
   }
-  $('crumb-page').textContent = '模块'
+  // 进模块模式：先把列表拉回来（左侧菜单直接从它渲染），默认落在控制台
   for (const s of document.querySelectorAll('.main > .page')) s.hidden = s.id !== 'page-modules'
+  state.moduleView = 'console'
   loadModules().catch(() => {})
+  showModuleView('console')
 }
 
 function applyTheme(t) {
@@ -545,6 +604,17 @@ const CAP_LABELS = {
 /** send 是唯一"能往外说话"的能力，单独标风险。 */
 const CAP_RISK = { send: true }
 
+/** 授权弹窗里的一句话说明：人得看明白自己在批什么，不能只给个英文词。 */
+const CAP_HINTS = {
+  'ingest.message': '把外部消息写进原始层（落盘、脱敏都由核心做）',
+  'propose.fact': '提交候选事实，入不入库由核心判',
+  'media.put.file': '把媒体文件交给核心归档',
+  'media.read': '读走核心里的媒体文件',
+  send: '用她的名义往外说话——这是唯一能"发出去"的能力',
+  actuate: '被核心调用来生成语音/图片/视频',
+  'provide.source': '允许核心按需向它要数据（她检索时会用到）',
+}
+
 const STATE_LABELS = {
   running: ['运行中', 'ok'],
   ready: ['就绪', 'ok'],
@@ -554,8 +624,23 @@ const STATE_LABELS = {
   crashed: ['已崩溃', 'bad'],
 }
 
+/** 切换模块页的两块：控制台 / 某个模块的详情。左侧菜单的高亮跟着它走。 */
+function showModuleView(view, id = null) {
+  state.moduleView = view
+  state.moduleId = view === 'console' ? null : id
+  $('module-console').hidden = view !== 'console'
+  $('module-detail').hidden = view === 'console'
+  $('crumb-page').textContent = view === 'console' ? '控制台' : (state.modules.find((m) => m.id === id)?.name || id || '模块')
+  buildNav()
+}
+
+function openModuleConsole() {
+  showModuleView('console')
+}
+
 async function loadModules() {
   const d = await api('/api/modules')
+  state.modules = d.modules ?? []
 
   const sum = d.summary ?? {}
   const box = $('module-summary')
@@ -575,8 +660,9 @@ async function loadModules() {
   const list = $('module-list')
   list.innerHTML = ''
   if (!d.modules.length) {
-    list.append(el('div', 'muted small', '还没有安装任何模块。QQ 适配器会作为第一个官方模块出现在这里。'))
-    return
+    list.append(
+      el('div', 'muted small', '还没有安装任何模块。在上面粘一个库的网址就能装，例如 https://gitee.com/dshqqb/dsh-yuanling-bili'),
+    )
   }
 
   for (const m of d.modules) {
@@ -589,7 +675,7 @@ async function loadModules() {
     if (!m.enabled) tags.append(el('span', 'tag', '已停用'))
     tags.append(el('span', 'tag', m.source || 'manual'))
     if (m.state === 'crashed' && m.lastCrash) tags.append(el('span', 'tag bad', '崩溃过'))
-    t.append(tags, document.createTextNode(m.name || m.id))
+    t.append(tags, document.createTextNode(moduleDisplayName(m)))
 
     const caps = (m.granted ?? []).map((c) => CAP_LABELS[c] ?? c).join('、') || '无'
     body.append(t, el('div', 's', `${m.id} · v${m.version} · 能力：${caps}`))
@@ -600,21 +686,252 @@ async function loadModules() {
     n.append(acts)
     list.append(n)
   }
+
+  // 左侧菜单跟着列表走：模块装完/卸载之后菜单要立刻变
+  buildNav()
+  // 详情页开着的时候，它可能刚被卸载了
+  if (state.moduleView !== 'console' && !state.modules.some((m) => m.id === state.moduleView)) {
+    showModuleView('console')
+  }
 }
+
+/**
+ * 模块详情的 tab 条。
+ *
+ * 前两个由核心固定提供：**概况**（默认）与**日志**（日志可能很长，单独一页免得把概况挤下去）。
+ * 第三个起留给模块自定义——协议还没定，所以现在只渲染固定的两个；
+ * 等 `ui.tabs` 定下来，这里按模块下发的数组往下排即可（渲染逻辑见 selectModuleTab）。
+ */
+const MODULE_BASE_TABS = [
+  { id: 'brief', label: '概况' },
+  { id: 'log', label: '日志' },
+]
+
+function renderModuleTabs(module, active) {
+  const bar = $('module-tabs')
+  bar.innerHTML = ''
+  // 模块自定义 tab（v1.2）：manifest.ui.tabs = [{id, label, kind}]，从第三个位置开始
+  const extra = Array.isArray(module?.uiTabs) ? module.uiTabs : []
+  const tabs = [...MODULE_BASE_TABS, ...extra.map((t) => ({ id: String(t.id), label: String(t.label || t.id), kind: t.kind, custom: true }))]
+
+  for (const t of tabs) {
+    const b = el('button', t.id === active ? 'is-active' : '')
+    b.textContent = t.label
+    b.dataset.tabId = t.id
+    b.title = t.custom ? '模块自定义的标签页（只读，数据由模块提供）' : ''
+    b.addEventListener('click', () => selectModuleTab(t.id))
+    bar.append(b)
+  }
+  selectModuleTab(active && tabs.some((t) => t.id === active) ? active : 'brief', module)
+}
+
+function selectModuleTab(id, module = null) {
+  state.moduleTab = id
+  const current = module ?? state.modules.find((x) => x.id === state.moduleId)
+  // 用 dataset 比而不是比文字：两个 tab 可能同名（尤其模块自定义的那几个）
+  for (const b of $('module-tabs').querySelectorAll('button')) {
+    b.classList.toggle('is-active', b.dataset.tabId === id)
+  }
+  $('module-panel-brief').hidden = id !== 'brief'
+  $('module-panel-log').hidden = id !== 'log'
+  const custom = $('module-panel-custom')
+  const isCustom = !MODULE_BASE_TABS.some((t) => t.id === id)
+  custom.hidden = !isCustom
+  if (isCustom) loadModuleTabData(id, current)
+}
+
+/**
+ * 拉一个模块自定义 tab 的数据并渲染。
+ *
+ * 渲染是**纯数据 → DOM**：模块只会给 `kv` / `list` / `text` 三种形状，
+ * 我们一律用 textContent 写进去。模块没有任何机会塞 HTML/JS——
+ * 管理台握着 console.token，能读全部记忆、改规则、卸模块，这条线不能松。
+ */
+async function loadModuleTabData(tabId, module) {
+  const box = $('module-panel-custom')
+  box.innerHTML = ''
+  const card = el('div', 'card')
+  card.append(el('div', 'muted small', '加载中…'))
+  box.append(card)
+
+  try {
+    const d = await postApi('/api/modules/ui', { id: state.moduleId, tab: tabId })
+    box.innerHTML = ''
+    const out = el('div', 'card')
+    const head = el('div', 'card-head')
+    const tabLabel = (module?.uiTabs ?? []).find((t) => t.id === tabId)?.label || tabId
+    head.append(el('h3', '', tabLabel))
+    if (d.truncated) head.append(el('span', 'tag warn', '内容较多，已截断'))
+    out.append(head)
+
+    if (d.kind === 'kv') {
+      const kv = el('div', 'kv')
+      for (const row of d.rows ?? []) {
+        kv.append(el('div', 'k', String(row.k)), el('div', 'v', String(row.v)))
+      }
+      if (!(d.rows ?? []).length) kv.append(el('div', 'muted small', '（没有数据）'))
+      out.append(kv)
+    } else if (d.kind === 'list') {
+      const list = el('div', 'list')
+      for (const it of d.items ?? []) {
+        const n = el('div', 'item')
+        const body = el('div', 'body')
+        body.append(el('div', 't', String(it.title)))
+        if (it.sub) body.append(el('div', 's', String(it.sub)))
+        n.append(body)
+        list.append(n)
+      }
+      if (!(d.items ?? []).length) list.append(el('div', 'muted small', '（没有数据）'))
+      out.append(list)
+    } else {
+      const pre = el('pre', 'code', String(d.text ?? ''))
+      out.append(pre)
+    }
+    box.append(out)
+  } catch (err) {
+    box.innerHTML = ''
+    const card2 = el('div', 'card')
+    card2.append(el('div', 'muted small', `取不到这个页的数据：${err.message}`))
+    box.append(card2)
+  }
+}
+
+/**
+ * 按模块声明的 config.schema 渲染表单。
+ *
+ * 字段元信息由核心算好（`configFields`：key/type/required/enum/secret），页面只负责画控件——
+ * 前端再解释一遍 schema，迟早和核心的校验规则对不上。
+ *
+ * 三类控件就够了：枚举 → select，数字 → number input，布尔 → checkbox，其余 → text。
+ * 名字像密钥的（sessdata / token / cookie…）用密码框，旁边给一个"显示"开关。
+ */
+function renderConfigForm(m) {
+  const form = $('module-config-form')
+  const actions = $('module-config-actions')
+  const hint = $('module-config-hint')
+  form.innerHTML = ''
+  $('module-config-msg').textContent = ''
+
+  const fields = Array.isArray(m.configFields) ? m.configFields : []
+  if (!fields.length) {
+    form.append(el('div', 'muted small', '该模块没有声明配置。'))
+    actions.hidden = true
+    hint.textContent = ''
+    return
+  }
+
+  const values = m.config ?? {}
+  for (const f of fields) {
+    const row = el('div', 'config-row')
+    const label = el('label', 'config-label')
+    label.append(document.createTextNode(f.label))
+    if (f.required) label.append(el('span', 'tag warn', '必填'))
+    if (f.description) label.title = f.description
+    row.append(label)
+
+    const cur = values[f.key]
+    let input
+    if (f.enum && f.enum.length) {
+      input = document.createElement('select')
+      // 空选项：不填就表示"用默认/不设置"，不要强迫人选一个
+      if (!f.required) input.append(new Option('（不设置）', ''))
+      for (const opt of f.enum) input.append(new Option(opt, opt))
+      input.value = cur === undefined || cur === null ? '' : String(cur)
+    } else if (f.type === 'boolean') {
+      input = document.createElement('input')
+      input.type = 'checkbox'
+      input.checked = cur === true || cur === 'true'
+    } else if (f.type === 'number') {
+      input = document.createElement('input')
+      input.type = 'number'
+      if (cur !== undefined && cur !== null) input.value = String(cur)
+      if (f.default !== null && f.default !== undefined) input.placeholder = `默认 ${f.default}`
+    } else {
+      input = document.createElement('input')
+      input.type = f.secret ? 'password' : 'text'
+      input.value = cur === undefined || cur === null ? '' : String(cur)
+      input.autocomplete = 'off'
+      if (f.default !== null && f.default !== undefined) input.placeholder = `默认 ${f.default}`
+    }
+    input.dataset.configKey = f.key
+    input.dataset.configType = f.type
+    if (f.secret) input.dataset.secret = '1'
+    row.append(input)
+
+    if (f.secret) {
+      const peek = mkBtn('显示', 'small ghost', async () => {
+        input.type = input.type === 'password' ? 'text' : 'password'
+        peek.textContent = input.type === 'password' ? '显示' : '隐藏'
+      })
+      row.append(peek)
+    }
+
+    if (f.description) {
+      row.append(el('div', 'config-desc muted small', f.description))
+    }
+    form.append(row)
+  }
+
+  actions.hidden = false
+  hint.textContent = `${fields.length} 个字段`
+}
+
+/** 收集表单值：空串表示"没填"，不写进配置（核心的校验器也是这么理解的）。 */
+function collectConfigForm() {
+  const out = {}
+  for (const input of $('module-config-form').querySelectorAll('[data-config-key]')) {
+    const key = input.dataset.configKey
+    const type = input.dataset.configType
+    if (type === 'boolean') {
+      out[key] = input.checked
+      continue
+    }
+    const raw = String(input.value ?? '').trim()
+    if (raw === '') continue // 没填就不提交这个键
+    out[key] = type === 'number' ? Number(raw) : raw
+  }
+  return out
+}
+
+$('module-config-save').addEventListener('click', async () => {
+  const id = state.moduleId
+  if (!id) return
+  const msg = $('module-config-msg')
+  const btn = $('module-config-save')
+  btn.disabled = true
+  msg.textContent = '保存中…'
+  try {
+    const r = await postApi('/api/modules/config', { id, config: collectConfigForm() })
+    const dropped = (r.dropped ?? []).length ? `（忽略了未声明的字段：${r.dropped.join('、')}）` : ''
+    const rt = r.runtime?.restarted ? '，模块已用新配置重启' : r.runtime?.skipped === 'disabled' ? '，模块处于停用状态，启用后生效' : ''
+    msg.textContent = `✓ 已保存${dropped}${rt}`
+    await loadModules()
+    await openModule(id)
+    $('module-config-msg').textContent = `✓ 已保存${dropped}${rt}`
+  } catch (err) {
+    msg.textContent = `保存失败：${err.message}`
+  } finally {
+    btn.disabled = false
+  }
+})
 
 async function openModule(id) {
   const d = await api(`/api/module?id=${encodeURIComponent(id)}`)
   const m = d.module
-  state.moduleId = id
+  showModuleView(id, id)
 
-  $('module-detail').hidden = false
-  $('module-title').textContent = `${m.name || m.id}（${m.id}）`
+  $('module-title').textContent = moduleDisplayName(m)
+  $('module-subtitle').textContent = `${m.id} · v${m.version}${m.description ? ` · ${m.description}` : ''}`
   $('module-msg').textContent = ''
   $('module-toggle').textContent = m.enabled ? '停用' : '启用'
+  // 每次进详情都从「概况」开始：上次停在哪个 tab 是浏览痕迹，不是状态
+  state.moduleTab = 'brief'
+  renderModuleTabs(m, 'brief')
 
   const meta = $('module-meta')
   meta.innerHTML = ''
   const rows = [
+    ['状态', (STATE_LABELS[m.state] ?? [m.state])[0]],
     ['版本', `v${m.version}`],
     ['协议', `api ${m.api}`],
     ['类型', m.kind || 'gateway'],
@@ -622,7 +939,6 @@ async function openModule(id) {
     ['仓库', m.repo || '—'],
     ['上次源', m.previousRepo || '—'],
     ['安装于', (m.installedAt || '').slice(0, 19).replace('T', ' ') || '—'],
-    ['状态', (STATE_LABELS[m.state] ?? [m.state])[0]],
     ['崩溃', m.lastCrash ? `${m.lastCrash.reason}（${String(m.lastCrash.at).slice(0, 19)}）` : '无'],
   ]
   for (const [k, v] of rows) {
@@ -648,6 +964,7 @@ async function openModule(id) {
         await postApi('/api/modules/grant', { id: m.id, capability: c, granted: !on })
         await openModule(m.id)
         await loadModules()
+        if (!on) $('module-msg').textContent = '已授予，模块正在启动…'
       }),
     )
     n.append(acts)
@@ -655,13 +972,18 @@ async function openModule(id) {
   }
   if (!(m.capabilities ?? []).length) caps.append(el('div', 'muted small', '该模块没有声明任何能力。'))
 
-  // 配置：这一轮只读（QQ 模块还不存在，表单没有真实字段可绑）
-  $('module-config').textContent = m.configSchema
-    ? `已声明 schema，当前值：${JSON.stringify(m.config ?? {}, null, 2)}`
-    : '该模块没有声明配置。'
+  // 配置：按模块声明的 schema 渲染成真表单（原来是打印一段 JSON，等于让人手改文件）
+  renderConfigForm(m)
+
+  const sources = m.sources ?? []
+  $('module-rules').innerHTML = ''
+  if (m.routes?.length) $('module-rules').append(el('div', undefined, `认领的频道：${m.routes.join('、')}`))
+  if (sources.length) $('module-rules').append(el('div', undefined, `它能被要的数据：${sources.join('、')}`))
+  if (!m.routes?.length && !sources.length) $('module-rules').append(el('div', undefined, '没有频道认领，也没有声明可被取数的来源。'))
 
   const log = $('module-log')
   log.textContent = (m.log ?? []).slice(-40).join('\n') || '（还没有日志）'
+  $('module-log-hint').textContent = `${(m.log ?? []).length} 行`
 }
 
 const titles = Object.fromEntries(NAV.map((n) => [n.id, n.label]))
@@ -694,9 +1016,10 @@ $('module-refresh').addEventListener('click', () => {
   loadModules().catch(() => {})
 })
 
-$('module-close').addEventListener('click', () => {
-  $('module-detail').hidden = true
-  state.moduleId = null
+$('module-back').addEventListener('click', () => openModuleConsole())
+
+$('module-refresh-one').addEventListener('click', () => {
+  if (state.moduleId) openModule(state.moduleId).catch(() => {})
 })
 
 $('module-toggle').addEventListener('click', async () => {
@@ -727,8 +1050,7 @@ $('module-uninstall').addEventListener('click', async () => {
   if (!confirm(`确定卸载 ${state.moduleId}？模块目录与配置会一起删除。`)) return
   try {
     await postApi('/api/modules/uninstall', { id: state.moduleId })
-    $('module-detail').hidden = true
-    state.moduleId = null
+    showModuleView('console')
     await loadModules()
   } catch (err) {
     $('module-msg').textContent = `卸载失败：${err.message}`
@@ -749,51 +1071,78 @@ $('module-install').addEventListener('click', async () => {
       ? await postApi('/api/modules/install-url', { url: input })
       : await postApi('/api/modules/install', { file: input, source: 'manual' })
     const from = r.assetName ? `（${r.assetName}${r.ref ? ` · ${r.ref}` : ''}）` : ''
-    msg.textContent = `✓ 已安装 ${r.id} v${r.version}${r.updated ? '（更新）' : ''}${from}`
+    const runtime = r.runtime?.started ? '，已启动' : r.runtime?.skipped === 'already-running' ? '，已在运行' : ''
+    msg.textContent = `✓ 已安装 ${r.id} v${r.version}${r.updated ? '（更新）' : ''}${from}${runtime}`
     $('module-file').value = ''
     await loadModules()
-    showGrantBox(r)
+    showGrantModal({ id: r.id, name: state.modules.find((m) => m.id === r.id)?.name, capabilities: r.capabilities })
   } catch (err) {
     msg.textContent = `安装失败：${err.message}`
   }
 })
 
 /**
- * 装完的能力确认（协议 §2.1，v1.1）：一次列全、一个按钮，不逐条勾选。
- * 默认是空授权，所以这段是"要不要开"的唯一入口。
+ * 装完的能力确认（协议 §2.1，v1.1）：**弹窗**里一次列全、一个决定，不逐条勾选。
+ * 默认是空授权，所以这个弹窗是"要不要开"的唯一入口。
  */
-function showGrantBox(r) {
-  const box = $('module-grant-box')
-  const list = $('module-grant-list')
-  const caps = Array.isArray(r.capabilities) ? r.capabilities : []
-  if (!box || !caps.length) return
+function showGrantModal(result) {
+  const modal = $('grant-modal')
+  const list = $('grant-modal-list')
+  const caps = Array.isArray(result.capabilities) ? result.capabilities : []
+  if (!modal) return
+  state.pendingGrantId = result.id
+
+  $('grant-modal-title').textContent = `授予「${result.name || result.id}」的能力`
+  $('grant-modal-msg').textContent = ''
   list.textContent = ''
-  for (const c of caps) {
-    const li = el('li', 'muted small')
-    li.append(document.createTextNode(CAP_LABELS[c] ?? c), el('span', 'muted small', `  ${c}`))
-    list.append(li)
+  if (!caps.length) {
+    list.append(el('div', 'muted small', '这个模块没有声明任何能力，装完就能用。'))
+    $('grant-modal-ok').hidden = true
+    $('grant-modal-skip').textContent = '知道了'
+  } else {
+    $('grant-modal-ok').hidden = false
+    $('grant-modal-skip').textContent = '先不授予'
+    for (const c of caps) {
+      const row = el('div', 'item')
+      const body = el('div', 'body')
+      const t = el('div', 't')
+      if (CAP_RISK[c]) t.append(el('span', 'tag warn', '敏感'))
+      t.append(document.createTextNode(CAP_LABELS[c] ?? c), el('span', 'muted small', `  ${c}`))
+      body.append(t, el('div', 's', CAP_HINTS[c] ?? ''))
+      row.append(body)
+      list.append(row)
+    }
   }
-  box.hidden = false
-  $('module-grant-msg').textContent = ''
-  state.pendingGrantId = r.id
+  modal.hidden = false
 }
 
-$('module-grant-all').addEventListener('click', async () => {
+function closeGrantModal() {
+  $('grant-modal').hidden = true
+  state.pendingGrantId = null
+}
+
+$('grant-modal-ok').addEventListener('click', async () => {
   const id = state.pendingGrantId
-  const msg = $('module-grant-msg')
-  if (!id) return
+  if (!id) return closeGrantModal()
+  const btn = $('grant-modal-ok')
+  btn.disabled = true
   try {
     const r = await postApi('/api/modules/grant-all', { id, granted: true })
-    msg.textContent = `✓ 已授予：${(r.granted ?? []).join('、') || '无'}`
+    closeGrantModal()
     await loadModules()
+    // 授予之后顺手打开它的详情：让人立刻看到"现在真的是运行中"
+    await openModule(id)
+    $('module-msg').textContent = `已授予：${(r.granted ?? []).join('、') || '无'}`
   } catch (err) {
-    msg.textContent = `授予失败：${err.message}`
+    $('grant-modal-msg').textContent = `授予失败：${err.message}`
+  } finally {
+    btn.disabled = false
   }
 })
 
-$('module-grant-skip').addEventListener('click', () => {
-  $('module-grant-box').hidden = true
-  state.pendingGrantId = null
+$('grant-modal-skip').addEventListener('click', () => {
+  closeGrantModal()
+  $('module-install-msg').textContent = '已安装但不授予任何能力：模块装着不干活。想开的时候在它的详情页里逐条授予。'
 })
 $('theme-toggle').addEventListener('click', toggleTheme)
 

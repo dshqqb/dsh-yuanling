@@ -12,6 +12,7 @@ import { readRegistry, writeRegistry, setGranted, grantedOf, setState, recordCra
 import { installFromBytes, uninstall, moduleTmpDir, sha256Of } from './installer.js'
 import { ModuleProcess } from './host.js'
 import { resolveSource, normalizeReply, storeFetched, fetchError, FETCH_MAX_ITEMS, FETCH_RATE } from './sources.js'
+import { normalizeUiPayload, uiError } from './ui.js'
 
 /** 协议 §5.1：单批 ingest 最多 100 条。超了拒绝，不静默截断（截断会让模块以为全写进去了）。 */
 export const INGEST_BATCH_MAX = 100
@@ -46,15 +47,11 @@ export function tailModuleLog(root, id, { lines = 80 } = {}) {
 }
 
 /** 模块的配置（核心存、核心给）：system/modules/<id>/config.json。 */
-export function readModuleConfig(root, id) {
-  return readJson(path.join(moduleDir(root, id), 'config.json'), {}) ?? {}
-}
-
-export function writeModuleConfig(root, id, value) {
-  const p = path.join(moduleDir(root, id), 'config.json')
-  writeJsonAtomic(p, value)
-  return value
-}
+// 配置的读写只有一份实现（manage.js）：模块配置是"核心保管 + 页面可编辑"，
+// 两个文件各写一份迟早会出现"页面存进去的和模块读到的不一样"。
+import { readModuleConfig as readModuleConfigFromManage, writeModuleConfig as writeModuleConfigFromManage } from './manage.js'
+export const readModuleConfig = readModuleConfigFromManage
+export const writeModuleConfig = writeModuleConfigFromManage
 
 /**
  * 模块门面。一个实例管一个数据目录下的所有模块。
@@ -293,6 +290,23 @@ export class ModuleService {
     return { stopped: true }
   }
 
+  /**
+   * 重启一个模块：停掉再起。
+   *
+   * 为什么需要它：协议 §3.1 规定**配置变更的唯一生效方式是 shutdown + 重新 spawn + init**。
+   * 所以页面保存配置之后，只"确保它跑着"是不够的——跑着的还是旧配置。
+   *
+   * 停用状态的模块不重启（配置照样存盘，等启用时再读）。
+   */
+  async restart(id) {
+    const reg = readRegistry(this.root)
+    const entry = reg.modules[id]
+    if (!entry) throw new Error(`没有这个模块：${id}`)
+    if (entry.enabled === false) return { skipped: 'disabled' }
+    await this.stop(id)
+    return this.start(id)
+  }
+
   /** 启动时拉起所有 enabled 的模块。返回每条的启动结果（失败不致命）。 */
   async startEnabled() {
     const reg = readRegistry(this.root)
@@ -372,6 +386,30 @@ export class ModuleService {
     list.push(now)
     this.fetchTimes.set(id, list)
     return true
+  }
+
+  /**
+   * 取一次模块自定义 tab 的数据（协议 v1.2 的 `ui.get`）。
+   *
+   * 只读：核心拿回**纯数据**，怎么画由核心定，模块没有任何机会往页面里塞标记。
+   * 没声明这个 tab、或模块没在跑 → 直接报错，不返回空内容：
+   * 否则页面显示"这个 tab 是空的"，看起来像模块坏了。
+   */
+  async uiGet(id, tabId) {
+    const entry = readRegistry(this.root).modules[id]
+    if (!entry) throw uiError('E_NO_ROUTE', `没有这个模块：${id}`)
+
+    const manifest = readJson(path.join(moduleDir(this.root, id), 'yuanling.module.json'), null)
+    const tab = (manifest?.ui?.tabs ?? []).find((t) => t.id === String(tabId ?? ''))
+    if (!tab) throw uiError('E_NO_ROUTE', `模块「${id}」没有声明 tab「${tabId}」`)
+
+    const proc = this.procs.get(id)
+    if (!proc?.child) throw uiError('E_NO_ROUTE', `模块「${id}」没在运行，取不到它的界面数据`)
+
+    const reply = await proc.request('ui.get', { tab: tab.id }, { timeoutMs: 15_000 })
+    // 模块可能回 `{data: ...}` 也可能直接回结果；两种都收，少一个坑
+    const payload = reply && typeof reply === 'object' && 'data' in reply ? reply.data : reply
+    return { tab: tab.id, ...normalizeUiPayload(tab.kind, payload) }
   }
 
   /**

@@ -8,10 +8,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { localIso, readJson, ensureDir, exists } from '../fsx.js'
+import { localIso, readJson, ensureDir, exists, writeJsonAtomic } from '../fsx.js'
 import { P } from '../paths.js'
 import { readRegistry, writeRegistry, setGranted, setGrantedAll, grantedOf, moduleDir } from './registry.js'
 import { sha256Of } from './installer.js'
+import { describeFields } from './configschema.js'
 import { untar, stripPackagePrefix } from './untar.js'
 
 export function moduleLogPath(root, id) {
@@ -27,6 +28,22 @@ export function tailModuleLog(root, id, { lines = 60 } = {}) {
 
 export function readModuleConfig(root, id) {
   return readJson(path.join(moduleDir(root, id), 'config.json'), {}) ?? {}
+}
+
+/**
+ * 写模块配置。**写之前必须过 schema 校验**（见 configschema.js）——
+ * 模块自己不读文件，只靠 init 时核心发给它的这份，所以坏值会一路带到模块里。
+ */
+export function writeModuleConfig(root, id, value) {
+  const p = path.join(moduleDir(root, id), 'config.json')
+  writeJsonAtomic(p, value ?? {})
+  return value ?? {}
+}
+
+/** 模块声明的 config.schema（没有就返回 null）。 */
+export function readConfigSchema(root, id) {
+  const manifest = readJson(path.join(moduleDir(root, id), 'yuanling.module.json'), null)
+  return manifest?.config?.schema ?? null
 }
 
 /** 页面列表：注册表 + manifest 里的展示字段 + 运行时状态（读注册表里的快照）。 */
@@ -77,11 +94,17 @@ export function moduleDetail(root, id) {
   if (!m) return null
   const reg = readRegistry(root)
   const manifest = readJson(path.join(moduleDir(root, id), 'yuanling.module.json'), null)
+  const schema = manifest?.config?.schema ?? null
   return {
     ...m,
     permissions: reg.modules[id].permissions ?? [],
     config: readModuleConfig(root, id),
-    configSchema: manifest?.config?.schema ?? null,
+    configSchema: schema,
+    // 页面直接照着渲染：字段名、类型、是否必填、要不要当密码框，都在这里定好，
+    // 别让前端再猜一遍 schema 结构（两边各解释一次迟早不一致）
+    configFields: describeFields(schema),
+    // v1.2：模块声明的自定义 tab（页面从第三个位置往后排）
+    uiTabs: manifest?.ui?.tabs ?? [],
     log: tailModuleLog(root, id),
   }
 }

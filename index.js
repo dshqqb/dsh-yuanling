@@ -421,6 +421,22 @@ export function apply(ctx, config) {
           }
           return modules.fetchSource(payload)
         },
+        // 装/授/启用之后顺手拉起它：模块进程只活在插件启动那一刻被拉起，
+        // 用户在页面里装完时那个时机早过去了（页面显示"已停止"，日志都没有）。
+        // 装/授/启用之后顺手拉起它：模块进程只活在插件启动那一刻被拉起，
+        // 用户在页面里装完时那个时机早过去了（页面显示"已停止"，日志都没有）。
+        onModuleChanged: async (id, opts = {}) => {
+          if (!modules) return { skipped: 'no-host' }
+          // 配置变更要重启：停掉再用新配置 spawn（协议 §3.1）
+          return opts.restart ? modules.restart(id) : modules.start(id)
+        },
+        // v1.2：模块自定义 tab 只读数据（协议 ui.get）
+        onUiGet: async (id, tab) => {
+          if (!modules) {
+            throw Object.assign(new Error('模块宿主还没起来'), { code: 'E_NO_ROUTE' })
+          }
+          return modules.uiGet(id, tab)
+        },
         // 自证：/root 会把这段原样吐出来，用来排查"配置改了但进程还用旧值"
         meta: {
           source,
