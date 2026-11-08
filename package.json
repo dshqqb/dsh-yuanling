@@ -28,7 +28,8 @@
     "web/",
     "cordis.patch.yml",
     "README.md",
-    "SECURITY.md"
+    "doc/",
+    "examples/"
   ],
   "scripts": {
     "test": "node --test",

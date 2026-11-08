@@ -527,7 +527,41 @@ node --test                      # 全部单元测试
 node scripts/seed-demo.mjs D:\yuanling   # 造一份干净的演示数据（UTF-8 直写，绕开终端编码）
 ```
 
-进度与待办见 `WORKLIST.md`（不入库）。
+### 文档在哪
+
+分两类，**别放错地方**：
+
+| 目录 | 给谁看 | 是否随仓库发布 | 放什么 |
+|---|---|---|---|
+| `doc/` | **用户和开发者** | ✅ 是（`files` 里有） | 协议、设计分析、安全说明 |
+| `ref/` | 只有我自己 | ❌ 否（`.gitignore` 已忽略） | 待办清单、故障复盘等过程材料 |
+
+`doc/` 里现在有：
+
+| 文件 | 讲什么 |
+|---|---|
+| [`doc/PROTOCOL.md`](doc/PROTOCOL.md) | 模块与核心的对接协议（stdio JSON-RPC、四个硬边界、四种能力） |
+| [`doc/PURPOSE_ANALYSIS.md`](doc/PURPOSE_ANALYSIS.md) | surfcore「目的层」的拆解，以及原灵学了什么、改了什么 |
+| [`doc/SECURITY.md`](doc/SECURITY.md) | 安全边界：暴露面、密钥处理、越权防护 |
+
+`ref/` 里是给自己用的过程材料，原则和代码一样：**记事实、标确定性等级，不记口号**
+
+| 文件 | 作用 |
+|---|---|
+| `ref/WORKLIST.md` | **还没做什么**。按模块分节的待办与技术债。改代码前先看它 |
+| `ref/UPDATE-INVESTIGATION.md` | **一次故障的完整复盘**。DSH 应用内更新在 Windows 上静默失败（`graceful deadline exceeded` + 安装器目录交换失败）的排查过程：现象、证据、对照组实验、根因（安装器继承了"安装目录"作为 cwd）、修复与验证清单。它同时证明"那次失败不是原灵引起的" |
+
+更新 `ref/` 时保留证据（命令、输出、时间），下次遇到同类问题能直接复用。
+
+### `examples/SELF.md` 是做什么的
+
+一份**可以直接拷去用的骨架草稿**：
+
+```powershell
+Copy-Item examples\SELF.md D:\yuanling\personas\yuanling\persona\SELF.md -Force
+```
+
+它**不随 npm 包发布**（只随 git 仓库），也不参与运行——`scaffold()` 建数据目录时会生成自己的 `SELF.md` 模板。这份只是"想抄一个写好的"时候的参考。
 
 ## 许可
 

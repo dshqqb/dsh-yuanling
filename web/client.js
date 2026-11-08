@@ -278,25 +278,16 @@ if (!window.__yuanlingClientLoaded) {
     const NS = 'dsh-yuanling'
 
     function apply(ctx) {
-      // 探针①：apply 有没有被调用（服务端会把它写进 system/log/client.log）
-      try {
-        fetch('/dsh-yuanling/api?ping=1', { method: 'POST' }).catch(() => {})
-      } catch {
-        /* 忽略 */
-      }
+      // 诊断探针已移除（2026-11-08）：原先每次 apply 会 POST 两次 ping 到同源 API，
+      // 用来确认"客户端到底跑没跑"。定位完成后它只剩噪音，清掉。
 
-      const register = () => {
-        // 探针②：注册前后的状态，用同一通道落盘，方便判断卡在哪一步
-        try {
-          fetch('/dsh-yuanling/api?ping=2&hasSlots=' + (ctx && ctx.slots ? 1 : 0), { method: 'POST' }).catch(() => {})
-        } catch {}
-        return ctx.slots.inject('settings.section', () =>
+      const register = () =>
+        ctx.slots.inject('settings.section', () =>
           ctx.slots.register(
             { name: 'settings.section', id: NS, order: 6, label: () => '原灵' },
             YuanlingSection,
           ),
         )
-      }
       if (typeof ctx.effect === 'function') ctx.effect(register, 'yuanling: settings section')
       else register()
     }

@@ -32,7 +32,15 @@ import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
 import { refreshWeights, setManualWeight, clearManualWeight } from './weights.js'
-import { findProfiles, mcpStatus, installMcp, uninstallMcp, defaultNodeCmd, defaultServerPath } from './mcpinstall.js'
+import {
+  findProfiles,
+  mcpStatus,
+  installMcp,
+  uninstallMcp,
+  defaultNodeCmd,
+  defaultServerPath,
+  MCP_ENTRY_ID,
+} from './mcpinstall.js'
 import { setIdentityText } from './entities.js'
 import { refreshDrives } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, closePurpose, duePurposes, expirePurposes, purposesPath } from './purposes.js'
@@ -607,6 +615,9 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
           return EXIT.OK
         }
         out(flags['dry-run'] ? '（dry-run）将要写入：' : `✓ 已写入 ${target.patchPath}`)
+        if (r.removedForeign?.length) {
+          out(`  清掉了标记块外的 ${r.removedForeign.length} 份同名重复条目（${MCP_ENTRY_ID}）`)
+        }
         if (r.backup) out(`  备份：${r.backup}`)
         out('  重启 DSH 后生效。')
         return EXIT.OK

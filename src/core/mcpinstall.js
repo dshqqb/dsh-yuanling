@@ -72,30 +72,150 @@ export function buildBlock({ nodeCmd = defaultNodeCmd(), serverPath = defaultSer
   ].join('\n')
 }
 
-/** 把新块替换进文本；没有标记就追加到末尾。 */
+const OUR_COMMENT_MARK = '由 `yuanling mcp install` 维护'
+
+/** 把一段文本按顶层行（非空且不从空格开始）切成若干块。 */
+function splitTopLevel(region) {
+  const chunks = []
+  let cur = []
+  for (const line of String(region ?? '').split('\n')) {
+    const startsNew = line.trim() !== '' && !/^\s/.test(line)
+    if (startsNew && cur.length) {
+      chunks.push(cur)
+      cur = []
+    }
+    cur.push(line)
+  }
+  if (cur.length) chunks.push(cur)
+  return chunks
+}
+
+/**
+ * 把新块替换进文本；没有标记就追加到末尾。
+ *
+ * ⚠️ 这里**只能替换属于我们的那一段**，不能把 BEGIN 到 END 之间整体替换掉。
+ * 真机事故（2026-11-08）：用户通过 DSH 设置页加的火山引擎 provider（`llm-pi-ai`）
+ * 恰好落在标记块内部，整段替换把它一起删了，用户以为"api 消失了"。
+ * 现在的做法：块里凡不是我们这条 entry 的内容，一律搬到 END 之后保留下来。
+ */
 export function applyBlock(text, block) {
   const src = String(text ?? '')
   const begin = src.indexOf(MARK_BEGIN)
   const end = src.indexOf(MARK_END)
 
   if (begin >= 0 && end > begin) {
-    const after = end + MARK_END.length
-    return `${src.slice(0, begin)}${block}${src.slice(after)}`
+    const region = src.slice(begin + MARK_BEGIN.length, end)
+    const foreign = splitTopLevel(region)
+      .filter((chunk) => {
+        const joined = chunk.join('\n')
+        // 我们的 entry 和我们自己生成的注释：删掉重写
+        if (joined.includes(`- id: ${MCP_ENTRY_ID}`)) return false
+        if (joined.includes(OUR_COMMENT_MARK)) return false
+        return joined.trim() !== ''
+      })
+      .map((chunk) => chunk.join('\n').replace(/\s+$/u, ''))
+      .filter(Boolean)
+
+    const head = src.slice(0, begin)
+    const tail = src.slice(end + MARK_END.length)
+    const carried = foreign.length ? `\n\n${foreign.join('\n\n')}` : ''
+    return `${head}${block}${carried}${tail}`
   }
+
   const base = src.replace(/\r\n/g, '\n').replace(/\s*$/u, '')
   return `${base ? `${base}\n\n` : ''}${block}\n`
 }
 
-/** 摘掉标记块，其余原样。 */
+/**
+ * 找出**标记块外**的同名 id 条目，并整段删掉。
+ *
+ * 为什么需要它：手工往 patch 里贴过 `- insert: { - id: mcp-yuanling … }` 之后，
+ * 文件里就有了两份同 id 条目（一份在标记块内、一份在外）。加载器会拿后者覆盖前者，
+ * 而且 `mcp uninstall` 摘不掉块外那份 —— 改数据目录时它就成了幽灵配置。
+ *
+ * 判定方式很保守：只删「`- insert:\n  - id: <目标id>`」这一小段，遇到下一个
+ * 顶层 `- ` 开头（列 0）的行就停。认不准就原样留着，宁可漏删也不误伤别人的条目。
+ */
+export function dedupeForeignEntries(text, id = MCP_ENTRY_ID) {
+  const src = String(text ?? '')
+  const lines = src.split('\n')
+  const removed = []
+
+  // 标记块的区间：块内一律不动
+  const begin = src.indexOf(MARK_BEGIN)
+  const end = src.indexOf(MARK_END)
+
+  let i = 0
+  while (i < lines.length) {
+    if (!/^- insert:\s*$/.test(lines[i])) {
+      i += 1
+      continue
+    }
+    // 记下这一段的绝对字符位置，用来判断是否落在标记块内
+    const insertStart = lines.slice(0, i).join('\n').length
+    if (begin >= 0 && end > begin && insertStart >= begin && insertStart <= end) {
+      i += 1
+      continue
+    }
+
+    // 只看紧跟着的那一条 entry
+    const entryLine = lines[i + 1] ?? ''
+    const m = /^    - id: ([^\s#]+)\s*$/.exec(entryLine)
+    if (!m || m[1] !== id) {
+      i += 1
+      continue
+    }
+
+    // 向后吃到「下一个顶层元素」为止。
+    // 判据必须是「非空且不从空格开始」，不能只看 `^- `：
+    // 列 0 的注释（例如 `# === qq-bridge MCP BEGIN ===`）属于**下一个块**，
+    // 按 `^- ` 判会被一起吞掉——真机上就这么把 surfcore 的 BEGIN 标记删了。
+    let j = i + 1
+    while (j < lines.length) {
+      const line = lines[j]
+      if (line.trim() !== '' && !/^\s/.test(line)) break
+      j += 1
+    }
+
+    // 尾部空行不跟着删（它们属于下一个块之前的视觉分隔）
+    let tail = j
+    while (tail > i + 1 && lines[tail - 1].trim() === '') tail -= 1
+
+    removed.push(lines.slice(i + 1, tail).join('\n'))
+    lines.splice(i, tail - i)
+  }
+
+  const out = lines.join('\n').replace(/\n{3,}/g, '\n\n')
+  return { text: out, removed }
+}
+
+/**
+ * 摘掉标记块，其余原样。
+ *
+ * 和 applyBlock 一样，**不能把 BEGIN→END 之间整段丢掉**：块里可能有用户后来写进去的
+ * 条目（真机事故：火山引擎 provider 落在块内，被 install 删掉过）。卸载时同样要保住它们。
+ */
 export function stripBlock(text) {
   const src = String(text ?? '')
   const begin = src.indexOf(MARK_BEGIN)
   const end = src.indexOf(MARK_END)
   if (begin < 0 || end <= begin) return { text: src, changed: false }
 
+  const region = src.slice(begin + MARK_BEGIN.length, end)
+  const foreign = splitTopLevel(region)
+    .filter((chunk) => {
+      const joined = chunk.join('\n')
+      if (joined.includes(`- id: ${MCP_ENTRY_ID}`)) return false
+      if (joined.includes(OUR_COMMENT_MARK)) return false
+      return joined.trim() !== ''
+    })
+    .map((chunk) => chunk.join('\n').replace(/\s+$/u, ''))
+    .filter(Boolean)
+
   const before = src.slice(0, begin).replace(/\s*$/u, '')
   const after = src.slice(end + MARK_END.length).replace(/\s*$/u, '')
-  const joined = [before, after].filter(Boolean).join('\n\n')
+  const pieces = [before, foreign.join('\n\n'), after.replace(/^\s*$/u, '')].filter(Boolean)
+  const joined = pieces.join('\n\n').replace(/\n{3,}/g, '\n\n')
   return { text: joined ? `${joined}\n` : '', changed: true }
 }
 
@@ -166,7 +286,11 @@ export function installMcp({
 
   const before = fs.readFileSync(patchPath, 'utf8')
   const block = buildBlock({ nodeCmd, serverPath, dataRoot })
-  const after = applyBlock(before, block)
+
+  // 顺序很重要：先清掉标记块外的同名残留，再写块。
+  // 否则文件里会同时存在两份同 id 条目（见过：手工加的那份把块内那份盖掉）。
+  const deduped = dedupeForeignEntries(before)
+  const after = applyBlock(deduped.text, block)
   const changed = after !== before
 
   if (!dryRun && changed) {
@@ -178,9 +302,9 @@ export function installMcp({
     } catch (error) {
       throw friendlyWriteError(error)
     }
-    return { patchPath, changed: true, backup, restartRequired: true }
+    return { patchPath, changed: true, backup, restartRequired: true, removedForeign: deduped.removed }
   }
-  return { patchPath, changed, backup: null, restartRequired: changed }
+  return { patchPath, changed, backup: null, restartRequired: changed, removedForeign: deduped.removed }
 }
 
 /** 卸载：只摘自己那段。 */

@@ -246,21 +246,10 @@ function registerSettingsApi(ctx, config, state) {
         return
       }
 
-      // 客户端探针：设置页的 apply() 有没有被调用，落一行到 system/log/client.log。
-      // 客户端报错在浏览器里，我们读不到；写文件是唯一可观测的通道。
-      if (String(req.url ?? '').includes('ping=1')) {
-        try {
-          const { root: pingRoot } = resolveRoot({ env: process.env, config: live })
-          const dir = path.join(pingRoot, 'system', 'log')
-          fs.mkdirSync(dir, { recursive: true })
-          fs.appendFileSync(
-            path.join(dir, 'client.log'),
-            `${localIso()} ${req.method} ${String(req.headers?.['user-agent'] ?? '').slice(0, 60)}\n`,
-          )
-        } catch {
-          /* 探针失败不影响主流程 */
-        }
-      }
+      // 客户端探针已移除（2026-11-08）。
+      // 曾经在这里把设置页 apply() 的调用落盘到 system/log/client.log，用来排查
+      // "客户端到底跑没跑"——问题定位后它只剩副作用（每次打开设置页多两次 POST
+      // 加一次写文件），所以删掉了。要再诊断，直接看 /root 的 meta 与浏览器报错。
 
       if (req.method === 'GET') {
         const { root } = resolveRoot({ env: process.env, config: live })
