@@ -8,6 +8,7 @@ const state = {
   tab: 'status',
   mode: 'core',
   peopleSort: 'weight',
+  groupGid: null,
   moduleId: null,
   // 模块模式下的左侧菜单：控制台 + 每个已装模块。列表缓存在这里，回车/点击都不用再请求
   modules: [],
@@ -51,6 +52,7 @@ const I = {
   list: '<path d="M8.5 7h11M8.5 12h11M8.5 17h11" stroke-linecap="round"/><circle cx="4.5" cy="7" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17" r="1"/>',
   spark: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9L12 3.5z" stroke-linejoin="round"/>',
   user: '<circle cx="12" cy="8.4" r="3.6"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6" stroke-linecap="round"/>',
+  users: '<circle cx="9" cy="8.4" r="3.2"/><path d="M3.4 19.4c0-3.2 2.5-5 5.6-5s5.6 1.8 5.6 5" stroke-linecap="round"/><path d="M16.2 5.7a3.2 3.2 0 010 6.2M17.8 14.9c2 .5 3.3 2 3.3 4.1" stroke-linecap="round"/>',
   shield: '<path d="M12 3.6l7 2.6v5.4c0 4.4-3 7.4-7 8.8-4-1.4-7-4.4-7-8.8V6.2l7-2.6z" stroke-linejoin="round"/>',
   plug: '<path d="M9 3.5v4M15 3.5v4" stroke-linecap="round"/><path d="M6.5 7.5h11v3.2a5.5 5.5 0 01-11 0V7.5z" stroke-linejoin="round"/><path d="M12 16.5v4" stroke-linecap="round"/>',
   ban: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4" stroke-linecap="round"/>',
@@ -66,6 +68,7 @@ const NAV = [
   { id: 'entries', label: '条目', icon: 'list' },
   { id: 'proposals', label: '提案', icon: 'spark' },
   { id: 'people', label: '人物', icon: 'user' },
+  { id: 'groups', label: '群体', icon: 'users' },
   { id: 'rules', label: '规则', icon: 'shield' },
   { id: 'usage', label: '用量', icon: 'chart' },
   { id: 'sources', label: '来源', icon: 'plug' },
@@ -500,6 +503,100 @@ async function savePerson() {
   await loadPeople()
 }
 
+// ── 群体 ──────────────────────────────────────────────────────────────
+//
+// 群体和人物是并列的实体，但**不跨平台合并**：QQ 群和贴吧永远不是同一个地方。
+// 描述全是自然语言（她自己总结、人也可以改），成员是事实，由核心从原始层归集。
+const PLATFORM_LABELS = { qq: 'QQ 群', wechat: '微信群', tieba: '贴吧', bili: 'B 站' }
+
+function groupCard(g) {
+  const n = el('div', 'item')
+  const body = el('div', 'body')
+  const head = el('div', 't')
+  const tags = el('span')
+  tags.append(el('span', 'tag purple', PLATFORM_LABELS[g.platform] ?? g.platform))
+  if (g.important) tags.append(el('span', 'tag ok', '重要'))
+  tags.append(el('span', g.weightSource === 'manual' ? 'tag warn' : 'tag', `${g.weight}${g.weightSource === 'manual' ? ' 手动' : ''}`))
+  head.append(tags, document.createTextNode(g.name || g.gid))
+
+  const bits = [g.gid]
+  if (g.memberCount) bits.push(`成员 ${g.memberCount}`)
+  if (g.topics) bits.push(g.topics.slice(0, 48))
+  else if (g.feature) bits.push(g.feature.slice(0, 48))
+  body.append(head, el('div', 's', bits.join(' · ')))
+  n.append(body)
+
+  const acts = el('div', 'actions')
+  acts.append(
+    mkBtn(g.important ? '取消置顶' : '设为重要', 'small ghost', async () => {
+      await postApi('/api/group/tier', { gid: g.gid, important: !g.important })
+      await loadGroups()
+    }),
+  )
+  acts.append(mkBtn('编辑', 'small ghost', () => openGroupEditor(g)))
+  n.append(acts)
+  return n
+}
+
+async function loadGroups() {
+  const d = await api('/api/groups')
+
+  const imp = $('groups-important')
+  imp.innerHTML = ''
+  if (!d.important.length) imp.append(el('div', 'zone-empty', '把某个群设为重要，它就会排到这里。'))
+  for (const g of d.important) imp.append(groupCard(g))
+
+  $('groups-count').textContent = `共 ${d.total} 个群体`
+  const box = $('groups-out')
+  box.innerHTML = ''
+  if (!d.groups.length) {
+    box.append(
+      el(
+        'div',
+        'muted small',
+        d.total ? '没有其他群体了。' : '还没有任何群体档案。她在某个群里说过话、或有人提到那个群之后，这里才会出现。',
+      ),
+    )
+  }
+  for (const g of d.groups) box.append(groupCard(g))
+}
+
+async function openGroupEditor(g) {
+  state.groupGid = g.gid
+  const d = await api(`/api/group?gid=${encodeURIComponent(g.gid)}`)
+  const gg = d.group
+  $('group-editor').hidden = false
+  $('group-title').textContent = `${gg.name || gg.gid}（${gg.gid}）`
+  $('group-name').value = gg.name || ''
+  $('group-feature').value = gg.feature || ''
+  $('group-topics').value = gg.topics || ''
+  $('group-aliases').value = (gg.aliases ?? []).join('、')
+  $('group-weight').value = gg.weightSource === 'manual' ? gg.weight : ''
+
+  const names = d.members.slice(0, 12).map((m) => m.display)
+  $('group-members-msg').textContent = names.length
+    ? `常出现的人（${d.members.length}）：${names.join('、')}${d.members.length > names.length ? ' …' : ''}`
+    : '还没归集成员——点「重新归集成员」，只收有档案的人。'
+  $('group-msg').textContent = ''
+  $('group-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function saveGroup() {
+  if (!state.groupGid) return
+  await postApi('/api/group', {
+    gid: state.groupGid,
+    name: $('group-name').value,
+    feature: $('group-feature').value,
+    topics: $('group-topics').value,
+    aliases: $('group-aliases').value,
+  })
+  const raw = $('group-weight').value.trim()
+  if (raw !== '') await postApi('/api/group/weight', { gid: state.groupGid, weight: Number(raw) })
+
+  $('group-msg').textContent = '已保存（进版本历史，可回滚）'
+  await loadGroups()
+}
+
 async function loadRules() {
   const ch = $('rule-channel').value.trim()
   const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
@@ -630,6 +727,7 @@ const loaders = {
   entries: loadEntries,
   proposals: loadProposals,
   people: loadPeople,
+  groups: loadGroups,
   rules: loadRules,
   usage: loadUsage,
   sources: loadSources,
@@ -1739,6 +1837,44 @@ $('people-sort').addEventListener('click', (e) => {
   state.peopleSort = b.dataset.sort
   for (const x of $('people-sort').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
   loadPeople().catch(() => {})
+})
+
+// ── 群体事件 ──────────────────────────────────────────────────────────
+$('group-save').addEventListener('click', () => {
+  saveGroup().catch((err) => {
+    $('group-msg').textContent = `失败：${err.message}`
+  })
+})
+
+$('group-weight-auto').addEventListener('click', async () => {
+  if (!state.groupGid) return
+  try {
+    await postApi('/api/group/weight', { gid: state.groupGid, weight: null })
+    $('group-weight').value = ''
+    $('group-msg').textContent = '已恢复自动计分'
+    await loadGroups()
+  } catch (err) {
+    $('group-msg').textContent = `失败：${err.message}`
+  }
+})
+
+$('group-members').addEventListener('click', async () => {
+  if (!state.groupGid) return
+  const gid = state.groupGid
+  const btn = $('group-members')
+  btn.disabled = true
+  $('group-members-msg').textContent = '正在从原始层归集…'
+  try {
+    const r = await postApi('/api/group/members', { gid })
+    await loadGroups()
+    await openGroupEditor({ gid })
+    // 归集结果照实说：扫了几天、对上了几个有档案的人
+    $('group-members-msg').textContent = `✓ 重新归集：${r.members.length} 人（扫了 ${r.scannedDays} 天，只收有档案的）`
+  } catch (err) {
+    $('group-members-msg').textContent = `失败：${err.message}`
+  } finally {
+    btn.disabled = false
+  }
 })
 
 // 拖进「重要人物」即置顶

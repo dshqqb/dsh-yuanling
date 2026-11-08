@@ -25,9 +25,8 @@ import {
   splitIdentity,
   readProfile,
   writeProfile,
-  readGroup,
-  writeGroup,
 } from './entities.js'
+import { listGroups, readGroup, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight } from './groups.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
@@ -254,7 +253,12 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling module enable|disable <id>          启动 / 持久停用
   yuanling module uninstall <id> --yes         卸载（会删模块目录与配置）
   yuanling proposal list|show|approve|reject|rollback|sweep|policy
-  yuanling group show|set <群号> [--name --intro --tone]
+  yuanling group list                  列出所有群体（按权重）
+  yuanling group show <群>             看一个群体的档案
+  yuanling group set <群> [--name --feature --topics --alias]
+  yuanling group members <群>          从原始层重新归集成员
+  yuanling group promote|demote <群>   置顶 / 取消置顶
+  yuanling group weight <群> <0-100|auto>
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
   yuanling rule show [--channel c]    看合并后的有效规则与来源
   yuanling rule check <action> [--channel c]
@@ -1326,30 +1330,105 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       const sub = _[1]
       const marker = readMarker(root)
       const pid = flags.persona ? String(flags.persona) : marker?.active
-      const gid = _[2]
-      if (!gid) {
-        err('用法：yuanling group show|set <群号> [--name n] [--intro s] [--tone s]')
-        return EXIT.CONFIG
+      // 群体 id 是 `平台:标识`；只给一串数字时按 QQ 群理解（最常用的那个）
+      const asGid = (raw) => {
+        const s = String(raw ?? '').trim()
+        if (!s) return ''
+        return s.includes(':') ? s : `qq:${s}`
       }
-      if (sub === 'show' || !sub) {
-        const g = readGroup(root, pid, gid)
+      const needGid = () => {
+        const g = asGid(_[2])
         if (!g) {
-          out('（这个群还没有档案）')
+          err('用法：yuanling group list|show|set|members|promote|demote|weight <群>')
+          return ''
+        }
+        return g
+      }
+
+      if (sub === 'list' || !sub) {
+        const all = listGroups(root, pid)
+        if (!all.length) {
+          out('（还没有任何群体档案）')
           return EXIT.OK
         }
-        out(`${g.name || g.gid}  ${g.intro || ''}`)
-        if (g.tone) out(`  语气：${g.tone}`)
+        for (const g of all) {
+          const tier = g.tier === 'important' ? ' [重要]' : ''
+          const w = g.weightSource === 'manual' ? `${g.weight}(手)` : String(g.weight)
+          out(`${g.name || g.gid}${tier}  ${g.gid}  权重 ${w}  成员 ${g.memberCount}`)
+          if (g.topics) out(`  ${g.topics}`)
+        }
+        out(`\n共 ${all.length} 个群体`)
         return EXIT.OK
       }
+
+      if (sub === 'show') {
+        const gid = needGid()
+        if (!gid) return EXIT.CONFIG
+        const g = readGroup(root, pid, gid)
+        if (!g) {
+          out(`（${gid} 还没有档案）`)
+          return EXIT.OK
+        }
+        out(`${g.name || g.gid}  ${g.gid}`)
+        out(`  权重：${g.weight}${g.weightSource === 'manual' ? '（手动）' : '（自动）'}${g.tier === 'important' ? '  [重要]' : ''}`)
+        if (g.feature) out(`  特征：${g.feature}`)
+        if (g.topics) out(`  话题：${g.topics}`)
+        if (g.members.length) out(`  常出现的人（${g.memberCount}）：${g.members.join('、')}`)
+        if (g.lastSeen) out(`  最后一次见到：${g.lastSeen}`)
+        return EXIT.OK
+      }
+
       if (sub === 'set') {
-        const patch = { __reason: '手动编辑群档案' }
+        const gid = needGid()
+        if (!gid) return EXIT.CONFIG
+        const patch = { __reason: '手动编辑群体档案' }
         if (flags.name) patch.name = String(flags.name)
-        if (flags.intro) patch.intro = String(flags.intro)
-        if (flags.tone) patch.tone = String(flags.tone)
+        if (flags.feature) patch.feature = String(flags.feature)
+        if (flags.topics) patch.topics = String(flags.topics)
+        if (flags.alias) {
+          patch.aliases = String(flags.alias)
+            .split(/[,，、\s]+/)
+            .map((x) => x.trim())
+            .filter(Boolean)
+            .slice(0, 10)
+        }
         const g = writeGroup(root, pid, gid, patch)
-        out(`✓ 已更新群 ${gid} 的档案（${pid}）：${g.name || ''}`)
+        out(`✓ 已更新群体 ${g.gid}：${g.name || '（未命名）'}`)
         return EXIT.OK
       }
+
+      if (sub === 'members') {
+        const gid = needGid()
+        if (!gid) return EXIT.CONFIG
+        const r = collectMembers(root, pid, gid)
+        writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount }, { reason: '从原始层归集成员' })
+        refreshGroupWeight(root, pid, gid)
+        out(`✓ ${gid} 归集到 ${r.memberCount} 个认识的人（扫了 ${r.scannedDays} 天）`)
+        if (r.members.length) out(`  ${r.members.join('、')}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'promote' || sub === 'demote') {
+        const gid = needGid()
+        if (!gid) return EXIT.CONFIG
+        const g = setGroupTier(root, pid, gid, sub === 'promote' ? 'important' : null)
+        out(`✓ ${g.gid} ${sub === 'promote' ? '已置顶为重要群体' : '已取消置顶'}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'weight') {
+        const gid = needGid()
+        if (!gid) return EXIT.CONFIG
+        const raw = String(_[3] ?? '')
+        if (!raw) {
+          err('用法：yuanling group weight <群> <0-100|auto>')
+          return EXIT.CONFIG
+        }
+        const g = raw === 'auto' ? clearGroupWeight(root, pid, gid) : setGroupWeight(root, pid, gid, Math.max(0, Math.min(100, Number(raw) || 0)))
+        out(`✓ ${g.gid} 权重 → ${g.weight}（${g.weightSource === 'manual' ? '手动' : '自动'}）`)
+        return EXIT.OK
+      }
+
       err(`未知子命令：group ${sub}`)
       return EXIT.CONFIG
     }

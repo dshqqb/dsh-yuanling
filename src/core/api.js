@@ -14,6 +14,7 @@ import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGr
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
 import { listSources, fetchStats } from './modules/sources.js'
+import { listGroups, readGroup, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, ensureGroup, refreshGroupWeight } from './groups.js'
 import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
 
@@ -39,6 +40,28 @@ export function buildStatus(root) {
 
 function need(result) {
   return result ?? null
+}
+
+/**
+ * 群体的列表行。字段命名和人物行对齐（weight / weightSource / important），
+ * 但平台与 id 分开给——群体不跨平台合并，平台本身就是身份的一部分。
+ */
+function groupRow(g) {
+  return {
+    gid: g.gid ?? `${g.platform}:${g.id}`,
+    platform: g.platform,
+    id: g.id,
+    name: g.name || '',
+    aliases: g.aliases ?? [],
+    feature: g.feature || '',
+    topics: g.topics || '',
+    memberCount: Number(g.memberCount ?? 0),
+    weight: Number(g.weight ?? 0),
+    weightSource: g.weightSource === 'manual' ? 'manual' : 'auto',
+    important: g.tier === 'important',
+    firstSeen: g.firstSeen ?? null,
+    lastSeen: g.lastSeen ?? null,
+  }
 }
 
 /**
@@ -229,6 +252,35 @@ export function handleApi(root, url) {
     return { status: 200, body: { ok: true, proposals: listProposals(root, pid) } }
   }
 
+  // ── 群体（读）──────────────────────────────────────────────────────────
+  // 和人物页并列：一群人也是一个实体，但它**不跨平台合并**（QQ群 ≠ 贴吧）。
+  if (pathname === '/api/groups') {
+    const list = listGroups(root, pid)
+    const important = list.filter((g) => g.tier === 'important')
+    const rest = list.filter((g) => g.tier !== 'important')
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        important: important.map(groupRow),
+        groups: rest.map(groupRow),
+        total: list.length,
+      },
+    }
+  }
+
+  if (pathname === '/api/group') {
+    const gid = searchParams.get('gid') ?? ''
+    if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
+    const g = readGroup(root, pid, gid)
+    if (!g) return { status: 404, body: { ok: false, error: '没有这个群体' } }
+    const members = g.members.map((uid) => {
+      const person = loadIdentities(root).people?.[uid]
+      return { uid, display: person?.display ?? uid, identities: person?.identities ?? [] }
+    })
+    return { status: 200, body: { ok: true, group: g, members } }
+  }
+
   if (pathname === '/api/people') {
     const sort = searchParams.get('sort') === 'time' ? 'time' : 'weight'
     const data = loadIdentities(root)
@@ -306,6 +358,55 @@ export function handleApiWrite(root, url, body) {
         return { status: 200, body: { ok: true, proposal: rollback(root, pid, id) } }
       }
       return { status: 400, body: { ok: false, error: `未知动作：${action}` } }
+    }
+
+    // ── 群体（写）──────────────────────────────────────────────────────
+    // 只有四类操作：改描述（自然语言）、置顶/取消、手改权重、重新归集成员。
+    // 群体**没有** merge：QQ群和贴吧永远不是同一个实体（用户明确要求）。
+    if (pathname === '/api/group') {
+      const gid = String(b.gid ?? '')
+      if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
+      const patch = { __reason: '管理台编辑群体档案' }
+      if (typeof b.name === 'string') patch.name = b.name.slice(0, 60)
+      if (typeof b.feature === 'string') patch.feature = b.feature.slice(0, 2000)
+      if (typeof b.topics === 'string') patch.topics = b.topics.slice(0, 2000)
+      if (typeof b.aliases === 'string') {
+        patch.aliases = b.aliases
+          .split(/[,，、\s]+/)
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(0, 10)
+      }
+      const g = writeGroup(root, pid, gid, patch)
+      return { status: 200, body: { ok: true, group: g } }
+    }
+
+    if (pathname === '/api/group/tier') {
+      const gid = String(b.gid ?? '')
+      if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
+      const tier = b.important === false ? null : 'important'
+      return { status: 200, body: { ok: true, group: setGroupTier(root, pid, gid, tier) } }
+    }
+
+    if (pathname === '/api/group/weight') {
+      const gid = String(b.gid ?? '')
+      if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
+      if (b.weight === null || b.weight === undefined) {
+        return { status: 200, body: { ok: true, group: clearGroupWeight(root, pid, gid) } }
+      }
+      const w = Math.max(0, Math.min(100, Number(b.weight) || 0))
+      return { status: 200, body: { ok: true, group: setGroupWeight(root, pid, gid, w) } }
+    }
+
+    if (pathname === '/api/group/members') {
+      const gid = String(b.gid ?? '')
+      if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
+      // 成员是"事实"（谁在这个群说过话），从原始层归集，不让模型编
+      const r = collectMembers(root, pid, gid)
+      const g = ensureGroup(root, pid, gid, {})
+      const next = writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount })
+      refreshGroupWeight(root, pid, gid)
+      return { status: 200, body: { ok: true, group: next, members: r.members, scannedDays: r.scannedDays } }
     }
 
     if (pathname === '/api/person/identity') {

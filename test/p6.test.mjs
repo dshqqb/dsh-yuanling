@@ -22,10 +22,9 @@ import {
   personForChannel,
   writeProfile,
   readProfile,
-  writeGroup,
-  readGroup,
   loadIdentities,
 } from '../src/core/entities.js'
+import { writeGroup, readGroup } from '../src/core/groups.js'
 import { catchUp, catchUpStatus } from '../src/core/catchup.js'
 import { history } from '../src/core/version.js'
 import { createPersona as pbCreate } from '../src/core/persona.js'
@@ -183,12 +182,14 @@ test('profile：档案按人格隔离（同一个人，两个角色各记各的�
   assert.equal(readProfile(root, PID, p.uid).sketch, 'A 的印象')
 })
 
-test('group：写群档案并读回', () => {
+test('group：写群体档案并读回', () => {
   const root = tmpRoot()
-  writeGroup(root, PID, '123456', { name: 'XX 游戏群', intro: '折腾 mod 的人', tone: '技术向' })
-  const g = readGroup(root, PID, '123456')
+  writeGroup(root, PID, 'qq:123456', { name: 'XX 游戏群', feature: '折腾 mod 的人，技术向' })
+  const g = readGroup(root, PID, 'qq:123456')
   assert.equal(g.name, 'XX 游戏群')
-  assert.equal(g.tone, '技术向')
+  assert.equal(g.platform, 'qq')
+  assert.equal(g.id, '123456')
+  assert.match(g.feature, /技术向/)
 })
 
 // ── 关于某个人的第一次 ──────────────────────────────────────────────────
@@ -220,11 +221,11 @@ test('contextFor：私聊带人档案', () => {
   assert.match(ctx, /说话短/)
 })
 
-test('contextFor：群里带群档案', () => {
+test('contextFor：群里带群体档案', () => {
   const root = tmpRoot()
-  writeGroup(root, PID, '555', { name: '摸鱼群', tone: '晚上活跃' })
+  writeGroup(root, PID, 'qq:555', { name: '摸鱼群', feature: '晚上活跃，正经事白天说' })
   const ctx = contextFor(root, PID, { channel: 'group:555' })
-  assert.match(ctx, /\[这个群\] 摸鱼群/)
+  assert.match(ctx, /\[群体\] 摸鱼群/)
   assert.match(ctx, /晚上活跃/)
 })
 

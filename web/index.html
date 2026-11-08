@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>原灵 · 管理台</title>
-  <link rel="stylesheet" href="/style.css?v=20261109a" />
+  <link rel="stylesheet" href="/style.css?v=20261110a" />
   <script>
     // 首帧之前定主题，避免白闪一下
     ;(function () {
@@ -186,6 +186,43 @@
             <div class="field-row">
               <button id="person-save" class="btn">保存</button>
               <span id="person-msg" class="muted small"></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-groups" class="page" hidden>
+          <div class="page-head">
+            <h2>群体</h2>
+            <p class="muted">
+              一个 QQ 群、一个贴吧、一个粉丝群各算一个群体——不跨平台合并。她在群里说话、或有人提到这个群时，这张卡会跟着进上下文。
+            </p>
+          </div>
+
+          <div class="zone">
+            <div class="zone-head"><h3>重要群体</h3><span class="muted small">置顶的群排前面，进上下文时也更优先</span></div>
+            <div id="groups-important" class="zone-body"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>其余</h3><span class="muted small" id="groups-count"></span></div>
+            <div id="groups-out" class="list"></div>
+          </div>
+
+          <div id="group-editor" class="card" hidden>
+            <div class="card-head"><h3 id="group-title"></h3></div>
+            <div class="field-row"><input id="group-name" placeholder="群名" /></div>
+            <textarea id="group-feature" rows="4" placeholder="这个群是什么地方、什么氛围、她在这里怎么说话"></textarea>
+            <textarea id="group-topics" rows="3" placeholder="这里主要在聊什么"></textarea>
+            <div class="field-row"><input id="group-aliases" placeholder="别名 / 简称，逗号分隔" /></div>
+            <div class="field-row">
+              <input id="group-weight" type="number" min="0" max="100" placeholder="权重 0-100" class="narrow" />
+              <button id="group-weight-auto" class="btn ghost small">恢复自动</button>
+              <button id="group-members" class="btn ghost small">重新归集成员</button>
+            </div>
+            <div id="group-members-msg" class="muted small"></div>
+            <div class="field-row">
+              <button id="group-save" class="btn">保存</button>
+              <span id="group-msg" class="muted small"></span>
             </div>
           </div>
         </section>
@@ -374,6 +411,6 @@
 
   <!-- 带版本号：浏览器对 .js 的缓存很顽固，改了脚本不换 query 就可能跑旧代码，
        排查时会一路怀疑到后端（真踩过）。后端也加了 no-cache，这里是双保险。 -->
-  <script src="/app.js?v=20261109a"></script>
+  <script src="/app.js?v=20261110a"></script>
 </body>
 </html>

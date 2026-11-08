@@ -424,34 +424,8 @@ export function listPeopleForUi(root, pid, { sort = 'weight' } = {}) {
   return rows
 }
 
-// ── 群 ──────────────────────────────────────────────────────────────────
-
-export function groupRel(pid, gid) {
-  return `${P.personas}/${pid}/entities/groups/${String(gid).replace(/[\\/:*?"<>|]/g, '_')}.json`
-}
-
-export function readGroup(root, pid, gid) {
-  return readJson(path.join(root, groupRel(pid, gid)), null)
-}
-
-export function writeGroup(root, pid, gid, patch = {}) {
-  const rel = groupRel(pid, gid)
-  const cur = readJson(path.join(root, rel), null) ?? {
-    gid: String(gid),
-    name: '',
-    intro: '',
-    tone: '',
-    topics: [],
-    created: localIso(),
-  }
-  const { __reason, ...rest } = patch
-  const next = { ...cur, ...rest, gid: String(gid), updated_at: localIso() }
-  writeTracked(root, rel, JSON.stringify(next, null, 2) + '\n', {
-    actor: 'system:entity',
-    reason: __reason ?? '更新群档案',
-  })
-  return next
-}
+// 群体（群档案）不在这里：它有自己的一套规则（平台:标识、不跨平台合并、权重、
+// 成员归集），见 groups.js。这里只留人物与频道解析。
 
 // ── 频道解析 ────────────────────────────────────────────────────────────
 

@@ -15,6 +15,7 @@ import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
+import { readGroup, writeGroup, ensureGroup, gidForChannel } from './src/core/groups.js'
 import { listSources, readConsoleRuntime, renderFetched, clipText } from './src/core/modules/sources.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
@@ -95,6 +96,25 @@ const TOOLS = [
         autoLink: { type: 'boolean', description: '是否自动绑定未被占用的账号，默认 true' },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: 'yuanling_group',
+    description:
+      '看 / 写一个"群体"的档案：一个 QQ 群、一个贴吧、一个粉丝群，各是一个群体（**不跨平台合并**）。\n' +
+      '在群里说话时，当前群体的卡已经自动出现在 yuanling_context 里；这个工具用来主动补写她的理解' +
+      '（这个群是什么地方、氛围怎样、主要在聊什么），或者查一个别人刚提到的群。\n' +
+      '只写自然语言描述，别编成员——成员由核心从原始层归集（谁在这个群说过话）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        gid: { type: 'string', description: '群体 id，形如 qq:123456。不传则用 channel 对应的群。' },
+        channel: { type: 'string', description: '当前会话频道，如 group:123456，用来推断是哪个群。' },
+        name: { type: 'string', description: '群名（只在写入时用）' },
+        feature: { type: 'string', description: '这个群是什么地方、什么氛围——自然语言，≤2000 字' },
+        topics: { type: 'string', description: '这里主要在聊什么——自然语言，≤2000 字' },
+        aliases: { type: 'array', items: { type: 'string' }, description: '别名/简称，最多 10 个' },
+      },
     },
   },
   {
@@ -211,6 +231,31 @@ function formatIdentityResult(uid, display, r) {
   return lines.join('\n')
 }
 
+/** 群体的 id：显式 gid 优先，其次从频道推（group:123 → qq:123）。推不出来就返回空。 */
+function resolveGroupGid(args) {
+  const raw = String(args.gid ?? '').trim()
+  if (raw) return raw.includes(':') ? raw : `qq:${raw}`
+  const ch = String(args.channel ?? '').trim()
+  if (ch) return gidForChannel(ch) ?? ''
+  return ''
+}
+
+function formatGroupDetail(root, pid, g) {
+  const people = loadIdentities(root).people ?? {}
+  const lines = [`${g.name || '（未命名）'}  ${g.gid}`]
+  lines.push(`权重 ${g.weight}（${g.weightSource === 'manual' ? '手动' : '自动'}）${g.tier === 'important' ? '  〔重要群体〕' : ''}`)
+  if (g.feature) lines.push(`特征：${g.feature}`)
+  if (g.topics) lines.push(`话题：${g.topics}`)
+  if (g.members.length) {
+    const names = g.members.slice(0, 10).map((uid) => people[uid]?.display ?? uid)
+    lines.push(`常出现的人（${g.memberCount}）：${names.join('、')}${g.members.length > 10 ? ' …' : ''}`)
+  } else {
+    lines.push('常出现的人：还没归集（管理台点「重新归集成员」，或 yuanling group members）')
+  }
+  if (g.lastSeen) lines.push(`最后一次见到：${g.lastSeen}`)
+  return lines.join('\n')
+}
+
 async function callTool(root, name, args = {}) {
   const pid = activePersona(root)
   if (!pid) throw new Error('还没有激活的人格')
@@ -253,6 +298,37 @@ async function callTool(root, name, args = {}) {
 
     const r = setIdentityText(root, uid, text, { autoLink: args.autoLink !== false })
     return { text: formatIdentityResult(uid, display, r), linked: r.linked.length, conflicts: r.conflicts.length }
+  }
+
+  if (name === 'yuanling_group') {
+    const gid = resolveGroupGid(args)
+    if (!gid) throw new Error('需要 gid（qq:123456）或 channel（group:123456）')
+
+    const patch = {}
+    if (typeof args.name === 'string' && args.name.trim()) patch.name = args.name.trim().slice(0, 60)
+    if (typeof args.feature === 'string' && args.feature.trim()) patch.feature = args.feature.trim().slice(0, 2000)
+    if (typeof args.topics === 'string' && args.topics.trim()) patch.topics = args.topics.trim().slice(0, 2000)
+    if (Array.isArray(args.aliases)) {
+      patch.aliases = args.aliases
+        .map((x) => String(x).trim())
+        .filter(Boolean)
+        .slice(0, 10)
+    }
+    const writing = Object.keys(patch).length > 0
+
+    if (!writing) {
+      const g = readGroup(root, pid, gid)
+      if (!g) {
+        return {
+          text: `（${gid} 还没有档案。在这个群说过话、或有人提到它之后才会有；第一次写描述时，传 feature / topics 就会顺手建。）`,
+        }
+      }
+      return { text: formatGroupDetail(root, pid, g) }
+    }
+
+    ensureGroup(root, pid, gid, {})
+    const g = writeGroup(root, pid, gid, patch, { actor: 'model:group', reason: '模型补写群体理解' })
+    return { text: `✓ 已写入群体 ${g.gid}\n\n${formatGroupDetail(root, pid, g)}` }
   }
 
   if (name === 'yuanling_sources') {
@@ -323,7 +399,8 @@ async function handle(req) {
         serverInfo: SERVER_INFO,
         instructions:
           '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；' +
-          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_identity 写回档案。',
+          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_identity 写回档案；' +
+          '对某个群有了新理解（它是什么地方、在聊什么）就用 yuanling_group 写回去。',
       })
       return
     }

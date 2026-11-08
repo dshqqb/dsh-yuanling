@@ -13,7 +13,8 @@ import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
 import { refreshDrives } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markHit, closePurpose, SELECT_MAX_HITS } from './purposes.js'
-import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readGroup, readProfile } from './entities.js'
+import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile } from './entities.js'
+import { groupsForContext, groupCardLine } from './groups.js'
 import {
   ageDays,
   clarityOf,
@@ -810,15 +811,15 @@ export function contextFor(
   if (remember) lines.push(remember)
 
   if (channel) {
-    const { kind, id } = parseChannel(channel)
-    if (kind === 'group') {
-      const g = readGroup(root, pid, id)
-      if (g) {
-        const bits = [g.name || g.gid]
-        if (g.intro) bits.push(g.intro)
-        if (g.tone) bits.push(g.tone)
-        lines.push(`[这个群] ${bits.join(' · ')}`)
-      }
+    // 群体：当前频道对应的那个一定带；这一轮文本里提到的别的群体也带（"群里聊到另一个群"是真事）。
+    // 只在群聊里做：私聊没有"群体"这回事，gidForChannel 会直接返回 null。
+    const recentText = recentChannelRecords(root, channel, 12)
+      .map((r) => String(r.text ?? ''))
+      .join('\n')
+    const groups = groupsForContext(root, pid, { channel, text: recentText })
+    for (const g of groups) {
+      const line = groupCardLine(root, pid, g)
+      if (line) lines.push(line)
     }
   }
 
