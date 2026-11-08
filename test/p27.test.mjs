@@ -191,6 +191,24 @@ test('installer：同名再装 = 更新，不新增条目', () => {
   assert.equal(reg.modules.qq.version, '0.2.0')
 })
 
+test('installer：更新不会删掉模块配置（cookie 是用户的，不属于包）', () => {
+  const root = tmpRoot()
+  installFromBytes({ root, bytes: pkgBytes(), repo: 'https://x' })
+
+  // 用户填了配置
+  const cfgPath = path.join(root, 'system', 'modules', 'qq', 'config.json')
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+  fs.writeFileSync(cfgPath, JSON.stringify({ sessdata: 'SECRET-KEEP-ME' }))
+
+  // 更新到新版本（包里没有 config.json，整目录替换）
+  installFromBytes({ root, bytes: pkgBytes({ ...MANIFEST, version: '0.2.0' }), repo: 'https://x' })
+
+  assert.equal(fs.existsSync(cfgPath), true, '配置文件必须还在')
+  assert.match(fs.readFileSync(cfgPath, 'utf8'), /SECRET-KEEP-ME/, '内容不能被清空')
+  // 顺带确认新版本代码确实换上了
+  assert.equal(readRegistry(root).modules.qq.version, '0.2.0')
+})
+
 test('installer：换源更新时留下 previousRepo（回滚线索）', () => {
   const root = tmpRoot()
   installFromBytes({ root, bytes: pkgBytes(), repo: 'https://github/x', source: 'github' })

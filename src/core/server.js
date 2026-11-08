@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { exists, ensureDir, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { ingest, healthReport } from './inbox.js'
-import { handleApi, handleApiWrite, handleModuleInstallFromUrl, handleModuleUi } from './api.js'
+import { handleApi, handleApiWrite, handleModuleInstallFromUrl, handleModuleUi, handleModuleCheckUpdate } from './api.js'
 const BODY_LIMIT = 4 * 1024 * 1024
 const WEB_ROOT = fileURLToPath(new URL('../../web/', import.meta.url))
 
@@ -72,7 +72,15 @@ function serveStatic(res, pathname) {
   if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) return false
   if (!exists(abs)) return false
   const ext = path.extname(abs).toLowerCase()
-  res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' })
+  res.writeHead(200, {
+    'content-type': MIME[ext] ?? 'application/octet-stream',
+    // 管理台的页面与脚本随时会被插件更新覆盖，而浏览器会把 app.js 缓存下来——
+    // 结果是"代码改了、刷新还是旧行为"，排查时会一路怀疑到后端（真踩过）。
+    // 这些文件都很小，每次现读磁盘 + no-cache 最省事。
+    'cache-control': 'no-cache, no-store, must-revalidate',
+    pragma: 'no-cache',
+    expires: '0',
+  })
   res.end(fs.readFileSync(abs))
   return true
 }
@@ -126,7 +134,6 @@ export async function kickModule(body, notify, opts = {}) {
   }
   return body
 }
-
 /**
  * @param {string} root
  * @param {{token?: string, meta?: object, onSourceFetch?: Function, onModuleChanged?: Function}} opts
@@ -233,6 +240,12 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
           return json(res, w.status, await kickModule(w.body, onModuleChanged))
         }
 
+        // 查更新：要联网（只查发行版元数据，不下载包），所以也走 await。
+        if (url.pathname === '/api/modules/check-update') {
+          const w = await handleModuleCheckUpdate(root, body)
+          return json(res, w.status, w.body)
+        }
+
         // 模块自定义 tab 的数据：同样要跟活着的模块进程说话，所以也由宿主注入回调。
         if (url.pathname === '/api/modules/ui') {
           const w = await handleModuleUi(root, body, { onUiGet })
@@ -240,11 +253,20 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
         }
 
         const w = handleApiWrite(root, url, body)
-        // 只有模块的写操作才尝试拉起进程：别的接口（屏蔽、提案……）返回的 id 不是模块 id。
-        // 配置变更要**重启**（协议 §3.1：配置只在 init 时下发，跑着的还是旧配置），其余只需确保在跑。
-        const restart = url.pathname === '/api/modules/config'
+        // 只有模块的写操作才动进程：别的接口（屏蔽、提案……）返回的 id 不是模块 id。
+        //
+        // 三种语义不能混（混了就是"点了没反应"）：
+        //   · 停用 → 必须**真的停进程**（只写注册表的话，模块会一直跑着，看起来像没生效）
+        //   · 启用/安装/授予 → 确保它在跑
+        //   · 改配置 → **重启**（协议 §3.1：配置只在 init 时下发，跑着的还是旧配置）
+        const opts =
+          url.pathname === '/api/modules/config'
+            ? { restart: true }
+            : url.pathname === '/api/modules/enable'
+              ? { enabled: body.enabled !== false }
+              : {}
         const kicked = url.pathname.startsWith('/api/modules/')
-          ? await kickModule(w.body, onModuleChanged, { restart })
+          ? await kickModule(w.body, onModuleChanged, opts)
           : w.body
         return json(res, w.status, kicked)
       }

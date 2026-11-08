@@ -224,9 +224,24 @@
         <section id="tab-sources" class="page" hidden>
           <div class="page-head">
             <h2>来源</h2>
-            <p class="muted">谁还在往这里投递，谁已经沉默了。</p>
+            <p class="muted">谁还在往这里投递，谁能被她按需去要数据。</p>
           </div>
-          <div class="card"><div id="sources-out" class="list"></div></div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>投递方</h3>
+              <span class="muted small">主动往这里写消息的来源</span>
+            </div>
+            <div id="sources-out" class="list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>模块能提供的数据</h3>
+              <span class="muted small" id="module-sources-hint"></span>
+            </div>
+            <div id="module-sources-out" class="list"></div>
+          </div>
         </section>
 
         <section id="tab-refusals" class="page" hidden>
@@ -288,7 +303,13 @@
                 <div class="card-head"><h3>概况</h3></div>
                 <div id="module-meta" class="kv"></div>
                 <div class="field-row" id="module-actions">
-                  <button id="module-toggle" class="btn ghost small">停用</button>
+                  <label class="switch-row" title="启用 / 停用这个模块">
+                    <input type="checkbox" id="module-toggle" />
+                    <span class="switch-track"><span class="switch-knob"></span></span>
+                    <span id="module-toggle-label" class="small">启用</span>
+                  </label>
+                  <button id="module-check-update" class="btn ghost small">检查更新</button>
+                  <span id="module-update-badge" class="tag ok" hidden>有新版本</span>
                   <button id="module-export" class="btn ghost small">导出 tgz</button>
                   <button id="module-uninstall" class="btn ghost small danger">卸载</button>
                   <span id="module-msg" class="muted small"></span>

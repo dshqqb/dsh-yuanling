@@ -13,6 +13,9 @@ const state = {
   modules: [],
   moduleView: 'console',
   moduleTab: 'brief',
+  // 当前打开模块的**详情**（含 uiTabs / configFields）。列表那份没有这些字段，
+  // 点 tab 时要靠它判断"这页是 config 型还是 records 型"。
+  moduleDetail: null,
 }
 
 /**
@@ -177,6 +180,8 @@ function buildNav() {
       b.append(el('span', `tag ${stateCls} nav-tag`.trim(), stateText))
       b.title = `${m.name || m.id}（${m.id}） · v${m.version} · ${stateText}`
       b.addEventListener('click', () => openModule(m.id))
+      // 自动检查发现新版就挂个角标（不弹窗，不打断）
+      if (m._hasUpdate) b.append(el('span', 'tag ok nav-tag', `v${m._hasUpdate}`))
       nav.append(b)
     }
     return
@@ -205,7 +210,9 @@ function setMode(mode) {
   // 进模块模式：先把列表拉回来（左侧菜单直接从它渲染），默认落在控制台
   for (const s of document.querySelectorAll('.main > .page')) s.hidden = s.id !== 'page-modules'
   state.moduleView = 'console'
-  loadModules().catch(() => {})
+  loadModules()
+    .then(() => autoCheckUpdates())
+    .catch(() => {})
   showModuleView('console')
 }
 
@@ -539,17 +546,61 @@ async function loadSources() {
   box.innerHTML = ''
   if (!d.sources.length) {
     box.append(el('div', 'muted small', '还没有任何来源写过心跳。'))
+  } else {
+    for (const s of d.sources) {
+      const n = el('div', 'item')
+      const body = el('div', 'body')
+      const cls = s.state === 'silent' ? 'bad' : s.state === 'ok' ? 'ok' : 'warn'
+      const t = el('div', 't')
+      t.append(el('span', `tag ${cls}`, s.state), document.createTextNode(s.source))
+      body.append(t, el('div', 's', s.at || '-'))
+      n.append(body)
+      box.append(n)
+    }
+  }
+
+  // 模块能提供的数据：她要得着的东西，以及"到底取过没有"
+  await loadModuleSources().catch(() => {})
+}
+
+async function loadModuleSources() {
+  const box = $('module-sources-out')
+  const hint = $('module-sources-hint')
+  if (!box) return
+  const d = await api('/api/module-sources')
+  const mods = d.modules ?? []
+  hint.textContent = `${mods.reduce((n, m) => n + (m.sources ?? []).length, 0)} 个来源${d.partial ? '（统计只扫了最近一部分原始层）' : ''}`
+  box.innerHTML = ''
+
+  if (!mods.length) {
+    box.append(
+      el('div', 'muted small', '还没有模块声明数据来源。装一个带 sources 的模块（例如 B站），这里就会出现它能被要什么。'),
+    )
     return
   }
-  for (const s of d.sources) {
-    const n = el('div', 'item')
-    const body = el('div', 'body')
-    const cls = s.state === 'silent' ? 'bad' : s.state === 'ok' ? 'ok' : 'warn'
-    const t = el('div', 't')
-    t.append(el('span', `tag ${cls}`, s.state), document.createTextNode(s.source))
-    body.append(t, el('div', 's', s.at || '-'))
-    n.append(body)
-    box.append(n)
+
+  for (const m of mods) {
+    const head = el('div', 'source-module-head')
+    const st = !m.enabled ? '已停用' : m.state === 'ready' || m.state === 'running' ? '运行中' : `状态 ${m.state}`
+    head.append(el('span', 'tag', st), el('span', `tag ${m.granted ? 'ok' : 'bad'}`, m.granted ? '已授权' : '未授权'))
+    head.append(document.createTextNode(`${m.moduleName}（${m.module}）`))
+    box.append(head)
+
+    for (const s of m.sources) {
+      const n = el('div', 'item')
+      const body = el('div', 'body')
+      const t = el('div', 't')
+      const used = s.count > 0
+      t.append(el('span', `tag ${used ? 'ok' : ''}`.trim(), used ? `取过 ${s.count} 次` : '从没取过'))
+      t.append(document.createTextNode(s.title || s.id))
+      const meta = used
+        ? `${s.id} · 最近一次 ${String(s.lastAt || '').replace('T', ' ').slice(0, 16) || '—'}` +
+          `${s.lastAtApprox ? '（旧记录，按事件时间估算）' : ''} · 落在 raw/${s.lastDay || '—'}`
+        : `${s.id} · 她还没向它要过数据`
+      body.append(t, el('div', 's', meta))
+      n.append(body)
+      box.append(n)
+    }
   }
 }
 
@@ -628,6 +679,7 @@ const STATE_LABELS = {
 function showModuleView(view, id = null) {
   state.moduleView = view
   state.moduleId = view === 'console' ? null : id
+  if (view === 'console') state.moduleDetail = null
   $('module-console').hidden = view !== 'console'
   $('module-detail').hidden = view === 'console'
   $('crumb-page').textContent = view === 'console' ? '控制台' : (state.modules.find((m) => m.id === id)?.name || id || '模块')
@@ -727,7 +779,9 @@ function renderModuleTabs(module, active) {
 
 function selectModuleTab(id, module = null) {
   state.moduleTab = id
-  const current = module ?? state.modules.find((x) => x.id === state.moduleId)
+  // 详情必须留住：列表视图（`state.modules`）里没有 uiTabs / configFields（为了轻量），
+  // 点 tab 时若从列表里找 spec，就会"什么类型都不是"→ 落到 text 分支 → 空白页（真踩过）。
+  const current = module ?? state.moduleDetail ?? state.modules.find((x) => x.id === state.moduleId)
   // 用 dataset 比而不是比文字：两个 tab 可能同名（尤其模块自定义的那几个）
   for (const b of $('module-tabs').querySelectorAll('button')) {
     b.classList.toggle('is-active', b.dataset.tabId === id)
@@ -737,7 +791,87 @@ function selectModuleTab(id, module = null) {
   const custom = $('module-panel-custom')
   const isCustom = !MODULE_BASE_TABS.some((t) => t.id === id)
   custom.hidden = !isCustom
-  if (isCustom) loadModuleTabData(id, current)
+  if (!isCustom) return
+
+  const spec = (current?.uiTabs ?? []).find((t) => t.id === id)
+  // 两种自定义页都是异步的（要现取数据），失败只该影响这一块，不该冒到整页
+  if (spec?.kind === 'config') renderConfigTab(id, current).catch((err) => showTabError(err))
+  else loadModuleTabData(id, current).catch((err) => showTabError(err))
+}
+
+/** 自定义页取数失败：在该页里说清楚，别让用户对着空白猜。 */
+function showTabError(err) {
+  const box = $('module-panel-custom')
+  if (!box) return
+  box.innerHTML = ''
+  const card = el('div', 'card')
+  card.append(el('div', 'muted small', `这个页没加载出来：${err?.message ?? err}`))
+  box.append(card)
+}
+
+/**
+ * `kind: "config"` 的 tab：内容就是**这个模块自己的配置表单**。
+ *
+ * 为什么把它做成 tab 而不是新控件系统：配置已经有 schema 校验、落盘、密码框、
+ * 改完自动重启这一整套；另开一套"tab 里的控件值"必然出现"存哪、和 config 谁优先"的分叉。
+ * 模块想给某组设置单独开一页，只要声明一个 config 型 tab 就行。
+ *
+ * **数据从 `/api/modules/ui` 现取**，不读 `state.modules` 缓存——那份列表视图
+ * 里没有 `configFields`（列表要轻），拿它渲染会得到一个空白页（真踩过）。
+ */
+async function renderConfigTab(tabId, module) {
+  const box = $('module-panel-custom')
+  box.innerHTML = ''
+  const card = el('div', 'card')
+  const head = el('div', 'card-head')
+  head.append(el('h3', '', (module?.uiTabs ?? []).find((t) => t.id === tabId)?.label || tabId))
+  head.append(el('span', 'muted small', '这个页就是它的配置项，保存后会重启模块'))
+  card.append(head)
+
+  const form = el('div', 'config-form')
+  card.append(form)
+
+  const actions = el('div', 'field-row')
+  const save = el('button', 'btn small', '保存并重启模块')
+  const msg = el('span', 'muted small')
+  actions.append(save, msg)
+  card.append(actions)
+  box.append(card)
+
+  let payload = null
+  try {
+    payload = await postApi('/api/modules/ui', { id: state.moduleId, tab: tabId })
+  } catch (err) {
+    form.append(el('div', 'muted small', `取不到这个页的配置：${err.message}`))
+    actions.hidden = true
+    return
+  }
+
+  renderConfigForm({ configFields: payload.fields ?? [], config: payload.config ?? {} }, { form, actions, msg, hint: null })
+
+  save.addEventListener('click', async () => {
+    const id = state.moduleId
+    if (!id) return
+    save.disabled = true
+    msg.textContent = '保存中…'
+    try {
+      const r = await postApi('/api/modules/config', { id, config: collectConfigForm(form) })
+      const dropped = (r.dropped ?? []).length ? `（忽略了未声明的字段：${r.dropped.join('、')}）` : ''
+      const rt = r.runtime?.restarted
+        ? '，模块已用新配置重启'
+        : r.runtime?.skipped === 'disabled'
+          ? '，模块处于停用状态，启用后生效'
+          : ''
+      msg.textContent = `✓ 已保存${dropped}${rt}`
+      await loadModules()
+      await openModule(id)
+      renderConfigTab(tabId, state.modules.find((x) => x.id === id))
+    } catch (err) {
+      msg.textContent = `保存失败：${err.message}`
+    } finally {
+      save.disabled = false
+    }
+  })
 }
 
 /**
@@ -783,7 +917,27 @@ async function loadModuleTabData(tabId, module) {
       }
       if (!(d.items ?? []).length) list.append(el('div', 'muted small', '（没有数据）'))
       out.append(list)
-    } else {
+    } else if (d.kind === 'records') {
+    // records 型：核心查自己的原始层，模块没参与——所以这里只负责把记录列出来
+    const list = el('div', 'list')
+    for (const it of d.items ?? []) {
+      const n = el('div', 'item')
+      const body = el('div', 'body')
+      body.append(el('div', 't', String(it.title)))
+      const sub = el('div', 's', String(it.sub || ''))
+      if (it.ptr) sub.append(el('span', 'muted small', `　${it.ptr}`))
+      body.append(sub)
+      n.append(body)
+      list.append(n)
+    }
+    if (!(d.items ?? []).length) {
+      list.append(
+        el('div', 'muted small', '还没有记录。她做过这类事情之后，这里会按时间倒序列出来（记录在原始层里，模块停着也能看）。'),
+      )
+    }
+    out.append(list)
+    if (d.partial) out.append(el('div', 'muted small', '（原始层只扫了最近一部分，可能还有更早的记录）'))
+  } else {
       const pre = el('pre', 'code', String(d.text ?? ''))
       out.append(pre)
     }
@@ -799,89 +953,321 @@ async function loadModuleTabData(tabId, module) {
 /**
  * 按模块声明的 config.schema 渲染表单。
  *
- * 字段元信息由核心算好（`configFields`：key/type/required/enum/secret），页面只负责画控件——
- * 前端再解释一遍 schema，迟早和核心的校验规则对不上。
+ * 字段元信息由核心算好（`configFields`：key/type/widget/required/enum/min/max/secret），
+ * 页面只负责画控件——前端再解释一遍 schema，迟早和核心的校验规则对不上。
  *
- * 三类控件就够了：枚举 → select，数字 → number input，布尔 → checkbox，其余 → text。
- * 名字像密钥的（sessdata / token / cookie…）用密码框，旁边给一个"显示"开关。
+ * 支持 8 种控件（其余两种"按钮/浏览文件"要等 ui.action 协议，见 v1.3）：
+ *   switch / checkbox / radio / select / slider / input / textarea / list
  */
-function renderConfigForm(m) {
-  const form = $('module-config-form')
-  const actions = $('module-config-actions')
-  const hint = $('module-config-hint')
+function renderConfigForm(m, opts = {}) {
+  const form = opts.form ?? $('module-config-form')
+  const actions = opts.actions ?? $('module-config-actions')
+  const hint = opts.hint ?? $('module-config-hint')
+  const msg = opts.msg ?? $('module-config-msg')
   form.innerHTML = ''
-  $('module-config-msg').textContent = ''
+  if (msg) msg.textContent = ''
 
   const fields = Array.isArray(m.configFields) ? m.configFields : []
   if (!fields.length) {
     form.append(el('div', 'muted small', '该模块没有声明配置。'))
-    actions.hidden = true
-    hint.textContent = ''
+    if (actions) actions.hidden = true
+    if (hint) hint.textContent = ''
     return
   }
 
   const values = m.config ?? {}
   for (const f of fields) {
-    const row = el('div', 'config-row')
-    const label = el('label', 'config-label')
-    label.append(document.createTextNode(f.label))
-    if (f.required) label.append(el('span', 'tag warn', '必填'))
-    if (f.description) label.title = f.description
-    row.append(label)
+    form.append(buildConfigRow(f, values[f.key]))
+  }
 
-    const cur = values[f.key]
-    let input
-    if (f.enum && f.enum.length) {
-      input = document.createElement('select')
-      // 空选项：不填就表示"用默认/不设置"，不要强迫人选一个
-      if (!f.required) input.append(new Option('（不设置）', ''))
-      for (const opt of f.enum) input.append(new Option(opt, opt))
-      input.value = cur === undefined || cur === null ? '' : String(cur)
-    } else if (f.type === 'boolean') {
-      input = document.createElement('input')
-      input.type = 'checkbox'
-      input.checked = cur === true || cur === 'true'
-    } else if (f.type === 'number') {
-      input = document.createElement('input')
-      input.type = 'number'
-      if (cur !== undefined && cur !== null) input.value = String(cur)
-      if (f.default !== null && f.default !== undefined) input.placeholder = `默认 ${f.default}`
-    } else {
-      input = document.createElement('input')
-      input.type = f.secret ? 'password' : 'text'
-      input.value = cur === undefined || cur === null ? '' : String(cur)
-      input.autocomplete = 'off'
-      if (f.default !== null && f.default !== undefined) input.placeholder = `默认 ${f.default}`
+  if (actions) actions.hidden = false
+  if (hint) hint.textContent = `${fields.length} 个字段`
+}
+
+/**
+ * 下拉框。原生 select 在暗色主题下是系统样式（灰白底、方角、默认箭头），
+ * 和旁边那些圆角输入框放一起像两个不同的应用。所以自己画：外观交给 CSS，
+ * 箭头用一个绝对定位的 chevron（原生箭头没法在 select 上直接改样式）。
+ */
+function buildSelect(f, cur) {
+  const wrap = el('div', 'select-wrap')
+  const input = document.createElement('select')
+  if (!f.required) input.append(new Option('（不设置）', ''))
+  for (const opt of f.enum) input.append(new Option(opt, opt))
+  input.value = cur === undefined || cur === null ? '' : String(cur)
+  input.dataset.configKey = f.key
+  input.dataset.configType = f.type || 'string'
+  input.dataset.configWidget = 'select'
+
+  const chev = el('span', 'select-chev')
+  chev.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9.5l6 6 6-6"/></svg>'
+  wrap.append(input, chev)
+  return wrap
+}
+
+/** 一个字段 → 一行控件。抽出来是为了"列表型配置"里的每一行也能复用。 */
+function buildConfigRow(f, cur) {
+  const row = el('div', 'config-row')
+  const label = el('label', 'config-label')
+  label.append(document.createTextNode(f.label))
+  if (f.required) label.append(el('span', 'tag warn', '必填'))
+  if (f.description) label.title = f.description
+  row.append(label)
+
+  const holder = el('div', 'config-control')
+  const widget = f.widget || 'input'
+  let input = null
+
+  if (widget === 'radio' && f.enum) {
+    // 选项少的时候铺开成单选：一眼看全，不用点开下拉
+    const group = el('div', 'radio-group')
+    for (const opt of f.enum) {
+      const lab = el('label', 'radio-item')
+      const r = document.createElement('input')
+      r.type = 'radio'
+      r.name = `cfg-${f.key}`
+      r.value = opt
+      r.checked = cur === opt
+      r.dataset.configKey = f.key
+      r.dataset.configType = 'radio'
+      lab.append(r, document.createTextNode(opt))
+      group.append(lab)
     }
-    input.dataset.configKey = f.key
-    input.dataset.configType = f.type
-    if (f.secret) input.dataset.secret = '1'
-    row.append(input)
-
+    holder.append(group)
+  } else if (widget === 'select' && f.enum) {
+    holder.append(buildSelect(f, cur))
+  } else if (widget === 'switch') {
+    const lab = el('label', 'switch-row')
+    input = document.createElement('input')
+    input.type = 'checkbox'
+    input.checked = cur === true || cur === 'true'
+    const track = el('span', 'switch-track')
+    track.append(el('span', 'switch-knob'))
+    lab.append(input, track, el('span', 'small', input.checked ? '开' : '关'))
+    input.addEventListener('change', () => {
+      lab.lastChild.textContent = input.checked ? '开' : '关'
+    })
+    holder.append(lab)
+  } else if (widget === 'checkbox') {
+    const lab = el('label', 'check-row')
+    input = document.createElement('input')
+    input.type = 'checkbox'
+    input.checked = cur === true || cur === 'true'
+    const tick = el('span', 'check-tick')
+    tick.textContent = input.checked ? '✓' : ''
+    input.addEventListener('change', () => {
+      tick.textContent = input.checked ? '✓' : ''
+    })
+    // 顺序要紧：CSS 用的是 `input:checked + .check-tick`（相邻兄弟），
+    // 把 tick 放在 input 前面的话，勾上了样式也不会变——看起来就是"点不动"（真踩过）。
+    lab.append(input, tick, el('span', 'small', f.description || '勾选'))
+    holder.append(lab)
+  } else if (widget === 'slider') {
+    const wrap = el('div', 'slider-row')
+    input = document.createElement('input')
+    input.type = 'range'
+    const lo = f.min ?? 0
+    const hi = f.max ?? 100
+    input.min = String(lo)
+    input.max = String(hi)
+    input.step = String(f.step ?? 1)
+    input.value = String(Number.isFinite(Number(cur)) ? Number(cur) : lo)
+    const out = el('span', 'small slider-value', input.value)
+    input.addEventListener('input', () => {
+      out.textContent = input.value
+    })
+    wrap.append(input, out)
+    holder.append(wrap)
+  } else if (widget === 'textarea') {
+    input = document.createElement('textarea')
+    input.rows = 4
+    input.value = cur === undefined || cur === null ? '' : String(cur)
+    if (f.default !== null && f.default !== undefined) input.placeholder = `默认 ${f.default}`
+    holder.append(input)
+  } else if (widget === 'list') {
+    holder.append(buildListEditor(f, Array.isArray(cur) ? cur : []))
+  } else if (widget === 'action') {
+    // 占位：按钮要等 ui.action 协议（v1.3），现在只画出来，点了什么也不做
+    const b = el('button', 'btn ghost small', f.description || '按钮')
+    b.disabled = true
+    b.title = '等 ui.action 协议（v1.3）：现在只是占位，点了不会发生任何事'
+    holder.append(b, el('span', 'tag', '待接入'))
+  } else if (widget === 'file') {
+    // 占位：浏览本机文件需要核心出面（浏览器拿不到真实路径），先把位置留出来
+    input = document.createElement('input')
+    input.type = 'text'
+    input.disabled = true
+    input.placeholder = '（待接入：核心侧文件选择器）'
+    const b = el('button', 'btn ghost small', '浏览…')
+    b.disabled = true
+    b.title = '等 ui.action 协议：模块不能直接拿到本机路径'
+    holder.append(input, b, el('span', 'tag', '待接入'))
+  } else {
+    input = document.createElement('input')
+    input.type = f.secret ? 'password' : f.type === 'number' ? 'number' : 'text'
+    input.value = cur === undefined || cur === null ? '' : String(cur)
+    input.autocomplete = 'off'
+    if (f.default !== null && f.default !== undefined) input.placeholder = `默认 ${f.default}`
+    holder.append(input)
     if (f.secret) {
       const peek = mkBtn('显示', 'small ghost', async () => {
         input.type = input.type === 'password' ? 'text' : 'password'
         peek.textContent = input.type === 'password' ? '显示' : '隐藏'
       })
-      row.append(peek)
+      holder.append(peek)
     }
-
-    if (f.description) {
-      row.append(el('div', 'config-desc muted small', f.description))
-    }
-    form.append(row)
   }
 
-  actions.hidden = false
-  hint.textContent = `${fields.length} 个字段`
+  if (input && widget !== 'switch' && widget !== 'checkbox') {
+    input.dataset.configKey = f.key
+    input.dataset.configType = f.type || 'string'
+    input.dataset.configWidget = widget
+  } else if (input) {
+    input.dataset.configKey = f.key
+    input.dataset.configType = 'boolean'
+    input.dataset.configWidget = widget
+  }
+  // 占位控件不参与提交
+  if (input && (widget === 'action' || widget === 'file')) {
+    delete input.dataset.configKey
+    delete input.dataset.configType
+  }
+
+  row.append(holder)
+  if (f.description && widget !== 'checkbox') {
+    row.append(el('div', 'config-desc muted small', f.description))
+  }
+  return row
+}
+
+/**
+ * 列表型配置（数组里放对象）：能增、删、改、上下移动。
+ *
+ * 为什么用上下按钮而不是拖拽：拖拽要处理指针捕获、触摸、键盘可达性，
+ * 而"调顺序"这件事用两个箭头按钮就能表达清楚，还不用学。
+ */
+function buildListEditor(f, rows) {
+  const box = el('div', 'list-editor')
+  box.dataset.configKey = f.key
+  box.dataset.configType = 'array'
+  const items = rows.map((r) => ({ ...r }))
+  const itemFields = f.itemFields ?? []
+
+  const draw = () => {
+    box.innerHTML = ''
+    if (!items.length) {
+      box.append(el('div', 'muted small', '（空列表）'))
+    }
+    items.forEach((row, i) => {
+      const line = el('div', 'list-row')
+      const idx = el('span', 'list-idx muted small', String(i + 1))
+      line.append(idx)
+
+      for (const sub of itemFields) {
+        const cell = el('label', 'list-cell')
+        cell.append(el('span', 'muted small', sub.label))
+        let inp
+        if (sub.enum) {
+          // 列表里的下拉用同一套外观（原生 select 在暗色下太突兀）
+          const wrap = el('div', 'select-wrap')
+          inp = document.createElement('select')
+          for (const opt of sub.enum) inp.append(new Option(opt, opt))
+          inp.value = row[sub.key] ?? sub.enum[0]
+          const chev = el('span', 'select-chev')
+          chev.innerHTML =
+            '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9.5l6 6 6-6"/></svg>'
+          wrap.append(inp, chev)
+          inp.addEventListener('change', () => {
+            row[sub.key] = inp.value
+          })
+          cell.append(wrap)
+          line.append(cell)
+          continue
+        } else if (sub.type === 'boolean') {
+          inp = document.createElement('input')
+          inp.type = 'checkbox'
+          inp.checked = Boolean(row[sub.key])
+        } else if (sub.type === 'number') {
+          inp = document.createElement('input')
+          inp.type = 'number'
+          inp.value = row[sub.key] ?? ''
+        } else {
+          inp = document.createElement('input')
+          inp.type = 'text'
+          inp.value = row[sub.key] ?? ''
+        }
+        inp.addEventListener('input', () => {
+          row[sub.key] = sub.type === 'boolean' ? inp.checked : sub.type === 'number' ? Number(inp.value) : inp.value
+        })
+        inp.addEventListener('change', () => {
+          row[sub.key] = sub.type === 'boolean' ? inp.checked : sub.type === 'number' ? Number(inp.value) : inp.value
+        })
+        cell.append(inp)
+        line.append(cell)
+      }
+
+      const ops = el('div', 'list-ops')
+      ops.append(
+        mkBtn('↑', 'small ghost', async () => {
+          if (i === 0) return
+          ;[items[i - 1], items[i]] = [items[i], items[i - 1]]
+          draw()
+        }),
+        mkBtn('↓', 'small ghost', async () => {
+          if (i >= items.length - 1) return
+          ;[items[i + 1], items[i]] = [items[i], items[i + 1]]
+          draw()
+        }),
+        mkBtn('删除', 'small ghost danger', async () => {
+          items.splice(i, 1)
+          draw()
+        }),
+      )
+      line.append(ops)
+      box.append(line)
+    })
+
+    const add = mkBtn('＋ 添加一行', 'small', async () => {
+      const blank = {}
+      for (const sub of itemFields) {
+        blank[sub.key] = sub.type === 'boolean' ? false : sub.type === 'number' ? 0 : sub.enum ? sub.enum[0] : ''
+      }
+      items.push(blank)
+      draw()
+    })
+    box.append(add)
+  }
+
+  draw()
+  // 收集时读这个闭包里的 items（而不是 DOM），免得输入过程中丢状态
+  box.__read = () => items.map((r) => ({ ...r }))
+  return box
 }
 
 /** 收集表单值：空串表示"没填"，不写进配置（核心的校验器也是这么理解的）。 */
-function collectConfigForm() {
+function collectConfigForm(root = null) {
+  const scope = root ?? $('module-config-form')
   const out = {}
-  for (const input of $('module-config-form').querySelectorAll('[data-config-key]')) {
+
+  // 列表型：值在闭包里（不是 DOM），直接问编辑器要
+  for (const box of scope.querySelectorAll('.list-editor')) {
+    if (typeof box.__read === 'function') out[box.dataset.configKey] = box.__read()
+  }
+
+  // 单选：同一组里只有被选中的那个有值
+  const radioKeys = new Set()
+  for (const r of scope.querySelectorAll('[data-config-type="radio"]')) {
+    radioKeys.add(r.dataset.configKey)
+    if (r.checked) out[r.dataset.configKey] = r.value
+  }
+
+  for (const input of scope.querySelectorAll('[data-config-key]')) {
     const key = input.dataset.configKey
     const type = input.dataset.configType
+    const widget = input.dataset.configWidget
+    if (widget === 'list' || type === 'radio') continue
+    if (radioKeys.has(key) && out[key] === undefined) continue
     if (type === 'boolean') {
       out[key] = input.checked
       continue
@@ -918,12 +1304,16 @@ $('module-config-save').addEventListener('click', async () => {
 async function openModule(id) {
   const d = await api(`/api/module?id=${encodeURIComponent(id)}`)
   const m = d.module
+  // 留住详情：列表里没有 uiTabs / configFields，点 tab 时要靠这一份判断页型
+  state.moduleDetail = m
   showModuleView(id, id)
 
   $('module-title').textContent = moduleDisplayName(m)
   $('module-subtitle').textContent = `${m.id} · v${m.version}${m.description ? ` · ${m.description}` : ''}`
   $('module-msg').textContent = ''
-  $('module-toggle').textContent = m.enabled ? '停用' : '启用'
+  // 开关状态直接绑 enabled（不是"按钮文字"那种间接表达）
+  $('module-toggle').checked = m.enabled
+  $('module-toggle-label').textContent = m.enabled ? '已启用' : '已停用'
   // 每次进详情都从「概况」开始：上次停在哪个 tab 是浏览痕迹，不是状态
   state.moduleTab = 'brief'
   renderModuleTabs(m, 'brief')
@@ -972,8 +1362,14 @@ async function openModule(id) {
   }
   if (!(m.capabilities ?? []).length) caps.append(el('div', 'muted small', '该模块没有声明任何能力。'))
 
-  // 配置：按模块声明的 schema 渲染成真表单（原来是打印一段 JSON，等于让人手改文件）
-  renderConfigForm(m)
+  // 配置：按模块声明的 schema 渲染成真表单（原来是打印一段 JSON，等于让人手改文件）。
+  // 被「config 型 tab」认领的字段不在这里重复出现——同一份配置不该有两个编辑入口。
+  const claimed = new Set((m.uiTabs ?? []).flatMap((t) => (Array.isArray(t.fields) ? t.fields : [])))
+  const briefConfig =
+    claimed.size && Array.isArray(m.configFields)
+      ? { ...m, configFields: m.configFields.filter((f) => !claimed.has(f.key)) }
+      : m
+  renderConfigForm(briefConfig)
 
   const sources = m.sources ?? []
   $('module-rules').innerHTML = ''
@@ -1022,18 +1418,108 @@ $('module-refresh-one').addEventListener('click', () => {
   if (state.moduleId) openModule(state.moduleId).catch(() => {})
 })
 
-$('module-toggle').addEventListener('click', async () => {
+$('module-toggle').addEventListener('change', async () => {
   if (!state.moduleId) return
-  const cur = $('module-toggle').textContent === '停用'
+  const id = state.moduleId
+  const enable = $('module-toggle').checked
+  const box = $('module-toggle')
+  box.disabled = true
+  $('module-msg').textContent = enable ? '正在启动…' : '正在停止…'
   try {
-    await postApi('/api/modules/enable', { id: state.moduleId, enabled: !cur })
-    $('module-msg').textContent = cur ? '已停用（重启也不再启动）' : '已启用'
-    await openModule(state.moduleId)
+    const r = await postApi('/api/modules/enable', { id, enabled: enable })
+    // 如实说进程发生了什么：光改注册表不叫"已停用"
+    const rt = r.runtime ?? {}
+    const detail = enable
+      ? rt.started
+        ? '已启动'
+        : rt.skipped === 'already-running'
+          ? '已在运行'
+          : rt.error
+            ? `启动失败：${rt.error}`
+            : '已启用'
+      : rt.stopped
+        ? '已停止'
+        : '注册表已停用（进程本来就没在跑）'
+    $('module-msg').textContent = detail
     await loadModules()
+    await openModule(id)
+    $('module-msg').textContent = detail
   } catch (err) {
+    // 失败要把开关拨回去，否则界面撒谎说"已停用"
+    box.checked = !enable
     $('module-msg').textContent = `失败：${err.message}`
+  } finally {
+    box.disabled = false
   }
 })
+
+/** 检查更新：只查元数据（不下载），有新版就弹窗问要不要更新。 */
+$('module-check-update').addEventListener('click', async () => {
+  const id = state.moduleId
+  if (!id) return
+  const msg = $('module-msg')
+  const btn = $('module-check-update')
+  btn.disabled = true
+  msg.textContent = '正在查发行版…（只查版本，不下载）'
+  try {
+    const r = await postApi('/api/modules/check-update', { id })
+    if (!r.hasUpdate) {
+      msg.textContent = `已是最新（本地 ${r.current}，远端 ${r.latest ?? '—'}）`
+      $('module-update-badge').hidden = true
+      return
+    }
+    msg.textContent = `发现新版本 ${r.latest}（当前 ${r.current}）`
+    $('module-update-badge').hidden = false
+    if (confirm(`「${id}」有新版本 ${r.latest}（当前 ${r.current}）。\n\n现在更新吗？更新会重新下载并覆盖当前版本，模块会短暂重启。`)) {
+      msg.textContent = '正在下载并安装…'
+      await postApi('/api/modules/install-url', { url: r.repo })
+      await loadModules()
+      await openModule(id)
+      $('module-msg').textContent = '✓ 已更新'
+      $('module-update-badge').hidden = true
+    }
+  } catch (err) {
+    msg.textContent = `检查失败：${err.message}`
+  } finally {
+    btn.disabled = false
+  }
+})
+
+/**
+ * 自动检查更新：进模块模式时顺手查一次，**6 小时内不重复查**。
+ *
+ * 为什么不每次都查：查更新是打外部 API，一天开十次页面就打十次——
+ * 对方限流还算轻的，慢的时候整个页面都跟着卡。所以节流 + 失败静默。
+ * 也不自动装：装是覆盖操作，必须人点头。
+ */
+const UPDATE_CHECK_KEY = 'yl.updateCheckedAt'
+const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000
+
+async function autoCheckUpdates() {
+  let last = 0
+  try {
+    last = Number(localStorage.getItem(UPDATE_CHECK_KEY)) || 0
+  } catch {}
+  if (Date.now() - last < UPDATE_CHECK_INTERVAL) return
+  try {
+    localStorage.setItem(UPDATE_CHECK_KEY, String(Date.now()))
+  } catch {}
+
+  for (const m of state.modules) {
+    if (!m.repo) continue // 本地装的没法查
+    try {
+      const r = await postApi('/api/modules/check-update', { id: m.id })
+      if (r.hasUpdate) {
+        // 只在列表上打一个角标，不弹窗——自动检查不该打断人
+        m._hasUpdate = r.latest
+        if (state.moduleView === m.id) $('module-update-badge').hidden = false
+      }
+    } catch {
+      /* 查不到就算了：网络问题不该冒泡到界面 */
+    }
+  }
+  buildNav()
+}
 
 $('module-export').addEventListener('click', async () => {
   if (!state.moduleId) return

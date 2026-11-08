@@ -68,7 +68,7 @@ README.md                可选
 | `sources` | ⬜ | v1.1：声明"我这儿有什么数据可以被要"（`id` / `title` / `params`）。`id` 必须形如 `<模块id>.<名字>` |
 | `config` | ⬜ | 声明了就给 `schema`（JSON Schema 子集），**管理台据此渲染表单**（输入框 / 数字 / 开关 / 下拉），保存前核心会按 schema 校验，存进 `system/modules/<id>/config.json`，改完自动重启模块。名字像密钥的字段（`sessdata`/`token`/`cookie`…）会显示成密码框，也可以用 `"x-secret": true` 显式声明 |
 | `routes` | ⬜ | **认领的频道前缀**（`group:*` / `group:<id>` 这两种写法），决定哪些频道的消息归你 `ingest`。它**不是** HTTP 路由、也不是管理台扩展点 |
-| `ui` | ⬜ | v1.2：给管理台加**只读标签页**，`tabs: [{id, label, kind}]`；`kind` 只认 `kv` / `list` / `text`。**不能下发 HTML/JS**——模块只描述"画什么"，画法由核心定 |
+| `ui` | ⬜ | v1.2：给管理台加**只读标签页**，`tabs: [{id, label, kind, fields?}]`；`kind` 只认 `kv` / `list` / `text` / `config`。**不能下发 HTML/JS**——模块只描述"画什么"，画法由核心定。`kind:"config"` 表示"这页就是我的配置表单"，用 `fields` 认领字段（v1.3） |
 
 ### 能力：申请什么，才可能拿到什么
 

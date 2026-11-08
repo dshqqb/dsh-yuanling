@@ -202,6 +202,90 @@ export async function resolveInstallUrl(raw, { fetchImpl = globalThis.fetch, tim
 }
 
 /**
+ * 比较两个版本号（只比较数字部分，忽略预发布后缀的排序差异）。
+ * @returns {number} a>b 返回 1，a<b 返回 -1，相等 0；无法解析时返回 0（保守：不提示更新）
+ */
+export function compareVersions(a, b) {
+  const pa = parseSemverLoose(a)
+  const pb = parseSemverLoose(b)
+  if (!pa || !pb) return 0
+  for (const k of ['major', 'minor', 'patch']) {
+    if (pa[k] > pb[k]) return 1
+    if (pa[k] < pb[k]) return -1
+  }
+  return 0
+}
+
+function parseSemverLoose(v) {
+  const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?/i.exec(String(v ?? '').trim())
+  if (!m) return null
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3] ?? 0) }
+}
+
+/**
+ * 检查某个库有没有比当前更新的发行版。
+ *
+ * 只在**模块是从库里装的**（注册表记了 repo）时才有意义；本地 tgz 装的没有 repo，
+ * 调用方应该直接告诉用户"这个模块不是从库装的，没法查更新"。
+ *
+ * 注意：这里**不下载**，只查元数据——查更新是个高频动作，不该每次都拉一个包。
+ *
+ * @returns {Promise<{repo:string, current:string, latest:string|null, hasUpdate:boolean, tag:string|null, assetName:string|null, tgzUrl:string|null}>}
+ */
+export async function checkUpdate(repoUrl, currentVersion, { fetchImpl = globalThis.fetch, timeoutMs = 15_000 } = {}) {
+  const repo = parseRepoUrl(repoUrl)
+  if (!repo) throw new Error(`不是能查更新的库地址：${repoUrl}`)
+
+  const api =
+    repo.host === 'github.com'
+      ? `https://api.github.com/repos/${repo.owner}/${repo.repo}/releases`
+      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/releases?per_page=20`
+
+  let list = []
+  try {
+    const res = await fetchImpl(api, {
+      headers: _apiHeaders(repo.host),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+    })
+    if (res.status === 404) throw Object.assign(new Error(`找不到这个库（HTTP 404）：${repoUrl}`), { code: 'E_NO_REPO' })
+    if (!res.ok) throw new Error(`${repo.host} 返回 HTTP ${res.status}`)
+    const json = await res.json()
+    list = Array.isArray(json) ? json : []
+  } catch (error) {
+    if (error?.code) throw error
+    throw new Error(`查更新失败：${error?.message ?? error}`)
+  }
+
+  if (!list.length) {
+    return { repo: repoUrl, current: currentVersion, latest: null, hasUpdate: false, tag: null, assetName: null, tgzUrl: null }
+  }
+
+  const entry = latestRelease(list)
+  const tag = String(entry?.tag_name ?? '') || null
+  const asset = pickTgzAsset(entry?.assets)
+  // 版本号优先看 tag（`v0.1.1`），资产名兜底（`bili-0.1.1.tgz`）
+  const latest = tag ?? (asset?.name ?? '').replace(/^.*?(\d+\.\d+(?:\.\d+)?).*$/, '$1')
+  const hasUpdate = compareVersions(latest, currentVersion) > 0
+
+  return {
+    repo: repoUrl,
+    current: String(currentVersion ?? ''),
+    latest,
+    hasUpdate,
+    tag,
+    assetName: asset?.name ?? null,
+    tgzUrl: asset?.url ?? null,
+  }
+}
+
+// 平台请求头（两个平台要求不同，抽成一个小函数避免重复字面量）
+function _apiHeaders(host) {
+  return host === 'github.com'
+    ? { 'user-agent': 'yuanling-module-installer', accept: 'application/vnd.github+json' }
+    : { 'user-agent': 'yuanling-module-installer', accept: 'application/json' }
+}
+
+/**
  * 解析 + 下载。CLI 与管理台共用这一条，避免两边对"库网址"的理解走偏。
  * @returns {Promise<{bytes:Buffer, resolved:object}>}
  */
@@ -276,6 +360,20 @@ export function extractToDir(entries, destDir) {
     const backup = `${destDir}.previous-${crypto.randomBytes(4).toString('hex')}`
     if (fs.existsSync(destDir)) fs.renameSync(destDir, backup)
     fs.renameSync(staging, destDir)
+
+    // **配置必须跟着人走，不能跟着包走。**
+    // config.json 是核心保管的用户资产（cookie / ws 地址 / 规则），不在发行包里；
+    // 目录整体替换会把它一起删掉——用户填完 cookie 再更新一次就白填了（这条真踩过）。
+    try {
+      const oldCfg = path.join(backup, 'config.json')
+      const newCfg = path.join(destDir, 'config.json')
+      if (fs.existsSync(oldCfg) && !fs.existsSync(newCfg)) {
+        fs.copyFileSync(oldCfg, newCfg)
+      }
+    } catch {
+      /* 配置搬不过去不该让安装失败：模块照样能用，只是要人重填 */
+    }
+
     try {
       if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true })
     } catch {

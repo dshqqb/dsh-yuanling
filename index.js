@@ -427,6 +427,8 @@ export function apply(ctx, config) {
         // 用户在页面里装完时那个时机早过去了（页面显示"已停止"，日志都没有）。
         onModuleChanged: async (id, opts = {}) => {
           if (!modules) return { skipped: 'no-host' }
+          // 停用要真的停进程。只写注册表的话模块会一直跑着，页面看起来"没反应"。
+          if (opts.enabled === false) return { stopped: (await modules.stop(id)).stopped }
           // 配置变更要重启：停掉再用新配置 spawn（协议 §3.1）
           return opts.restart ? modules.restart(id) : modules.start(id)
         },

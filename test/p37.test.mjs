@@ -35,8 +35,10 @@ function withUi(tabs, over = {}) {
 test('ui：正常声明通过，字段被规整', () => {
   const r = validateManifest(withUi([{ id: 'stats', label: '统计', kind: 'kv' }]))
   assert.equal(r.ok, true, summarizeErrors(r.errors))
-  assert.deepEqual(r.manifest.ui.tabs, [{ id: 'stats', label: '统计', kind: 'kv' }])
-  assert.deepEqual(UI_KINDS, ['list', 'kv', 'text'])
+  // v1.3 起 tab 多了 fields（config 型认领配置字段）与 records（records 型的查询条件），没写就是 null
+  assert.deepEqual(r.manifest.ui.tabs, [{ id: 'stats', label: '统计', kind: 'kv', fields: null, records: null }])
+  // v1.3 加了 `config`（设置单独开一页）与 `records`（核心代查原始层），仍是封闭词表
+  assert.deepEqual(UI_KINDS, ['list', 'kv', 'text', 'config', 'records'])
 })
 
 test('ui：声明 ui 就必须 api ≥ 1.2', () => {

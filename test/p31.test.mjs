@@ -58,6 +58,40 @@ test('模块页：配置是表单不是只读文本，且能保存', () => {
   assert.match(html, /data-config-key|config-form/, '表单容器')
 })
 
+test('模块页：config 型 tab 的数据来自接口，不读列表缓存', () => {
+  // 列表视图（listModules）不含 configFields / uiTabs —— 拿它渲染 config 型 tab 会得到空白页。
+  // 这条钉住两件事：① 页型判断要靠详情缓存；② 数据要现取 /api/modules/ui。
+  const fn = app.slice(app.indexOf('async function renderConfigTab'), app.indexOf('async function openModule'))
+  assert.ok(fn.length > 0, '找得到 renderConfigTab')
+  assert.match(fn, /\/api\/modules\/ui/, '要现取 fields/config')
+  assert.ok(!/state\.modules\.find/.test(fn.split('renderConfigForm')[0]), '首屏渲染不能依赖列表缓存')
+})
+
+test('模块页：点 tab 时页型判断用详情缓存（列表里没有 uiTabs）', () => {
+  assert.match(app, /moduleDetail: null/, 'state 要留一份详情')
+  assert.match(app, /state\.moduleDetail = m/, 'openModule 要把它填上')
+  const sel = app.slice(app.indexOf('function selectModuleTab'), app.indexOf('/** 自定义页取数失败'))
+  assert.match(sel, /moduleDetail/, '点 tab 时要能从详情里找 uiTabs')
+})
+
+test('静态页带 no-cache：改了 app.js 刷新就该看到新行为', () => {
+  const srv = read('src/core/server.js')
+  assert.match(srv, /'cache-control': 'no-cache/, '不这么写，浏览器会拿旧脚本，排查方向全错')
+})
+
+test('控件：勾选项的 tick 必须紧跟 input（CSS 用的是相邻兄弟选择器）', () => {
+  // 顺序写反的话，勾上了样式也不变——看起来就是"点不动"（真踩过）
+  assert.match(app, /lab\.append\(input, tick/, 'tick 要放在 input 后面')
+  assert.match(css, /\.check-row input:checked \+ \.check-tick/, 'CSS 依赖相邻兄弟')
+})
+
+test('控件：下拉框不用原生外观，走 buildSelect（外观由核心定）', () => {
+  assert.match(app, /function buildSelect/, '要自己画下拉')
+  assert.match(css, /appearance: none/, 'CSS 要关掉原生外观')
+  assert.match(css, /\.select-wrap select \{/, '下拉有自己的样式')
+  assert.match(css, /\.select-chev/, '箭头要自己画（原生箭头没法单独改样式）')
+})
+
 test('模块页：不再是"这里还空着"的占位', () => {
   assert.ok(!html.includes('这里还空着'), '模块页应该已经接进真实内容')
   assert.ok(!html.includes('现在没有已安装的模块'), '不该还有写死的空态文案')

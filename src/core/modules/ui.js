@@ -36,6 +36,12 @@ function clip(s, max = UI_LIMITS.fieldChars) {
 export function normalizeUiPayload(kind, payload) {
   const want = String(kind ?? 'text')
 
+  // `config` 型 tab 的数据由**核心自己**从 config.json 里读，模块不回任何东西。
+  // 走到这里说明有人用错了分支——明确报错，别静默返回空。
+  if (want === 'config') {
+    throw uiError('E_BAD_REQUEST', 'config 型 tab 不需要 ui.get：它的内容由核心按 config.schema 渲染')
+  }
+
   if (want === 'kv') {
     const rows = normalizeKv(payload)
     if (!rows) throw uiError('E_BAD_REQUEST', 'kv 类型要回对象 { 键: 值 } 或 [{k,v}]')

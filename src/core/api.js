@@ -13,8 +13,8 @@ import fs from 'node:fs'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
-import { listSources } from './modules/sources.js'
-import { installFromBytes, fetchModuleBytes } from './modules/installer.js'
+import { listSources, fetchStats } from './modules/sources.js'
+import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
 
 /**
@@ -58,9 +58,33 @@ export function handleApi(root, url) {
     return { status: 200, body: { ok: true, modules: listModules(root), summary: moduleSummary(root) } }
   }
 
-  // v1.1：有哪些模块能被"要数据"（模型工具也读这一个视图）
+  // 投递方心跳（谁还在往这投消息）——这个路径从 P8 起就是这个语义，
+  // v1.1 曾把它改成"模块能提供的数据"，那是错的：来源页按心跳字段读，页面直接坏掉。
   if (pathname === '/api/sources') {
-    return { status: 200, body: { ok: true, sources: listSources(root) } }
+    return { status: 200, body: { ok: true, sources: healthReport(root) } }
+  }
+
+  // v1.1：有哪些模块能被"要数据"（模型工具读这个视图）。v1.3 起带使用统计。
+  if (pathname === '/api/module-sources') {
+    const modulesWithSources = listSources(root)
+    const ids = modulesWithSources.flatMap((m) => m.sources.map((s) => s.id))
+    const { stats, partial, daysScanned } = fetchStats(root, ids)
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        // 每个 source 挂上它被取过几次、最近一次什么时候——"她到底用没用上"是这里唯一要回答的问题
+        modules: modulesWithSources.map((m) => ({
+          ...m,
+          sources: m.sources.map((s) => ({
+            ...s,
+            ...(stats[s.id] ?? { count: 0, lastAt: null, lastAtApprox: false, lastDay: null }),
+          })),
+        })),
+        partial,
+        daysScanned,
+      },
+    }
   }
 
   if (pathname === '/api/module') {
@@ -443,6 +467,36 @@ export function handleApiWrite(root, url, body) {
   }
 
   return { status: 404, body: { ok: false, error: 'no such api' } }
+}
+
+/**
+ * 检查某个模块有没有新版本（联网，只查元数据不下载）。
+ *
+ * 没有 repo 的模块（本地 tgz 装的、或手改过注册表的）直接告诉用户"没法查"——
+ * 装作"已是最新"比说实话更糟。
+ */
+export async function handleModuleCheckUpdate(root, body, opts = {}) {
+  const b = body && typeof body === 'object' ? body : {}
+  const id = String(b.id ?? '').trim()
+  if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+
+  const entry = readRegistry(root).modules[id]
+  if (!entry) return { status: 404, body: { ok: false, error: `没有这个模块：${id}` } }
+  if (!entry.repo) {
+    return {
+      status: 400,
+      body: { ok: false, error: '这个模块不是从库安装的（没有记录来源地址），没法检查更新' },
+    }
+  }
+
+  try {
+    const r = await checkUpdate(entry.repo, entry.version, opts)
+    return { status: 200, body: { ok: true, id, ...r } }
+  } catch (error) {
+    const code = error?.code ?? ''
+    const status = code === 'E_NO_REPO' ? 404 : 400
+    return { status, body: { ok: false, error: String(error?.message ?? error) } }
+  }
 }
 
 /**

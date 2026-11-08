@@ -13,6 +13,8 @@ import { installFromBytes, uninstall, moduleTmpDir, sha256Of } from './installer
 import { ModuleProcess } from './host.js'
 import { resolveSource, normalizeReply, storeFetched, fetchError, FETCH_MAX_ITEMS, FETCH_RATE } from './sources.js'
 import { normalizeUiPayload, uiError } from './ui.js'
+import { describeFields } from './configschema.js'
+import { queryRecords } from './records.js'
 
 /** 协议 §5.1：单批 ingest 最多 100 条。超了拒绝，不静默截断（截断会让模块以为全写进去了）。 */
 export const INGEST_BATCH_MAX = 100
@@ -402,6 +404,24 @@ export class ModuleService {
     const manifest = readJson(path.join(moduleDir(this.root, id), 'yuanling.module.json'), null)
     const tab = (manifest?.ui?.tabs ?? []).find((t) => t.id === String(tabId ?? ''))
     if (!tab) throw uiError('E_NO_ROUTE', `模块「${id}」没有声明 tab「${tabId}」`)
+
+    // `config` 型 tab 是核心自己渲染的配置表单：不需要模块进程，也不问它要数据。
+    // 所以它**在模块停用时照样能用**——这正是把它放成页面而不是放成模块 API 的意义。
+    if (tab.kind === 'config') {
+      const all = describeFields(manifest?.config?.schema)
+      // 认领了字段就只给这些（按声明的顺序），没认领就给全部
+      const wanted = Array.isArray(tab.fields) && tab.fields.length ? tab.fields : null
+      const fields = wanted ? wanted.map((k) => all.find((f) => f.key === k)).filter(Boolean) : all
+      return { tab: tab.id, kind: 'config', config: readModuleConfigFromManage(this.root, id), fields }
+    }
+
+    // `records` 型 tab：核心查自己的原始层，**强制只查这个模块自己的记录**。
+    // 同样不需要模块进程——点赞记录在她停着的时候也该能看。
+    if (tab.kind === 'records') {
+      const spec = tab.records ?? {}
+      const r = queryRecords(this.root, { module: id, type: spec.type, limit: spec.limit })
+      return { tab: tab.id, kind: 'records', ...r }
+    }
 
     const proc = this.procs.get(id)
     if (!proc?.child) throw uiError('E_NO_ROUTE', `模块「${id}」没在运行，取不到它的界面数据`)

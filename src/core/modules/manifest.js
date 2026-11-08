@@ -129,7 +129,7 @@ function validateSources(raw, moduleId, err) {
 }
 
 /** §3.4（v1.2）：`ui.tabs` 的渲染形态。**封闭三选一**，模块不能自带 HTML。 */
-export const UI_KINDS = ['list', 'kv', 'text']
+export const UI_KINDS = ['list', 'kv', 'text', 'config', 'records']
 /** 最多几个自定义 tab：管理台的 tab 条再长就没法用了。 */
 export const UI_MAX_TABS = 5
 /** 核心保留的 tab id：`brief` / `log` 已经被核心占了。 */
@@ -181,8 +181,38 @@ function validateUi(raw, err) {
     if (t.kind !== undefined && !UI_KINDS.includes(String(t.kind))) {
       err(`${at}.kind`, 'UNKNOWN', `kind 只能是 ${UI_KINDS.join(' / ')}`)
     }
+    // config 型 tab 可以只认领一组字段（不写就表示"没被别的 tab 认领的全部"）。
+    // 不认领的话，"规则"这种页会把 cookie 一起铺进去——那显然不是想要的。
+    let fields = null
+    if (t.fields !== undefined) {
+      if (!Array.isArray(t.fields) || t.fields.some((k) => !isString(k))) {
+        err(`${at}.fields`, 'BAD_FORMAT', 'fields 必须是非空字符串数组')
+      } else if (String(t.kind ?? '') !== 'config' && t.kind !== undefined) {
+        err(`${at}.fields`, 'BAD_FORMAT', '只有 config 型 tab 能认领字段')
+      } else {
+        fields = t.fields.map(String)
+      }
+    }
     if (isString(t.id)) seen.add(t.id)
-    tabs.push({ id: t.id, label: t.label, kind: String(t.kind ?? 'text') })
+    // records 型：模块声明"看我自己产生的哪类记录"，核心查 raw 渲染（模块不读原始层）
+    let records = null
+    if (String(t.kind ?? '') === 'records') {
+      const spec = t.records
+      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+        err(`${at}.records`, 'MISSING', 'records 型 tab 必须给 records: { type, limit? }')
+      } else if (!isString(spec.type) || !/^[a-z][a-z0-9._-]{0,31}$/.test(String(spec.type))) {
+        err(`${at}.records.type`, 'BAD_FORMAT', 'records.type 必须是小写字母开头的短标识（如 like）')
+      } else {
+        let limit = 50
+        if (spec.limit !== undefined) {
+          const n = Number(spec.limit)
+          if (!Number.isInteger(n) || n < 1 || n > 200) err(`${at}.records.limit`, 'BAD_FORMAT', 'records.limit 必须是 1~200 的整数')
+          else limit = n
+        }
+        records = { type: String(spec.type), limit }
+      }
+    }
+    tabs.push({ id: t.id, label: t.label, kind: String(t.kind ?? 'text'), fields, records })
   })
 
   return { tabs }

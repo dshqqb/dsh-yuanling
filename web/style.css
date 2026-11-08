@@ -363,18 +363,113 @@ input.narrow { min-width: 0; width: 110px; }
 .module-tabs { margin: 0 0 16px; flex-wrap: wrap; }
 .module-tabs button { white-space: nowrap; }
 
+/* 启用/停用开关：开关式而不是按钮式——按钮让人以为"点一下执行一次动作"，
+   实际它表示的是一个持久状态，用开关才不误会。 */
+.switch-row { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.switch-row input[type='checkbox'] { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-track {
+  position: relative; width: 38px; height: 20px; border-radius: 999px;
+  background: var(--pill); transition: background 0.15s;
+  flex: 0 0 auto;
+}
+.switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text); opacity: 0.75; transition: transform 0.15s, opacity 0.15s;
+}
+.switch-row input:checked + .switch-track { background: var(--accent); }
+.switch-row input:checked + .switch-track .switch-knob { transform: translateX(18px); opacity: 1; background: #fff; }
+.switch-row input:disabled + .switch-track { opacity: 0.5; cursor: progress; }
+
 /* ── 模块配置表单 ─────────────────────────────────────────────────── */
 
 .config-form { display: flex; flex-direction: column; gap: 12px; margin: 10px 0 4px; }
 
 .config-row {
   display: grid;
-  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
   gap: 8px 12px;
   align-items: center;
 }
 .config-label { font-size: 13px; font-weight: 550; }
+.config-control { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .config-desc { grid-column: 2 / -1; margin-top: -4px; }
+
+/* 单选组：选项少的时候铺开，比下拉好看全。
+   gap 别给太大——五个选项铺满一行会显得松散，8px 刚好能看清又不散。 */
+.radio-group { display: flex; gap: 8px 18px; flex-wrap: wrap; }
+.radio-item { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; }
+.radio-item input[type='radio'] { accent-color: var(--accent); margin: 0; }
+
+/* 勾选项：蓝底白勾（不是浏览器默认那个灰方块） */
+.check-row { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; position: relative; }
+.check-row input[type='checkbox'] {
+  /* 藏起来但保留在文档流里：label 点击会转发给它，键盘也能操作 */
+  position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none;
+}
+.check-tick {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 5px;
+  background: var(--pill); color: transparent; font-size: 12px; font-weight: 700;
+  transition: background 0.15s, color 0.15s;
+  flex: 0 0 auto;
+}
+/* 相邻兄弟：DOM 里 tick 必须紧跟在 input 后面 */
+.check-row input:checked + .check-tick { background: var(--accent); color: #fff; }
+.check-row:focus-within .check-tick { box-shadow: 0 0 0 2px rgba(47, 128, 255, 0.35); }
+
+/* 下拉框：原生 select 在暗色主题下是系统灰白方角样式，和旁边的圆角输入框像两个应用。
+   所以外观自己画，箭头用绝对定位的 chevron（原生箭头没法单独改样式）。 */
+.select-wrap { position: relative; display: inline-flex; align-items: center; }
+.select-wrap select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background: var(--field);
+  border: 1px solid transparent;
+  color: var(--text);
+  padding: 9px 38px 9px 12px;
+  border-radius: 12px;
+  min-width: 240px;
+  max-width: 100%;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+.select-wrap select:focus { border-color: var(--accent); }
+.select-wrap select option { background: var(--card); color: var(--text); }
+.select-chev {
+  position: absolute; right: 13px; top: 50%; transform: translateY(-50%);
+  pointer-events: none; color: var(--muted); display: flex;
+}
+.list-cell .select-wrap select { min-width: 0; width: 100%; padding: 6px 30px 6px 10px; }
+
+/* 滑块 */
+.slider-row { display: flex; align-items: center; gap: 10px; width: 100%; }
+.slider-row input[type='range'] { flex: 1 1 auto; min-width: 120px; }
+.slider-value { min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 列表型配置：每行一组字段 + 上移/下移/删除 */
+.list-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; align-items: flex-start; }
+.list-row {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 12px;
+  /* 用比卡片更亮的底：输入框是 --field（更深），叠在 --pill 上几乎看不出边界， */
+  /* 用户会以为"输入框是灰的、和背景混在一起"（真被这么反馈过）。 */
+  background: var(--card-2);
+  border: 1px solid rgba(127, 127, 127, 0.14);
+  width: 100%;
+}
+.list-idx { min-width: 1.4em; }
+.list-cell { display: flex; flex-direction: column; gap: 2px; min-width: 120px; }
+.list-cell input, .list-cell select { height: 30px; }
+/* 列表里的勾选框：默认尺寸在这个密度下太大，收到和行高相称 */
+.list-cell input[type='checkbox'] {
+  width: 15px; height: 15px; accent-color: var(--accent); margin: 0; align-self: flex-start;
+}
+.list-ops { display: flex; gap: 4px; margin-left: auto; }
+/* 「＋ 添加一行」不该被 flex 拉满整行宽度 */
+.list-editor > .btn { align-self: flex-start; }
 
 @media (max-width: 720px) {
   .config-row { grid-template-columns: 1fr; }

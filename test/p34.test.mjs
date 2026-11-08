@@ -275,11 +275,17 @@ test('service：一分钟内超过 10 次 → E_RATE', async () => {
 
 // ── API ────────────────────────────────────────────────────────────────
 
-test('API：GET /api/sources 给出可取的来源', () => {
+test('API：/api/module-sources 给出可取的来源（/api/sources 是投递方心跳，别混）', () => {
   const { root } = withModule()
-  const u = new URL('/api/sources', 'http://127.0.0.1')
-  const r = handleApi(root, u)
+  const r = handleApi(root, new URL('/api/module-sources', 'http://127.0.0.1'))
   assert.equal(r.status, 200)
-  assert.equal(r.body.sources.length, 1)
-  assert.equal(r.body.sources[0].module, 'bili')
+  assert.equal(r.body.modules.length, 1)
+  assert.equal(r.body.modules[0].module, 'bili')
+  assert.equal(r.body.modules[0].sources[0].id, 'bili.search_video')
+
+  // 回归：v1.1 曾把 /api/sources 换成模块视图，害得"来源"页按心跳字段读、整页坏掉
+  const hb = handleApi(root, new URL('/api/sources', 'http://127.0.0.1'))
+  assert.equal(hb.status, 200)
+  assert.ok(Array.isArray(hb.body.sources))
+  assert.ok(hb.body.sources.every((s) => 'state' in s), '/api/sources 必须是心跳形状')
 })

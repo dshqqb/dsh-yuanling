@@ -9,8 +9,10 @@
 //   ② `h` 由核心算（sha256(模块 + source + ext_id)），**不认模块自报的 h**——
 //      模块若能自定指纹，就能让核心"以为见过"而静默丢条。
 //   ③ 任何一处不合格都报错，不静默丢：宁可这次没取到，也不要库里少一条还不知道。
-import { sha256, exists, readJson } from '../fsx.js'
+import fs from 'node:fs'
 import path from 'node:path'
+
+import { sha256, exists, readJson, isDir } from '../fsx.js'
 
 import { P } from '../paths.js'
 import { readRegistry, grantedOf, moduleDir } from './registry.js'
@@ -131,7 +133,10 @@ export function storeFetched(root, { moduleId, sourceId, items, ackedAt }) {
       media: it.media,
       flags: ['fetched'],
       h: fetchedHash(moduleId, sourceId, it.extId),
-      ext: { module: moduleId, source: sourceId, ext_id: it.extId },
+      // `fetched_at` 是**取回来的时刻**，和 `ts`（事件时间）是两件事：
+      // 取一条 2023 年的老视频，ts 是 2023、fetched_at 是今天。
+      // 页面上"最近一次向她取数是什么时候"必须看这个，否则会显示成视频发布日。
+      ext: { module: moduleId, source: sourceId, ext_id: it.extId, fetched_at: ackedAt },
     })),
   }
 
@@ -174,6 +179,98 @@ export function clipText(text, budget = FETCH_TEXT_BUDGET) {
   const buf = Buffer.from(text, 'utf8')
   if (buf.length <= budget) return { text, clipped: false }
   return { text: `${buf.subarray(0, budget).toString('utf8')}\n…（超出 ${budget} 字节预算，已截断）`, clipped: true }
+}
+
+/**
+ * 每个 source 被取过几次、最近一次是什么时候——**从原始层数出来的**，不另记账本。
+ *
+ * 为什么不建 fetch 统计文件：raw 里那几条记录本身就是证据（`flags: ["fetched"]`、
+ * `ext.source` 写着是哪个 source 给的）。再维护一份计数器，就得处理"计数器与 raw 不一致"
+ * 这个必然会发生的分支，而它带来的信息量并不比数一遍多。
+ *
+ * 代价是可能要翻不少文件，所以有边界：
+ *   · 只看最近 `days` 天；
+ *   · 最多读 `maxBytes` 字节，超了就停，并如实标 `partial`（不假装数全了）。
+ * 用 `includes('"fetched"')` 预筛再 JSON.parse，避免为绝大多数普通消息解析一遍。
+ *
+ * @returns {{stats:Object<string,{count:number,lastAt:string|null,lastAtApprox:boolean,lastDay:string|null}>, partial:boolean, scannedBytes:number, daysScanned:number}}
+ */
+export function fetchStats(root, wanted, { days = 14, maxBytes = 32 * 1024 * 1024 } = {}) {
+  const ids = new Set(wanted ?? [])
+  const stats = {}
+  for (const id of ids) stats[id] = { count: 0, lastAt: null, lastAtApprox: false, lastDay: null }
+
+  const allDays = listRawDays(root)
+  const picked = allDays.slice(-Math.max(1, days))
+  let scannedBytes = 0
+  let partial = false
+
+  for (let i = picked.length - 1; i >= 0; i -= 1) {
+    const day = picked[i]
+    const dir = path.join(root, P.raw, day.slice(0, 7), day.slice(8, 10))
+    if (!isDir(dir)) continue
+    for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.ndjson')).sort()) {
+      const p = path.join(dir, name)
+      let size = 0
+      try {
+        size = fs.statSync(p).size
+      } catch {
+        continue
+      }
+      if (scannedBytes + size > maxBytes) {
+        partial = true
+        break
+      }
+      scannedBytes += size
+      let text = ''
+      try {
+        text = fs.readFileSync(p, 'utf8')
+      } catch {
+        continue
+      }
+      for (const line of text.split('\n')) {
+        if (!line.includes('"fetched"')) continue
+        let rec = null
+        try {
+          rec = JSON.parse(line)
+        } catch {
+          continue
+        }
+        const sid = rec?.ext?.source
+        if (!sid || !ids.has(sid)) continue
+        const s = stats[sid]
+        s.count += 1
+        // 优先"取回来的时刻"；老记录没有这个字段（v1.1 之前没写），退回事件时间并标明
+        const at = String(rec?.ext?.fetched_at ?? '')
+        const usedAt = at || String(rec.ts ?? '')
+        const approx = !at
+        if (usedAt && (!s.lastAt || usedAt > s.lastAt)) {
+          s.lastAt = usedAt
+          s.lastAtApprox = approx
+          s.lastDay = day
+        }
+      }
+    }
+    if (partial) break
+  }
+
+  return { stats, partial, scannedBytes, daysScanned: picked.length }
+}
+
+/** raw 目录下的日目录（`YYYY-MM-DD`），升序。 */
+function listRawDays(root) {
+  const base = path.join(root, P.raw)
+  if (!isDir(base)) return []
+  const out = []
+  for (const month of fs.readdirSync(base).sort()) {
+    if (!/^\d{4}-\d{2}$/.test(month)) continue
+    const mdir = path.join(base, month)
+    if (!isDir(mdir)) continue
+    for (const dd of fs.readdirSync(mdir).sort()) {
+      if (/^\d{2}$/.test(dd) && isDir(path.join(mdir, dd))) out.push(`${month}-${dd}`)
+    }
+  }
+  return out
 }
 
 /** 数据目录里有没有控制台在跑（mcp-server 用它决定能不能问模块）。 */
