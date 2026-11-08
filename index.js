@@ -68,7 +68,6 @@ export const Config = z.object({
   consoleHost: z.string().default('127.0.0.1').description('监听地址。默认只允许回环；改成 0.0.0.0 必须同时打开 allowRemote。'),
   consolePort: z.number().default(17777).description('管理台端口（0 = 随机）。改动需重启。'),
   allowRemote: z.boolean().default(false).description('允许管理台监听非回环地址。打开前先想清楚：这是你的私人记忆。'),
-  preset: z.boolean().default(true).description('是否注册 agent preset「yuanling」。'),
   autoApproveDays: z.number().default(3).description('提案无人理会几天后自动批准（默认 3 天）。'),
   dailyAutoLimit: z.number().default(1).description('每天最多自动采纳几条提案（默认 1 条/天）。'),
   logLevel: z.string().default('info').description('debug | info | warn | error'),
@@ -450,6 +449,51 @@ export function apply(ctx, config) {
         /* 启动失败就没有要关的东西 */
       }
       closeServer?.(server)
+
+      // 模块进程也要一并停掉：它们和宿主同生共死，留着就是孤儿进程
+      try {
+        await modules?.stopAll()
+      } catch {
+        /* 关停阶段不抛 */
+      }
     })
   }
+
+  // ── 模块 ───────────────────────────────────────────────────────────────
+  // 只在宿主活着的时候拉起 enabled 的模块。**注册表里的 enabled 是持久意图**：
+  // 停用过的模块即使 DSH 重启也不会自动起（用户明确要的行为）。
+  startModules(ctx, config, root, marker?.active ?? null)
 }
+
+/** 启动模块服务。任何异常都不能让插件整体起不来——模块是可选能力。 */
+function startModules(ctx, config, root, pid) {
+  Promise.resolve()
+    .then(async () => {
+      const { ModuleService } = await import('./src/core/modules/service.js')
+      const svc = new ModuleService({ root, pid })
+      modules = svc
+
+      const results = await svc.startEnabled()
+      const started = results.filter((r) => r.started)
+      const failed = results.filter((r) => r.error)
+      if (started.length) log('info', config, `模块已启动 ${started.length} 个：${started.map((r) => r.id).join('、')}`)
+      for (const f of failed) log('warn', config, `模块 ${f.id} 启动失败：${f.error}`)
+
+      // 宿主关停时先停模块（unref 之后监听不挡退出，但子进程会）
+      if (typeof ctx?.on === 'function') {
+        ctx.on('dispose', async () => {
+          try {
+            await svc.stopAll()
+          } catch {
+            /* ignore */
+          }
+        })
+      }
+    })
+    .catch((err) => {
+      log('warn', config, `模块服务未启动：${err?.message ?? err}`)
+    })
+}
+
+/** 模块服务实例（dispose 时用）。 */
+let modules = null

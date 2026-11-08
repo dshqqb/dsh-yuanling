@@ -157,6 +157,7 @@ export const P = {
   modules: 'system/modules',
   modulesRegistry: 'system/modules.json',
   modulesLog: 'system/log/modules',
+  exports: 'system/exports',
   mediaIndex: 'media/index.ndjson',
   trash: 'system/trash',
 }

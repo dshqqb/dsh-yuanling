@@ -42,6 +42,8 @@ import {
   MCP_ENTRY_ID,
 } from './mcpinstall.js'
 import { setIdentityText } from './entities.js'
+import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleEnabled, exportModule } from './modules/manage.js'
+import { installFromBytes, download, uninstall } from './modules/installer.js'
 import { refreshDrives } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, closePurpose, duePurposes, expirePurposes, purposesPath } from './purposes.js'
 import { scan as scanProposals, listProposals, findProposal, approve, reject, rollback, sweep, readPolicy } from './proposals.js'
@@ -74,6 +76,59 @@ function out(text) {
 
 function err(text) {
   process.stderr.write(text + '\n')
+}
+
+/**
+ * 装模块：下载（可选）→ 校验 sha256 → 落盘。
+ *
+ * 为什么下载放在 CLI 而不是管理台：它要联网、要超时、要看到进度。
+ * 塞进一次 HTTP 请求里，用户看到的就是"点了没反应"。
+ */
+async function installModuleCommand(root, { url, file, flags, out: print, err: fail }) {
+  let bytes = null
+  let repo = flags.repo ? String(flags.repo) : url
+
+  if (file) {
+    const p = path.resolve(file)
+    if (!exists(p)) {
+      fail(`找不到文件：${p}`)
+      return EXIT.CONFIG
+    }
+    bytes = fs.readFileSync(p)
+    print(`· 读取本地包 ${p}（${(bytes.length / 1024).toFixed(1)} KB）`)
+  } else {
+    print(`· 下载 ${url} …`)
+    try {
+      bytes = await download(url)
+    } catch (error) {
+      fail(`✗ 下载失败：${error?.message ?? error}`)
+      return EXIT.GENERAL
+    }
+    print(`  已下载 ${(bytes.length / 1024).toFixed(1)} KB`)
+  }
+
+  try {
+    const r = installFromBytes({
+      root,
+      bytes,
+      repo,
+      source: flags.source ? String(flags.source) : url ? 'url' : 'manual',
+      expectSha256: flags.sha256 ? String(flags.sha256) : null,
+      ref: flags.ref ? String(flags.ref) : null,
+    })
+    print(`✓ 已${r.updated ? '更新' : '安装'} ${r.manifest.id} v${r.manifest.version}`)
+    print(`  目录：${r.dir}`)
+    print(`  sha256：${r.sha256}`)
+    if (r.manifest.capabilities?.length) {
+      print(`  声明能力：${r.manifest.capabilities.join(', ')}`)
+      print('  ⚠ 新模块默认已授予其声明的能力；若要收紧，用 ' + `yuanling module grant ${r.manifest.id} send off`)
+    }
+    print('  重启 DSH 后才会真正启动模块。')
+    return EXIT.OK
+  } catch (error) {
+    fail(`✗ 安装失败：${error?.message ?? error}`)
+    return EXIT.GENERAL
+  }
 }
 
 /**
@@ -123,6 +178,10 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling proposal scan             把"反复出现的主张"变成提案
   yuanling purpose list|mine|drives|close <id>   目的账本（惦记）
   yuanling mcp status|install|uninstall         把记忆登记成 DSH 的 MCP 工具
+  yuanling module list|show <id>               模块列表 / 详情
+  yuanling module install --url <tgz> | --file <本地.tgz> [--sha256 h] [--source s]
+  yuanling module export <id> | grant <id> <cap> on|off | enable|disable <id>
+  yuanling module uninstall <id> --yes         卸载（会删模块目录与配置）
   yuanling proposal list|show|approve|reject|rollback|sweep|policy
   yuanling group show|set <群号> [--name --intro --tone]
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
@@ -635,6 +694,121 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       }
 
       err('用法：yuanling mcp status|install|uninstall [--profile <名字>] [--dir <目录>] [--node <path>] [--server <path>] [--dry-run]')
+      return EXIT.CONFIG
+    }
+
+    if (cmd === 'module') {
+      const sub = _[1] ?? 'list'
+
+      if (sub === 'list') {
+        const list = listModules(root)
+        if (!list.length) {
+          out('（还没有安装模块）')
+          out('安装：yuanling module install --url <tgz 地址>')
+          return EXIT.OK
+        }
+        for (const m of list) {
+          const state = m.state ?? 'stopped'
+          const flagsBits = [state]
+          if (!m.enabled) flagsBits.push('已停用')
+          if (m.lastCrash) flagsBits.push('崩溃过')
+          out(`${m.id.padEnd(10)} v${m.version.padEnd(8)} ${m.source || 'manual'}  [${flagsBits.join(' · ')}]`)
+          out(`           能力：${(m.granted ?? []).join(', ') || '无'}`)
+        }
+        const sum = moduleSummary(root)
+        out(`\n共 ${sum.total} 个 · 运行中 ${sum.running} · 已崩溃 ${sum.crashed} · 已停用 ${sum.disabled}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'show') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling module show <id>')
+          return EXIT.CONFIG
+        }
+        const d = moduleDetail(root, id)
+        if (!d) {
+          err(`没有这个模块：${id}`)
+          return EXIT.CONFIG
+        }
+        out(`id        ${d.id}`)
+        out(`名称      ${d.name}`)
+        out(`版本      v${d.version}（api ${d.api}）`)
+        out(`类型      ${d.kind}`)
+        out(`来源      ${d.source || 'manual'}  ${d.repo || ''}`)
+        out(`安装于    ${String(d.installedAt ?? '').slice(0, 19)}`)
+        out(`状态      ${d.state}${d.enabled ? '' : '（已停用）'}`)
+        out(`声明能力  ${(d.capabilities ?? []).join(', ') || '无'}`)
+        out(`已授予    ${(d.granted ?? []).join(', ') || '无'}`)
+        if (d.lastCrash) out(`上次崩溃  ${d.lastCrash.reason}（${String(d.lastCrash.at).slice(0, 19)}）`)
+        out(`配置      ${JSON.stringify(d.config ?? {})}`)
+        const log = d.log ?? []
+        if (log.length) {
+          out('\n最近日志：')
+          for (const line of log.slice(-15)) out(`  ${line}`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'install') {
+        const url = flags.url ? String(flags.url) : null
+        const file = flags.file ? String(flags.file) : null
+        if (!url && !file) {
+          err('用法：yuanling module install (--url <tgz 地址> | --file <本地 .tgz>) [--sha256 <hash>] [--source github|gitee|manual]')
+          return EXIT.CONFIG
+        }
+        return installModuleCommand(root, { url, file, flags, out, err })
+      }
+
+      if (sub === 'export') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling module export <id>')
+          return EXIT.CONFIG
+        }
+        const r = exportModule(root, id)
+        out(`✓ 已导出 ${r.path}`)
+        out(`  ${(r.bytes / 1024).toFixed(1)} KB  sha256 ${r.sha256}`)
+        out(`  装到别处：yuanling module install --file "${r.path}"`)
+        return EXIT.OK
+      }
+
+      if (sub === 'grant') {
+        const id = _[2]
+        const cap = _[3]
+        const value = String(_[4] ?? '').toLowerCase()
+        if (!id || !cap || !['on', 'off'].includes(value)) {
+          err('用法：yuanling module grant <id> <capability> on|off')
+          return EXIT.CONFIG
+        }
+        const r = setModuleGranted(root, id, cap, value === 'on')
+        out(`✓ ${id} 的「${cap}」已${value === 'on' ? '授予' : '收回'}`)
+        out(`  当前授予：${r.granted.join(', ') || '无'}`)
+        return EXIT.OK
+      }
+
+      if (['enable', 'disable', 'uninstall'].includes(sub)) {
+        const id = _[2]
+        if (!id) {
+          err(`用法：yuanling module ${sub} <id>`)
+          return EXIT.CONFIG
+        }
+        if (sub === 'uninstall') {
+          if (!flags.yes) {
+            err(`这会删掉 system/modules/${id}/ 与它的配置。确认请加 --yes`)
+            return EXIT.CONFIG
+          }
+          const r = uninstall(root, id)
+          out(`✓ 已卸载 ${id}（${r.dir}）`)
+          return EXIT.OK
+        }
+        const r = setModuleEnabled(root, id, sub === 'enable')
+        out(`✓ ${id} 已${sub === 'enable' ? '启用' : '停用（重启 DSH 也不会自动启动）'}`)
+        out(`  enabled=${r.enabled}`)
+        return EXIT.OK
+      }
+
+      err('用法：yuanling module list|show <id>|install|export <id>|grant|enable|disable|uninstall')
       return EXIT.CONFIG
     }
 

@@ -1,0 +1,283 @@
+# 写一个原灵模块
+
+> 这是**教程**：从头做一个能装、能跑、能收消息的模块。
+> 规范的唯一权威是 [`PROTOCOL.md`](PROTOCOL.md)（v1.0，已冻结）。本文与它冲突时，以协议为准。
+>
+> 读完这份你应该能：写一个 `yuanling.module.json`、用 stdio 说协议、在本地装上、看着它运行。
+
+---
+
+## 1. 模块是什么，不是什么
+
+**是**：一个独立的操作系统进程。核心用 `spawn` 起它，通过 stdin/stdout 交换一行一条的 JSON。
+
+**不是**：不是一个能被 `import` 进核心的库，也不是一个 DSH 插件。模块和核心之间**只有协议**这一条接触面——语言随便，Python、Go、Rust 都能写（只要会说 NDJSON）。
+
+一句话记住三条：
+
+1. **模块不碰核心的文件**。想写记忆 → 调 `propose.fact`；想入库原始消息 → 调 `ingest`。落盘永远是核心的事。
+2. **模块不决定发什么**。核心发起 `send`，模块只负责投递。这是"她不会背着你说话"的落点。
+3. **stdout 只能出协议帧**。你的日志必须走 stderr，或者用 `log` op 交给核心代写。往 stdout 打一行非 JSON，核心会判 `E_PROTO` 并断开——这是刻意的，因为"日志混进协议流"是这类桥接最常见的事故。
+
+---
+
+## 2. 包的形状
+
+一个模块就是一个 `.tgz`（npm pack 的产物即可，也接受裸 tar）。解开之后：
+
+```
+yuanling.module.json     必须有：模块自述与校验依据
+index.mjs                入口（命令由 manifest 指定，不一定是这个文件名）
+package.json             可选，但要有就必须零运行时依赖
+README.md                可选
+```
+
+**没有任何构建步骤**。核心不会跑 `npm install`、也不会跑 `postinstall`——这是安全底线（协议 §2.5）。所以：
+
+- **不要声明运行时依赖**。需要 HTTP、JSON、gzip，用语言自带的。
+- 真要第三方库，就把它打进来（vendored）。
+
+---
+
+## 3. `yuanling.module.json`
+
+最小可用的一份：
+
+```json
+{
+  "id": "echo",
+  "version": "0.1.0",
+  "api": "1.0",
+  "kind": "gateway",
+  "entry": { "command": ["node", "index.mjs"] },
+  "capabilities": ["ingest.message"]
+}
+```
+
+字段逐个说：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `id` | ✅ | 小写字母开头，`[a-z0-9-]`，2~32 字符。**它会成为 raw 的来源名**（`raw/<月>/<日>/<id>.ndjson`），所以 `system` / `raw` / `media` / `rules` 这些是保留字，撞了会被拒装 |
+| `version` | ✅ | 完整 semver（`1.2.3`）。更新时用来判断新旧 |
+| `api` | ✅ | 协议版本。核心实现 1.0，所以写 `"1.0"`；**主版本必须相同**，次版本不能高于核心 |
+| `kind` | ⬜ | `gateway`（收消息，v1 唯一实现）/ `actuator`（由核心触发生成内容，v1 接口留、调用回 `E_UNSUPPORTED`）/ `enricher`（加工管道，语义未定） |
+| `entry.command` | ✅ | 非空数组，`[0]` 是命令名，**不能含路径分隔符**。`"node"` 会被核心换成本机的 node 可执行文件；用别的命令就写裸名字 |
+| `capabilities` | ⬜ | 封闭词表，见下节 |
+| `config` | ⬜ | 声明了就给 `schema`（JSON Schema 子集），核心据此渲染表单并保管值 |
+| `routes` | ⬜ | 模块自己提供的 HTTP 路由（管理台扩展），不能与已装模块重叠 |
+
+### 能力：申请什么，才可能拿到什么
+
+| capability | 能做什么 | 风险 |
+|---|---|---|
+| `ingest.message` | 调 `ingest` 把消息落进 raw（单批 ≤100 条） | 低（核心盖章 `source`、做脱敏） |
+| `propose.fact` | 调 `propose.fact` 提候选事实 | 低（入不入库由核心判） |
+| `media.put.file` | 把临时文件交给核心归档 | 中（路径必须在自己 `$YUANLING_TMP` 内）**v1 核心尚未实现**：可以调用，但会收到"宿主不支持" |
+| `media.read` | 通过指针读回媒体 | 中 —— 同样**v1 未实现** |
+| `send` | 收到核心的 `send` 请求后**真的把消息发出去** | **高**：唯一能"往外说话"的能力 |
+| `actuate` | 生成语音/视频/图片 | **v1 未实现**（接口形状冻结，调用回 `E_UNSUPPORTED`） |
+
+**声明 ≠ 授予**。你在 manifest 里声明 `send`，装完之后是否真的授予由人决定；未被授予时核心直接回 `E_NO_CAP`，你的请求会被拒。所以：**代码里要能优雅处理 `E_NO_CAP`**，不要假定自己有权限。
+
+---
+
+## 4. 说话的方式
+
+### 帧
+
+stdout 与 stdin 上都是 **NDJSON**：一行一条 JSON，UTF-8 无 BOM，行尾 `\n`。单帧上限 **256KB**。
+
+### 信封
+
+```jsonc
+// 核心 → 你：请求（带 id，你要回）
+{ "op": "ingest", "id": "01JCV…", "data": { "v": 1, "source": "qq", "items": [ … ] } }
+
+// 你 → 核心：成功
+{ "id": "01JCV…", "ok": true, "result": { "accepted": 1 } }
+
+// 你 → 核心：失败
+{ "id": "01JCV…", "ok": false, "error": { "code": "E_RATE", "message": "…", "retry": true } }
+
+// 你 → 核心：通知（无 id、不需回应）
+{ "op": "log", "data": { "level": "info", "event": "连上了" } }
+```
+
+规则只有三条，但都要守：
+
+- **响应必须回带同一个 `id`**。
+- **允许乱序**：你可以在两个在途请求中先回后发的那个。
+- **超时按 op 定**（`init` 30s / `ingest` 10s / `send` 30s / `actuate` 300s / 其余 10s）。超时只作废那一次请求，**不杀你的进程**；但连续 3 次超时会被当成崩溃。
+
+### 你要处理的 op（核心 → 模块）
+
+| op | 什么时候来 | 你要回什么 |
+|---|---|---|
+| `init` | 启动后第一次 | `{ ready: true }`，之后核心才认为你活着 |
+| `ping` | 心跳 | `{ pong: true }` |
+| `ingest` | 核心把消息交给你 | 见下（**模块一般不需要处理这个**——方向是模块调核心） |
+| `send` | 核心要发一条消息 | `{ delivered: true }`，失败回错误带 `retry` |
+| `config.get` | 极少；通常你主动问核心 | — |
+| `shutdown` | 核心要停你 | 收到就直接退出（`process.exit(0)`） |
+
+### 你可以调的 op（模块 → 核心）
+
+`✅` = v1 已实现；`⬜` = 协议里定义了但核心还没做，调用会收到 "宿主不支持"。
+
+| op | 用途 | 需要的能力 | v1 |
+|---|---|---|---|
+| `ingest` | 把收到的消息交给核心落盘（单批 ≤100） | `ingest.message` | ✅ |
+| `propose.fact` | 提交一条候选事实 | `propose.fact` | ✅（需要宿主接处理器） |
+| `config.get` | 取核心保管的配置（**不要自己读配置文件**） | — | ✅ |
+| `log` | 让核心代写日志（4KB 上限，超限截断） | — | ✅ |
+| `media.put.file` | 交一个临时文件给核心归档 | `media.put.file` | ⬜ |
+| `media.get` | 按指针读回媒体 | `media.read` | ⬜ |
+
+**写模块时请先只依赖 ✅ 那四个。** 标 ⬜ 的两个在核心补齐之前，声明了能力也拿不到结果——协议冻结的是"形状"，不是"已实现"。
+
+`ingest` 的入参与返回值：
+
+```jsonc
+// 你发
+{ "op": "ingest", "id": "…", "data": {
+    "v": 1,
+    "source": "qq",                    // 核心会盖章成你的 id，不用纠结这里写什么
+    "acct": "10001",
+    "items": [ { "channel": "private:12345", "actor": { "kind": "member", "id": "12345", "name": "张三" }, "role": "user", "text": "在吗", "ts": "2026-11-08T16:00:00+08:00" } ]
+} }
+
+// 核心回
+{ "id": "…", "ok": true, "result": { "accepted": 1, "deduped": 0, "skipped": 0, "errors": [] } }
+```
+
+- 单批 ≤ 100 条；
+- 不保证按投递顺序落盘，需要顺序就自己串行。
+
+**防回环**（网关第一天就会用到，不是可选优化）：机器人自己发的消息必须标 `role: "bot"`；核心按 role 不触发候选事实、不计召回。
+
+---
+
+## 5. 一个能跑的完整例子
+
+`scripts/make-demo-module.mjs` 会生成一个真的能装、能跑的模块包。它的 `index.mjs` 值得从头读一遍：
+
+```js
+const send = (o) => process.stdout.write(JSON.stringify(o) + '\n')
+const log = (level, event) => send({ op: 'log', data: { level, event } })
+
+process.stdin.on('data', (chunk) => {
+  for (const line of chunk.toString().split('\n')) {
+    if (!line.trim()) continue
+    let f
+    try { f = JSON.parse(line) } catch { continue }
+
+    if (f.op === 'shutdown') { process.exit(0) }
+
+    if (f.op === 'init') {
+      log('info', 'init 收到')
+      send({ id: f.id, ok: true, result: { ready: true } })
+    } else if (f.op === 'ping') {
+      send({ id: f.id, ok: true, result: { pong: true } })
+    } else if (f.op === 'ingest') {
+      const items = f.data?.items ?? []
+      send({ id: f.id, ok: true, result: { accepted: items.length, deduped: 0, skipped: 0, errors: [] } })
+    } else {
+      send({ id: f.id, ok: false, error: { code: 'E_NOPE', message: '不支持：' + f.op } })
+    }
+  }
+})
+```
+
+四个细节，都是"不这样做会出问题"的：
+
+1. **按 `\n` 切行，不要假设一次 data 就是一条帧**。Node 会把多条帧合成一个 chunk，也会把一条帧切成两个 chunk。
+2. **`try/parse` 包起来**：坏帧跳过，不要让异常把整个循环打断。
+3. **未知 op 要回错误**（`E_NOPE`），不要沉默——沉默会让核心等到超时，看起来像你死了。
+4. **`shutdown` 立刻退出**。核心会先给你 `deadline_ms`，超时会硬杀。
+
+---
+
+## 6. 在本地把它装上
+
+```powershell
+# 1. 造包（也可以用 npm pack <目录>）
+node scripts/make-demo-module.mjs .
+
+# 2. 装
+node bin/yuanling.js module install --file ./demo-0.1.0.tgz --source manual
+
+# 3. 看
+node bin/yuanling.js module list
+node bin/yuanling.js module show demo
+
+# 4. 跑（重启 DSH 后核心会拉起 enabled 的模块）
+#    或者用 CLI 起管理台看模块页：http://127.0.0.1:17777
+```
+
+调试时的三条命令：
+
+```powershell
+node bin/yuanling.js module show demo     # 状态、能力、配置、最近日志
+node bin/yuanling.js module disable demo  # 停用（重启也不起），排查"是不是它在捣乱"
+node bin/yuanling.js module export demo   # 导出 tgz，拷到另一台机器
+```
+
+日志在哪：
+
+```
+<数据目录>/system/log/modules/<id>.log
+```
+
+---
+
+## 7. 自测清单（提交给用户之前）
+
+| 项 | 怎么验 |
+|---|---|
+| 一次 `write` 两条帧、一条帧分两次 `write` | 都能正确处理 |
+| 并发两个请求，倒序回应 | 两边都按 `id` 对上 |
+| 收到 `ping` 秒回 | 别做慢活 |
+| 收到不认识的 op | 回错误码，不沉默 |
+| 收到 `shutdown` | 立刻退出，不留子进程 |
+| **往 stdout 打日志**（故意） | 核心应当断开——说明协议在守边界，不是你写错了 |
+| 没有 `send` 授予时调 `send` | 收到 `E_NO_CAP`，且你的代码不崩 |
+| 路径含中文与空格的目录 | 能跑（Windows 上必测） |
+
+---
+
+## 8. 发布
+
+打一个 release，附上 `.tgz` 与 sha256：
+
+```
+https://<你的仓库>/releases/download/v0.1.0/echo-0.1.0.tgz
+```
+
+用户可以：
+
+```powershell
+yuanling module install --url <上面的地址> --sha256 <hash> --source github
+```
+
+**只允许 https**（`http` 仅限本机回环）。给了 `--sha256` 就一定会校验；不给就只记下来，方便以后核对。
+
+---
+
+## 9. 三件不要做的事
+
+1. **不要读核心的数据目录**。你只该通过 `config.get` 拿配置、通过 `media.get` 拿媒体。绕过协议去读 `raw/` 或 `personas/` 等于绕过所有边界。
+2. **不要自己决定发什么**。核心的 `send` 带着已经批准的内容；你自作主张多发一条，就是"她背着你说话"。
+3. **不要在 stdout 打日志**。用 stderr，或者 `log` op。混合流的桥接最后都会毁在"这条是日志还是协议"上。
+
+---
+
+## 附：文档地图
+
+| 文件 | 是什么 |
+|---|---|
+| [`PROTOCOL.md`](PROTOCOL.md) | **规范**（冻结 v1.0）：信封、方法表、错误码、能力协商、trace、§17 验收单 |
+| 本文 | **教程**：怎么做一个模块 |
+| [`SECURITY.md`](SECURITY.md) | 安全边界：暴露面、密钥、越权防护 |
+| [`PURPOSE_ANALYSIS.md`](PURPOSE_ANALYSIS.md) | 「目的层」的设计来源与取舍（不是模块相关） |
+| `../README.md` | 面向用户：安装、数据目录、管理台 |

@@ -3,7 +3,13 @@ const $ = (id) => document.getElementById(id)
 const tokenKey = 'yuanling.token'
 const themeKey = 'yuanling.theme'
 
-const state = { token: localStorage.getItem(tokenKey) || '', tab: 'status', mode: 'core', peopleSort: 'weight' }
+const state = {
+  token: localStorage.getItem(tokenKey) || '',
+  tab: 'status',
+  mode: 'core',
+  peopleSort: 'weight',
+  moduleId: null,
+}
 
 // ── 图标（内联，不引图标库）──────────────────────────────────────────
 const I = {
@@ -141,6 +147,7 @@ function setMode(mode) {
   }
   $('crumb-page').textContent = '模块'
   for (const s of document.querySelectorAll('.main > .page')) s.hidden = s.id !== 'page-modules'
+  loadModules().catch(() => {})
 }
 
 function applyTheme(t) {
@@ -519,6 +526,143 @@ const loaders = {
   refusals: loadRefusals,
 }
 
+// ── 模块页 ────────────────────────────────────────────────────────────
+//
+// 页面只做三件事：看状态、授予能力、装/卸。
+// **下载不在页面里做**（联网 + 超时 + sha256 放 HTTP 请求里会变成"点了没反应"），
+// 页面只接受本地 .tgz 路径，下载走 CLI。
+
+const CAP_LABELS = {
+  'ingest.message': '收消息',
+  'propose.fact': '提事实',
+  'media.put.file': '存媒体',
+  'media.read': '读媒体',
+  send: '发消息',
+  actuate: '生成内容',
+}
+
+/** send 是唯一"能往外说话"的能力，单独标风险。 */
+const CAP_RISK = { send: true }
+
+const STATE_LABELS = {
+  running: ['运行中', 'ok'],
+  ready: ['就绪', 'ok'],
+  stopped: ['已停止', ''],
+  starting: ['启动中', 'warn'],
+  restarting: ['重启中', 'warn'],
+  crashed: ['已崩溃', 'bad'],
+}
+
+async function loadModules() {
+  const d = await api('/api/modules')
+
+  const sum = d.summary ?? {}
+  const box = $('module-summary')
+  box.innerHTML = ''
+  for (const [label, value, cls] of [
+    ['已安装', sum.total ?? 0, ''],
+    ['运行中', sum.running ?? 0, 'ok'],
+    ['已崩溃', sum.crashed ?? 0, sum.crashed ? 'bad' : ''],
+    ['已停用', sum.disabled ?? 0, ''],
+  ]) {
+    const c = el('div', 'stat' + (cls ? ` ${cls}` : ''))
+    c.append(el('div', 'v', String(value)), el('div', 'k', label))
+    box.append(c)
+  }
+
+  $('module-count').textContent = d.modules.length ? `共 ${d.modules.length} 个` : ''
+  const list = $('module-list')
+  list.innerHTML = ''
+  if (!d.modules.length) {
+    list.append(el('div', 'muted small', '还没有安装任何模块。QQ 适配器会作为第一个官方模块出现在这里。'))
+    return
+  }
+
+  for (const m of d.modules) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const t = el('div', 't')
+    const tags = el('span')
+    const [stateText, stateCls] = STATE_LABELS[m.state] ?? [m.state, '']
+    tags.append(el('span', `tag ${stateCls}`.trim(), stateText))
+    if (!m.enabled) tags.append(el('span', 'tag', '已停用'))
+    tags.append(el('span', 'tag', m.source || 'manual'))
+    if (m.state === 'crashed' && m.lastCrash) tags.append(el('span', 'tag bad', '崩溃过'))
+    t.append(tags, document.createTextNode(m.name || m.id))
+
+    const caps = (m.granted ?? []).map((c) => CAP_LABELS[c] ?? c).join('、') || '无'
+    body.append(t, el('div', 's', `${m.id} · v${m.version} · 能力：${caps}`))
+    n.append(body)
+
+    const acts = el('div', 'actions')
+    acts.append(mkBtn('详情', 'small ghost', () => openModule(m.id)))
+    n.append(acts)
+    list.append(n)
+  }
+}
+
+async function openModule(id) {
+  const d = await api(`/api/module?id=${encodeURIComponent(id)}`)
+  const m = d.module
+  state.moduleId = id
+
+  $('module-detail').hidden = false
+  $('module-title').textContent = `${m.name || m.id}（${m.id}）`
+  $('module-msg').textContent = ''
+  $('module-toggle').textContent = m.enabled ? '停用' : '启用'
+
+  const meta = $('module-meta')
+  meta.innerHTML = ''
+  const rows = [
+    ['版本', `v${m.version}`],
+    ['协议', `api ${m.api}`],
+    ['类型', m.kind || 'gateway'],
+    ['来源', m.source || 'manual'],
+    ['仓库', m.repo || '—'],
+    ['上次源', m.previousRepo || '—'],
+    ['安装于', (m.installedAt || '').slice(0, 19).replace('T', ' ') || '—'],
+    ['状态', (STATE_LABELS[m.state] ?? [m.state])[0]],
+    ['崩溃', m.lastCrash ? `${m.lastCrash.reason}（${String(m.lastCrash.at).slice(0, 19)}）` : '无'],
+  ]
+  for (const [k, v] of rows) {
+    meta.append(el('div', 'k', k), el('div', 'v', String(v)))
+  }
+
+  // 能力：每条一个开关。没声明的能力没有开关——授予不存在的权限是无意义的。
+  const caps = $('module-caps')
+  caps.innerHTML = ''
+  for (const c of m.capabilities ?? []) {
+    const on = (m.granted ?? []).includes(c)
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const t = el('div', 't')
+    if (CAP_RISK[c]) t.append(el('span', 'tag warn', '敏感'))
+    t.append(document.createTextNode(CAP_LABELS[c] ?? c), el('span', 'muted small', `  ${c}`))
+    body.append(t, el('div', 's', on ? '已授予' : '未授予'))
+    n.append(body)
+
+    const acts = el('div', 'actions')
+    acts.append(
+      mkBtn(on ? '收回' : '授予', 'small ghost', async () => {
+        await postApi('/api/modules/grant', { id: m.id, capability: c, granted: !on })
+        await openModule(m.id)
+        await loadModules()
+      }),
+    )
+    n.append(acts)
+    caps.append(n)
+  }
+  if (!(m.capabilities ?? []).length) caps.append(el('div', 'muted small', '该模块没有声明任何能力。'))
+
+  // 配置：这一轮只读（QQ 模块还不存在，表单没有真实字段可绑）
+  $('module-config').textContent = m.configSchema
+    ? `已声明 schema，当前值：${JSON.stringify(m.config ?? {}, null, 2)}`
+    : '该模块没有声明配置。'
+
+  const log = $('module-log')
+  log.textContent = (m.log ?? []).slice(-40).join('\n') || '（还没有日志）'
+}
+
 const titles = Object.fromEntries(NAV.map((n) => [n.id, n.label]))
 
 async function openTab(name) {
@@ -543,6 +687,70 @@ async function openTab(name) {
 // ── 事件绑定 ──────────────────────────────────────────────────────────
 $('mode-core').addEventListener('click', () => setMode('core'))
 $('mode-modules').addEventListener('click', () => setMode('modules'))
+
+// ── 模块页事件 ────────────────────────────────────────────────────────
+$('module-refresh').addEventListener('click', () => {
+  loadModules().catch(() => {})
+})
+
+$('module-close').addEventListener('click', () => {
+  $('module-detail').hidden = true
+  state.moduleId = null
+})
+
+$('module-toggle').addEventListener('click', async () => {
+  if (!state.moduleId) return
+  const cur = $('module-toggle').textContent === '停用'
+  try {
+    await postApi('/api/modules/enable', { id: state.moduleId, enabled: !cur })
+    $('module-msg').textContent = cur ? '已停用（重启也不再启动）' : '已启用'
+    await openModule(state.moduleId)
+    await loadModules()
+  } catch (err) {
+    $('module-msg').textContent = `失败：${err.message}`
+  }
+})
+
+$('module-export').addEventListener('click', async () => {
+  if (!state.moduleId) return
+  try {
+    const r = await postApi('/api/modules/export', { id: state.moduleId })
+    $('module-msg').textContent = `已导出：${r.path}（${(r.bytes / 1024).toFixed(1)} KB，sha256 ${r.sha256.slice(0, 12)}…）`
+  } catch (err) {
+    $('module-msg').textContent = `导出失败：${err.message}`
+  }
+})
+
+$('module-uninstall').addEventListener('click', async () => {
+  if (!state.moduleId) return
+  if (!confirm(`确定卸载 ${state.moduleId}？模块目录与配置会一起删除。`)) return
+  try {
+    await postApi('/api/modules/uninstall', { id: state.moduleId })
+    $('module-detail').hidden = true
+    state.moduleId = null
+    await loadModules()
+  } catch (err) {
+    $('module-msg').textContent = `卸载失败：${err.message}`
+  }
+})
+
+$('module-install').addEventListener('click', async () => {
+  const file = $('module-file').value.trim()
+  const msg = $('module-install-msg')
+  if (!file) {
+    msg.textContent = '请填本地 .tgz 的绝对路径'
+    return
+  }
+  msg.textContent = '安装中…'
+  try {
+    const r = await postApi('/api/modules/install', { file, source: 'manual' })
+    msg.textContent = `✓ 已安装 ${r.id} v${r.version}${r.updated ? '（更新）' : ''}`
+    $('module-file').value = ''
+    await loadModules()
+  } catch (err) {
+    msg.textContent = `安装失败：${err.message}`
+  }
+})
 $('theme-toggle').addEventListener('click', toggleTheme)
 
 $('btn-token').addEventListener('click', () => showTokenBar($('tokenbar').hidden))

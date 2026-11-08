@@ -240,17 +240,56 @@
         <section id="page-modules" class="page" hidden>
           <div class="page-head">
             <h2>模块</h2>
-            <p class="muted">插件化的扩展位，还没有接进来。</p>
+            <p class="muted">模块是独立进程，只通过标准协议与核心交换数据；能力（能不能收、能不能发）由这里授予。</p>
+            <div class="seg" id="module-refresh-wrap">
+              <button id="module-refresh" class="is-active">刷新</button>
+            </div>
           </div>
-          <div class="empty">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
-              <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
-              <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
-              <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
-              <rect x="13.5" y="13.5" width="7" height="7" rx="2" stroke-dasharray="3 3" />
-            </svg>
-            <div class="empty-title">这里还空着</div>
-            <div class="muted">模块是给后续能力（QQ 适配器、B站采集、导入导出）预留的位置。<br />现在没有已安装的模块。</div>
+
+          <div class="card" id="module-summary-card">
+            <div id="module-summary" class="stat-row"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>已安装</h3>
+              <span class="muted small" id="module-count"></span>
+            </div>
+            <div id="module-list" class="list"></div>
+          </div>
+
+          <div id="module-detail" class="card" hidden>
+            <div class="card-head">
+              <h3 id="module-title"></h3>
+              <button id="module-close" class="btn ghost small">关闭</button>
+            </div>
+
+            <div id="module-meta" class="kv"></div>
+
+            <div class="subhead">能力</div>
+            <div id="module-caps" class="list"></div>
+
+            <div class="subhead">配置</div>
+            <div id="module-config" class="muted small"></div>
+
+            <div class="subhead">日志</div>
+            <pre id="module-log" class="logbox"></pre>
+
+            <div class="field-row">
+              <button id="module-export" class="btn ghost small">导出 tgz</button>
+              <button id="module-toggle" class="btn ghost small">停用</button>
+              <button id="module-uninstall" class="btn ghost small danger">卸载</button>
+              <span id="module-msg" class="muted small"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>安装新模块</h3></div>
+            <div class="field-row">
+              <input id="module-file" placeholder="本地 .tgz 的绝对路径（下载请用 CLI：yuanling module install --url）" />
+              <button id="module-install" class="btn">安装</button>
+            </div>
+            <div class="muted small" id="module-install-msg"></div>
           </div>
         </section>
       </main>

@@ -169,6 +169,36 @@ button, input, textarea { font: inherit; color: inherit; }
 .stat .v { font-size: 32px; font-weight: 650; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
 .stat .sub { font-size: 12px; color: var(--muted); }
 
+/* 模块页：摘要行 + 键值表 + 日志框 */
+.stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.stat-row .stat {
+  min-height: 0; padding: 12px 14px; layout: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  background: transparent; box-shadow: none;
+  border-left: 2px solid rgba(128, 128, 128, 0.25);
+}
+.stat-row .stat .v { font-size: 22px; }
+.stat-row .stat .k { font-size: 12px; order: 2; }
+.stat-row .stat.ok .v { color: var(--ok); }
+.stat-row .stat.bad .v { color: var(--danger); }
+.stat-row .stat.warn .v { color: var(--warning, #d9822b); }
+
+.kv {
+  display: grid; grid-template-columns: 96px 1fr; gap: 6px 14px;
+  font-size: 13px; margin-bottom: 6px;
+}
+.kv .k { color: var(--muted); }
+.kv .v { word-break: break-all; }
+
+.subhead { font-size: 13px; font-weight: 600; margin: 14px 0 8px; opacity: 0.85; }
+
+.logbox {
+  margin: 0; padding: 12px 14px; max-height: 260px; overflow: auto;
+  font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 12px;
+  line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  background: rgba(128, 128, 128, 0.08); border-radius: 12px; color: var(--text);
+}
+
 .stat.primary {
   background: linear-gradient(135deg, #2f80ff, #4f9dff);
   color: #fff;

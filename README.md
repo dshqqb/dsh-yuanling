@@ -1,6 +1,6 @@
 # 原灵 yuanling
 
-松耦合，模块化，核心只保留最基本的记忆相关设置，对接QQ、B站、桌宠等功能都采用模块化的方式，每个模块是单独的项目
+松耦合，模块化，核心只保留最基本的记忆相关设置，对接QQ、B站、桌宠等功能都采用模块化的方式，每个模块是单独的项目，放置于yuanling数据目录的模块子目录下，可以导出。
 
 原始层（保留最原始的记忆，写过一次之后只读，不改），记忆层，人格层（骨架由人设定，不能自改，其余可以演化）
 
@@ -71,6 +71,12 @@ surfcore 有一套完整的"目的引擎"（`purpose-engine.js`，2284 行）。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
+│  模块（独立进程，各自独立仓库）                            │
+│  qq / bili / 你的模块 …                                   │
+│  只能说协议：ingest / propose.fact / media.* / send       │
+└───────────────┬─────────────────────────────────────────┘
+                │  只有「协议」这一条接触面；核心是唯一写者
+┌───────────────▼─────────────────────────────────────────┐
 │  L0 原始层  raw/YYYY-MM/DD/<source>.ndjson               │
 │  只追加、不改写、按天封存、sha256 日链                    │
 └───────────────┬─────────────────────────────────────────┘
@@ -92,10 +98,13 @@ surfcore 有一套完整的"目的引擎"（`purpose-engine.js`，2284 行）。
 └─────────────────────────────────────────────────────────┘
 ```
 
-两条线**贯穿所有层**：
+**核心与模块的关系是单向的**：模块把看到的东西交给核心（L0 → L1），核心把"要发什么"交给模块（`send`）。模块**不能**直接写 raw、不能直接写记忆、不能自己决定发什么——这是协议的四个硬边界，也是"她不会背着你说话"的落点。
+
+三条线**贯穿所有层**：
 
 - **版本线**：任何写盘都进内容寻址的 blob + append-only journal，回滚是"生成新版本"，不是"抹掉过去"。
 - **规则线**：`guardrails.json`（硬线）→ `rules/ingest.json`（入库）→ 人格级 `rules/`（recall / action / persona）。
+- **能力线**：模块声明能力 → 人授予 → 核心在每次请求上校验（未授予回 `E_NO_CAP`）。
 
 **边界很硬**：规则只管"能不能做"，从不塑造人格。人格靠记忆与表达层慢慢长出来。
 
@@ -231,10 +240,11 @@ D:\yuanling\
    ├─ versions\                  根级文件的版本库（blobs + journal）
    ├─ log\
    │  ├─ changes.ndjson          变更、拒绝、纠错、身份主张——一条流水账
-   │  └─ modules\qq.ndjson       每个模块一个日志文件（核心代写：stderr + 关键事件）
-   ├─ modules\                   已安装的模块（独立子进程，每模块一目录一版本；目前为空）
-   │  └─ qq\1.2.0\
-   ├─ modules.json               模块注册表：id / repo / version / api / enabled / permissions
+   │  └─ modules\qq.log          每个模块一个日志文件（核心代写：stderr + 关键事件）
+   ├─ modules\                   已安装的模块（独立子进程，每模块一目录；装在数据目录内）
+   │  └─ qq\                     index.mjs / yuanling.module.json / VERSION / config.json
+   ├─ exports\                   导出的模块 tgz（换机器时拷一个文件）
+   ├─ modules.json               模块注册表：id / repo / version / api / enabled / granted / last_crash
    ├─ candidates\  index\  backups\  imports\  trash\   预留
    └─ （其余按需出现，核心不依赖）
 ```
@@ -259,20 +269,39 @@ D:\yuanling\
 |---|---|
 | 命名 | `dsh-yuanling-<name>`（推荐，不强制；身份以 manifest 的 `id` 为准） |
 | 形态 | 独立子进程 + stdio JSON-RPC，跨语言（Python 的语音/视频模型也能接） |
-| 自描述 | 仓库根 `yuanling.module.json`：`id / api / kind / transport / capabilities / permissions` |
-| 安装位置 | `system/modules/<id>/<version>/`，注册表 `system/modules.json` |
-| 日志 | `system/log/modules/<id>.ndjson`，由核心代写（stderr + 关键事件） |
+| 自描述 | 包根 `yuanling.module.json`：`id / api / kind / entry.command / capabilities` |
+| 分发 | **发行包 `.tgz`**（不是 clone 仓库）：装的是产物，不跑构建脚本 |
+| 安装位置 | **数据目录内**：`system/modules/<id>/`，注册表 `system/modules.json` |
+| 日志 | `system/log/modules/<id>.log`，由核心代写（stderr + 关键事件） |
+| 导出 | `yuanling module export <id>` → `system/exports/<id>-<version>.tgz`（换机器拷一个文件） |
 
 **四条硬边界**（模块再强也越不过去）：
 
-1. 不能直接读 `raw/` —— 只能调 `ingest()`，落盘与脱敏由核心决定；
+1. 不能直接读 `raw/` —— 只能调 `ingest()`，落盘与脱敏由核心决定（`source` 由核心盖章）；
 2. 不能直接写记忆 —— 只能提交候选事实，由核心决定入不入库；
-3. 不能决定媒体存哪 —— 只能 `media.put()`，拿回一个内容寻址的指针；
-4. **不能自己决定发什么** —— 发送由核心发起，模块只做投递；发送前核心执行 `rules/action` 与 `guardrails.never_do`。这是 `never_do` 唯一的执行点。
+3. 不能决定媒体存哪 —— 只能 `media.put.file()`，拿回一个内容寻址的指针；
+4. **不能自己决定发什么** —— 发送由核心发起，模块只做投递；发送前核心执行 `rules/action` 与 `guardrails.never_do`。
+
+第 4 条在代码里的落点是**能力授予**：模块 manifest 里声明 `send`，但**只有被授予后**才能收到 `send`；未被授予时核心直接回 `E_NO_CAP`。能力清单是**封闭词表**（协议 §5.3），写个词表外的能力会被拒装。
+
+### 模块怎么管
+
+```powershell
+yuanling module list                     # 列表（含状态与已授予能力）
+yuanling module show qq                  # 详情（配置、日志尾巴）
+yuanling module install --url <tgz地址>   # 从发行包装（https；http 仅限本机）
+yuanling module install --file <本地.tgz> # 从本地包装
+yuanling module grant qq send off         # 收回发消息权限
+yuanling module disable qq                # 停用（重启 DSH 也不会自动启动）
+yuanling module export qq                 # 导出 tgz，换机器用
+yuanling module uninstall qq --yes        # 卸载（删目录与配置）
+```
+
+管理台的「模块」页做同样的事：卡片列表 + 详情（能力开关、配置、日志）。**下载只在 CLI 或外部完成**——把联网和 sha256 塞进一次 HTTP 请求里，用户看到的就是"点了没反应"。
 
 自带模块：`qq`（OneBot v11）、`bili`（只读采集），都会是独立仓库。
 
-> 协议全文（消息格式、能力协商、错误码、trace 规则）会写成 `PROTOCOL.md`；在那之前，只有上面这些约定算数。
+> 协议全文见 [`doc/PROTOCOL.md`](doc/PROTOCOL.md)：消息格式、能力协商、错误码、trace 规则、`§17` 的七条验收单。
 
 ---
 
@@ -381,34 +410,76 @@ yuanling purpose close <id>  # 手动放下一件事
 
 ## 安装
 
-**它已经是 DSH 插件**：`index.js` 导出 `name / inject / Config / apply`，`package.json` 带 `dsh.bundle.patch`，`cordis.patch.yml` 负责挂进 profile。
+**它已经是 DSH 插件**：`index.js` 导出 `name / inject / Config / apply`，`package.json` 带 `dsh.bundle.patch`，包内的 `cordis.patch.yml` 负责把自己挂进 profile。
+
+### 怎么装（三条路，任选一条）
+
+**① DSH 设置里的插件管理（推荐，最不易错）**
+
+DSH → 设置 → 插件 → 添加本地插件 / 安装 bundle，填仓库地址或本地目录。插件管理器会自动做三件事：写 profile 的 `dependencies`、跑 `pnpm install`、把包名加进 `dsh.profile.bundles`。
+
+**② CLI（装了 DSH 命令行工具时）**
 
 ```powershell
-# 本地目录（最稳）
+# 直接按 git spec 装（⚠️ 必须带 `git+` 前缀：裸 https:// 会被当成 npm 包名去注册表找，必然失败）
+dsh plugin --profile <profile> add "git+https://gitee.com/dshqqb/dsh-yuanling.git"
+
+# 或先 clone 再装本地目录（最稳）
 git clone https://github.com/dshqqb/dsh-yuanling.git D:\dsh-plugins\dsh-yuanling
 dsh plugin --profile <profile> add "D:\dsh-plugins\dsh-yuanling"
-
-# 直接按 git spec 装
-#   ⚠️ 必须带 `git+` 前缀：裸 https:// 会被当成 npm 包名去注册表找，必然失败
-dsh plugin --profile <profile> add "git+https://gitee.com/dshqqb/dsh-yuanling.git"
-# GitHub 是同步镜像，国内有时连不上（Gitee 不通时再换它）
-dsh plugin --profile <profile> add "git+https://github.com/dshqqb/dsh-yuanling.git"
 ```
 
-> 两个仓库内容一致：**Gitee 优先**（国内可达，且 `installBundle` 的 `git ls-remote` 预检只对 github.com 生效，Gitee 会跳过），GitHub 作镜像。
+> 两个仓库内容一致：**Gitee 优先**（国内可达），GitHub 作镜像。
+> 桌面版 DSH 不一定带 `dsh` 命令；报"无法将 dsh 项识别为命令"时走 ① 或 ③。
 
-装完**必须重启 DSH**。设置页会出现这些项：
+**③ 手工改 profile（没有 CLI、也不想点 GUI 时）**
 
-| 配置 | 默认 | 说明 |
-|---|---|---|
-| `enabled` | true | 总开关 |
-| `dataDir` | 空 → `~/.dsh/yuanling` | 默认路径首次运行会自动建骨架；显式路径必须先 `init` |
-| `consoleEnabled` | true | 是否起管理台 |
-| `consoleHost` | `127.0.0.1` | 只允许回环；要暴露必须同时开 `allowRemote` |
-| `consolePort` | 17777 | 0 = 随机 |
-| `autoApproveDays` | 3 | 提案无人理会几天后自动批准 |
-| `dailyAutoLimit` | 1 | 每天最多自动采纳几条 |
-| `preset` / `logLevel` | true / info | 是否注册 preset、日志级别 |
+编辑 `<DSH_HOME>/profiles/<profile>/package.json`，两处都要加：
+
+```json
+{
+  "dependencies": {
+    "dsh-yuanling": "link:D:/dsh-plugins/dsh-yuanling"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-yuanling"]
+    }
+  }
+}
+```
+
+`dependencies` 只决定包能被找到，**`bundles` 才决定它被加载**——只加前者，插件不会启动。然后用 DSH 自带的 node/pnpm 跑一次安装（DSH 必须关着，否则文件被占用）：
+
+```powershell
+$node = "D:\Program Files\dsh\resources\runtime\primary-runtime\dependencies\node\bin\node.exe"
+$pnpm = "D:\Program Files\dsh\resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.cjs"
+& $node $pnpm install --dir "$env:USERPROFILE\.dsh\profiles\desktop"
+```
+
+### 装完之后
+
+**必须重启 DSH**。然后：
+
+1. DSH 设置里出现「原灵」窗格（总开关 / 数据目录 / 管理台）；
+2. 把数据目录指向你已有的库（例如 `D:\yuanling`），或留空用默认位置（首次运行会自动建骨架）；
+3. 打开 `http://127.0.0.1:17777`，用设置页里的「复制令牌」贴进去，进管理台；
+4. 想让模型真的用上记忆，再跑一次 `yuanling mcp install --root <数据目录>`（见下一节）。
+
+### 配置项
+
+DSH 设置里只暴露最关键的三个，其余在 profile 的 `cordis.patch.yml` 里改：
+
+| 配置 | 默认 | 在哪改 | 说明 |
+|---|---|---|---|
+| `enabled` | true | 设置页 | 总开关。关掉 = 不注入、不写记忆、不起管理台，数据原样保留 |
+| `dataDir` | 空 → `~/.dsh/yuanling` | 设置页 | 数据目录。改它会自动同步 MCP 条目的 `--root`，**需要重启 DSH** |
+| `consoleHost` / `consolePort` | `127.0.0.1` / 17777 | 设置页（只读） | 目前不开放修改；改 IP 属于危险操作，留到以后 |
+| `consoleEnabled` | true | `cordis.patch.yml` | 是否起管理台。**注意**：设置页的总开关关掉时它也不起 |
+| `allowRemote` | false | `cordis.patch.yml` | 允许监听非回环地址。打开前先想清楚：这是你的私人记忆 |
+| `autoApproveDays` | 3 | `cordis.patch.yml` | 提案无人理会几天后自动批准 |
+| `dailyAutoLimit` | 1 | `cordis.patch.yml` | 每天最多自动采纳几条 |
+| `logLevel` | info | `cordis.patch.yml` | debug / info / warn / error |
 
 ### 接进 DSH（MCP）
 
@@ -498,12 +569,23 @@ yuanling person weight [refresh] | set <uid> 80 | auto <uid>
 yuanling purpose list|mine|drives|close <id>     # 目的账本（惦记）
 yuanling identity claim --platform bili --id abc123 --src-last 1 --channel private:10001
 yuanling mcp status|install|uninstall             # 把记忆登记成 DSH 的 MCP 工具
+yuanling module list|show <id>                    # 模块列表 / 详情
+yuanling module install --url <tgz> | --file <本地.tgz>
+yuanling module grant <id> <cap> on|off           # 授予/收回能力（如 send）
+yuanling module enable|disable <id>               # 停用是持久的（重启也不起）
+yuanling module export <id>                       # 导出 tgz，换机器用
+yuanling module uninstall <id> --yes
 yuanling serve --root D:\yuanling         # 管理台
 ```
 
 ## 管理台
 
-`http://127.0.0.1:17777` —— 顶栏可切「核心 / 模块」与明暗主题；左侧竖菜单：状态 / **注入预览** / 记忆 / 条目 / 提案 / 人物 / 规则 / 用量 / 来源 / 拒绝记录。窄屏时侧栏收成图标条，不隐藏功能。
+`http://127.0.0.1:17777` —— 顶栏可切「核心 / 模块」与明暗主题。
+
+- **核心**：状态 / **注入预览** / 记忆 / 条目 / 提案 / 人物 / 规则 / 用量 / 来源 / 拒绝记录
+- **模块**：已装模块列表 + 详情（能力授予开关、配置、日志、导出/停用/卸载）+ 安装入口
+
+窄屏时侧栏收成图标条，不隐藏功能。
 
 视觉骨架参考了一套 Figma 管理台：靠底色分层（浅色卡片浮在灰底上、暗色卡片浮在近黑底上）、20px 圆角、不做 1px 描边、只有主数字卡用高饱和渐变。图表的装饰一件没抄——没有真实时序数据，画假图比空着更糟。
 
@@ -523,9 +605,16 @@ yuanling serve --root D:\yuanling         # 管理台
 ## 开发
 
 ```powershell
-node --test                      # 全部单元测试
-node scripts/seed-demo.mjs D:\yuanling   # 造一份干净的演示数据（UTF-8 直写，绕开终端编码）
+node --test                                   # 全部单元测试
+node scripts/seed-demo.mjs D:\yuanling        # 造一份演示数据（UTF-8 直写，绕开终端编码）
+node scripts/make-demo-module.mjs .           # 造一个可安装的模块包（验证安装链路用）
+node scripts/probe-spawn.mjs                  # 当前环境能不能给子进程开管道（模块测试的前提）
+node scripts/check-web-ids.mjs                # 管理台页面里引用的元素 id 是否存在（白屏自查）
 ```
+
+模块相关的测试分两层：纯函数（manifest / 分帧 / 解包）任何环境都能跑；**真起进程**的那部分在受限环境（不能开管道）会跳过并写明原因，不会假通过。
+
+想写自己的模块，从 [`doc/MODULES.md`](doc/MODULES.md) 开始。
 
 ### 文档在哪
 
@@ -540,9 +629,12 @@ node scripts/seed-demo.mjs D:\yuanling   # 造一份干净的演示数据（UTF-
 
 | 文件 | 讲什么 |
 |---|---|
-| [`doc/PROTOCOL.md`](doc/PROTOCOL.md) | 模块与核心的对接协议（stdio JSON-RPC、四个硬边界、四种能力） |
+| [`doc/MODULES.md`](doc/MODULES.md) | **怎么写一个模块**（教程）：包结构、`yuanling.module.json`、信封与 op、能力、本地装上调试、自测清单、发布 |
+| [`doc/PROTOCOL.md`](doc/PROTOCOL.md) | **规范**（v1.0 已冻结）：信封、方法表、错误码、能力协商、超时表、`§17` 七条验收单 |
 | [`doc/PURPOSE_ANALYSIS.md`](doc/PURPOSE_ANALYSIS.md) | surfcore「目的层」的拆解，以及原灵学了什么、改了什么 |
 | [`doc/SECURITY.md`](doc/SECURITY.md) | 安全边界：暴露面、密钥处理、越权防护 |
+
+**协议与教程为什么分开**：协议是冻结的契约（改要升 `api` 次版本），教程会随实践更新。合并成一份，每次改教程都得重新论证"协议变没变"。
 
 `ref/` 里是给自己用的过程材料，原则和代码一样：**记事实、标确定性等级，不记口号**
 

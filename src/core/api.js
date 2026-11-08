@@ -9,6 +9,10 @@ import { listProposals, approve, reject, rollback, scan as scanProposals } from 
 import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
 import { listDays, readDay, today } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
+import fs from 'node:fs'
+import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleEnabled, exportModule } from './modules/manage.js'
+import { installFromBytes } from './modules/installer.js'
+import { uninstall } from './modules/installer.js'
 
 /**
  * 粗略 token 估算：以中文为主的文本，UTF-8 一个字 3 字节，1 token ≈ 0.7 字。
@@ -45,6 +49,19 @@ export function handleApi(root, url) {
   }
 
   if (pathname === '/api/status') return { status: 200, body: buildStatus(root) }
+
+  // ── 模块（读）──────────────────────────────────────────────────────────
+  if (pathname === '/api/modules') {
+    return { status: 200, body: { ok: true, modules: listModules(root), summary: moduleSummary(root) } }
+  }
+
+  if (pathname === '/api/module') {
+    const id = searchParams.get('id') ?? ''
+    if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+    const d = moduleDetail(root, id)
+    if (!d) return { status: 404, body: { ok: false, error: `没有这个模块：${id}` } }
+    return { status: 200, body: { ok: true, module: d } }
+  }
 
   if (pathname === '/api/card') {
     const channel = searchParams.get('channel') || null
@@ -309,6 +326,51 @@ export function handleApiWrite(root, url, body) {
       if (typeof b.display === 'string' && b.display.trim()) patch.display = b.display.trim().slice(0, 60)
       const prof = writeProfile(root, pid, uid, patch)
       return { status: 200, body: { ok: true, profile: prof } }
+    }
+
+    // ── 模块管理 ─────────────────────────────────────────────────────────
+    // 下载交给 CLI（管理台只做"校验 + 落盘"），因为下载要联网、要有超时与 sha256。
+    if (pathname === '/api/modules/install') {
+      const file = String(b.file ?? '')
+      if (!file) {
+        return { status: 400, body: { ok: false, error: '需要 file（本地 .tgz 路径）；下载请用 CLI：yuanling module install --url' } }
+      }
+      if (!fs.existsSync(file)) return { status: 400, body: { ok: false, error: `找不到文件：${file}` } }
+      const bytes = fs.readFileSync(file)
+      const r = installFromBytes({
+        root,
+        bytes,
+        repo: b.repo ? String(b.repo) : null,
+        source: b.source ? String(b.source) : 'manual',
+        ref: b.ref === undefined ? null : String(b.ref),
+        expectSha256: b.sha256 ? String(b.sha256) : null,
+      })
+      return { status: 200, body: { ok: true, id: r.manifest.id, version: r.manifest.version, updated: r.updated, sha256: r.sha256 } }
+    }
+
+    if (pathname === '/api/modules/uninstall') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      return { status: 200, body: { ok: true, ...uninstall(root, id) } }
+    }
+
+    if (pathname === '/api/modules/grant') {
+      const id = String(b.id ?? '')
+      const capability = String(b.capability ?? '')
+      if (!id || !capability) return { status: 400, body: { ok: false, error: '需要 id 与 capability' } }
+      return { status: 200, body: { ok: true, ...setModuleGranted(root, id, capability, b.granted !== false) } }
+    }
+
+    if (pathname === '/api/modules/enable') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      return { status: 200, body: { ok: true, ...setModuleEnabled(root, id, b.enabled !== false) } }
+    }
+
+    if (pathname === '/api/modules/export') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      return { status: 200, body: { ok: true, ...exportModule(root, id) } }
     }
   } catch (err) {
     return { status: 400, body: { ok: false, error: String(err?.message ?? err) } }

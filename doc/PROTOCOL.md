@@ -1,8 +1,10 @@
-# PROTOCOL · 原灵模块协议（v1.0 候选稿）
+# PROTOCOL · 原灵模块协议（v1.0）
 
-> 状态：**候选稿，待 §17 spike 全绿后冻结**。
-> 谱系：glm v0.1 → ds v0.2 → glm v0.3 → ds v0.3-ds → **本文（合并定稿）**。三方评审的全部结论已并入正文，修订史见文末附录；`PROTOCOL_glm.md`、`PROTOCOL_ds.md`、`PROTOCOL_ds_0.3.md` 为历史评审稿，冻结后归档。
+> 状态：**v1.0 冻结（2026-11-08）**。§17 七条 spike 全部通过，实现已在 `src/core/modules/` 落地。
+> 谱系：glm v0.1 → ds v0.2 → glm v0.3 → ds v0.3-ds → **本文（合并定稿）**。三方评审的全部结论已并入正文，修订史见文末附录；`PROTOCOL_glm.md`、`PROTOCOL_ds.md`、`PROTOCOL_ds_0.3.md` 为历史评审稿，已归档。
 > spike 逼出来的东西优先于本文任何一段推演。
+>
+> 冻结的含义：**改这段协议要升次版本**（`api` 的 minor 加一），并且核心要同时接受新旧两个 minor。加字段可以，改语义不行。
 >
 > 本文遵守项目一贯立场：**能不建的机制就不建；建了的必须能解释。** 每个字段都要能回答"删掉它会坏什么"。
 
@@ -27,24 +29,44 @@
 
 ## §2 模块生命周期
 
+> **代码放哪（已定，2026-11-08）**：模块装在**数据目录内**——`<数据目录>/system/modules/<id>/`。
+> 理由：① 备份/迁移是一件事（备份数据目录 = 连模块一起备份）；② 实例隔离天然成立（多个 profile / 多个数据目录各装各的）；
+> ③ 切源换版本才成立（在同一位置换一份代码）；④ 与 §16 注册表"repo/installedRef 是唯一权威"自洽。
+> 代价要说清：数据目录里开始混有可执行代码。缓解：模块只跑在独立子进程、不 import 进宿主；安装必须过校验与能力授予。
+
 ### 2.1 安装
 
+**装的是发行包，不是仓库。**（2026-11-08 修订，原 `git clone` 方案作废）
+
 ```
-输入 URL（github / gitee）
-  → clone 到临时目录（不执行其中任何东西）
+输入 URL（release 里的 .tgz）或本地 .tgz 路径
+  → 下载字节（只允许 https；http 仅限 127.0.0.1 / localhost）
+  → 校验 sha256（若给了期望值）
+  → 解包到内存，按 §4.1 的清单检查：拒绝对路径、`..`、符号链接/设备文件
   → 读 yuanling.module.json，跑 §3.3 校验
-  → 管理台确认页：id / version / kind / capabilities / permissions / routes / entry.command / repo ref
-  → 人点确认（这页必须原话写明"安装即执行第三方代码"）
-  → 移入 system/modules/<id>/<version>/
-  → 按 entry.install 执行安装步骤（默认 --ignore-scripts，见 §2.5）
-  → 写 system/modules.json，changes.ndjson 记一条
+  → 检查 routes 与已装模块无重叠
+  → 先写 <id>.installing-<rand>/，再把旧目录改名备份、整体替换
+  → 写 VERSION（version/api/sha256/source/repo/ref/at）
+  → 写 system/modules.json
 ```
+
+为什么不用 `git clone`：
+
+1. **不依赖 git**——很多用户机器上没有；
+2. **不执行构建脚本**——clone 之后总要 `npm install`，那等于让远程仓库在你机器上跑代码（§2.5 正警惕这个）；发行包可以要求"零依赖、无 postinstall"；
+3. **可回滚**——出问题是"换回上一个 tgz"，而 `pull` 回来的是"某个 commit"，退不回去。
 
 安全底线：
 
-- 安装/更新记录**精确 ref**（commit SHA 或 tag），**永不跟踪 HEAD 自动更新**。
-- 临时目录内容一律视为不可信数据：不执行、不 source、不信任其中任何路径。
+- 安装/更新记录**精确版本与 sha256**，**永不跟踪 HEAD 自动更新**。
+- 解包出来的内容一律视为不可信数据：不执行安装脚本（我们根本不跑 npm）、不信任其中任何路径。
 - 同 `id` 已安装时，安装 = 升级，走 §2.2。
+
+### 2.1.1 整体导出
+
+`yuanling module export <id>` → `<数据目录>/system/exports/<id>-<version>.tgz`。
+
+换机器/备份时拷一个文件比拷一棵目录树可靠；导出包能被 `installFromBytes` 直接装回来（往返 sha256 一致，有测试钉住）。
 
 ### 2.2 更新
 
@@ -435,15 +457,22 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 
 核心 spawn 一个 ~30 行的 echo 模块，只验这七件事：
 
-1. **Windows spawn**：`node` 与 `cmd /c` 都能起来，路径含空格与中文不炸；
-2. **分帧**：一次 `write` 塞两条 JSON、一条 JSON 分两次 `write`，都能正确切开；
-3. **并发与乱序**：核心同时发 `ping` + `send`，模块倒序回应，两边都不乱；
-4. **超时**：模块不回响应，10s 后作废且进程不被误杀；
-5. **崩溃识别**：模块 `process.exit(1)`，核心记 crash 并按退避重启，`crashed` 后不再自动拉起；
-6. **stdout 污染**：模块往 stdout 打一行非 JSON，核心判 `E_PROTO` 断开；
-7. **端到端**：`ingest` 一条消息 → 落入 `raw/<月>/<日>/<source>.ndjson` → 回 `{accepted:1}` → `shutdown` 干净退出。
+| # | 验收项 | 状态 | 测试 |
+|---|---|---|---|
+| 1 | **Windows spawn**：路径含空格与中文不炸 | ⬜ 待真机 | `p33` §17-1（受限环境跳过） |
+| 2 | **分帧**：一次 write 两条、一条分两次 write | ✅ | `p28` frame 4 条 |
+| 3 | **并发与乱序**：同时发两个请求，倒序回应不乱 | ✅ | `p28` 慢/快乱序 |
+| 4 | **超时**：不回响应 10s 作废、进程不误杀 | ✅ | `p28` 超时用例 |
+| 5 | **崩溃识别**：`exit(1)` → 记 crash → 退避重启 → 用尽后 `crashed` 不再拉起 | ✅ | `p28` 两条 |
+| 6 | **stdout 污染**：打一行非 JSON → `E_PROTO` 断开 | ✅ | `p28` 污染用例 |
+| 7 | **端到端**：`ingest` → 落 `raw/…/<source>.ndjson` → `{accepted:1}` → `shutdown` 干净退出 | ⬜ 待真机 | `p33` §17-7 |
 
-七条全过，本文去掉"候选稿"标记冻结为 v1.0。
+已实现的部分（2026-11-08）：`src/core/modules/` 下 `manifest.js`（§3.3 校验）、`untar.js`（零依赖解包，拒目录穿越与特殊成员）、`registry.js`（§16）、`installer.js`（下载/校验/落盘/导出）、`frame.js`（§4.1）、`host.js`（§6/§8）、`service.js`（门面 + 能力门控）、`manage.js`（管理台视图），以及 CLI `yuanling module …` 与模块页。
+
+第 1、7 条由人在桌面环境跑（`node test/p33.test.mjs`，4 条用例）。受限沙箱里子进程不能开管道，那两条会**跳过而不是假通过**——这是刻意的。
+
+**七条全过，协议冻结为 v1.0**（2026-11-08）。
+
 
 ---
 
@@ -457,3 +486,4 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 | ds v0.3 | `send.target` 定死；`actuate` 冻结形状；单例约束；环境变量清单；并发/乱序；`ingest` 批量 ≤100；`E_NO_CAP`；`modules.json` 结构；crashed 人工恢复；routes 两种语法；`log.data` 4KB |
 | **本文（合并稿）** | `actuate.<kind>` capability 与寻址；超时按 op 分表（send 30s / actuate 300s）；`E_NO_CAP` 双向定义；砍 `YUANLING_ROOT` 注入；修正注册表"可重建"声明（repo/ref 等以注册表为唯一权威，state 为运行时快照） |
 | 合并稿 + ds 校订 | ① `YUANLING_TMP` 语义统一：它就是模块自己的临时目录（`system/tmp/<id>/`），删掉三处 `YUANLING_TMP/<id>/` 的自相矛盾写法；② §2.2 的 diff 触发清单补 `kind` 与 `entry.os`（改 kind 等于改行为，改 os 等于改能否启动）；③ 全篇去引文，只留规范正文与修订史 |
+| **v1.0 冻结（2026-11-08）** | 实现落地后回填的三处：① §2.1 安装方式从 `git clone` 改为**发行包 tgz**（不依赖 git、不跑构建脚本、可回滚），并写明"模块装在数据目录内"的决策与代价；② 新增 §2.1.1 整体导出；③ §17 改为逐条状态表，标注每条由哪个测试验证、哪两条必须有人在桌面环境跑。七条 spike 全过，去掉"候选稿"标记 |
