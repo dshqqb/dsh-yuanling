@@ -41,6 +41,13 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` 属性必须真的隐藏。
+   浏览器自带的 `[hidden] { display: none }` 优先级极低，作者写的任何
+   `display: inline-block`（比如 .tag）都会盖掉它——结果是"代码里明明设了 hidden，
+   元素却还显示着"（真踩过：更新角标设了 hidden 但一直在）。
+   用 !important 把它钉死，省得以后每个组件都要单独写一遍 [hidden]。 */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {

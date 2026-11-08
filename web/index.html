@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>原灵 · 管理台</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=20261109a" />
   <script>
     // 首帧之前定主题，避免白闪一下
     ;(function () {
@@ -372,6 +372,8 @@
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <!-- 带版本号：浏览器对 .js 的缓存很顽固，改了脚本不换 query 就可能跑旧代码，
+       排查时会一路怀疑到后端（真踩过）。后端也加了 no-cache，这里是双保险。 -->
+  <script src="/app.js?v=20261109a"></script>
 </body>
 </html>

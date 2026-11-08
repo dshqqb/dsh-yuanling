@@ -74,9 +74,19 @@ test('模块页：点 tab 时页型判断用详情缓存（列表里没有 uiTab
   assert.match(sel, /moduleDetail/, '点 tab 时要能从详情里找 uiTabs')
 })
 
+test('样式：hidden 属性必须真的能隐藏（否则设了 hidden 也还在显示）', () => {
+  // 浏览器自带的 `[hidden]{display:none}` 优先级极低，作者的 .tag{
+  // display:inline-block} 会盖掉它——更新角标就因此"设了 hidden 却一直在"（真踩过）
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/, '要有带 !important 的全局 hidden 规则')
+  // 顺带确认我们没把 .tokenbar[hidden] 误当成全局规则
+  assert.match(css, /\.tokenbar\[hidden\]/, 'tokenbar 那条仍在（局部规则）')
+})
+
 test('静态页带 no-cache：改了 app.js 刷新就该看到新行为', () => {
   const srv = read('src/core/server.js')
   assert.match(srv, /'cache-control': 'no-cache/, '不这么写，浏览器会拿旧脚本，排查方向全错')
+  // 脚本引用带版本号：缓存头万一没生效（比如服务端还没重启），换 query 也能强刷
+  assert.match(html, /\/app\.js\?v=/, 'app.js 要带版本号')
 })
 
 test('控件：勾选项的 tick 必须紧跟 input（CSS 用的是相邻兄弟选择器）', () => {
