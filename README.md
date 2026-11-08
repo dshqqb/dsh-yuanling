@@ -100,6 +100,12 @@ surfcore 有一套完整的"目的引擎"（`purpose-engine.js`，2284 行）。
 
 **核心与模块的关系是单向的**：模块把看到的东西交给核心（L0 → L1），核心把"要发什么"交给模块（`send`）。模块**不能**直接写 raw、不能直接写记忆、不能自己决定发什么——这是协议的四个硬边界，也是"她不会背着你说话"的落点。
 
+**原始层只保证一件事：记下来的，跟收到的，一致且没丢。**
+
+- 它**不判断真假**。群友说"我昨天去了北京"就是一条记录，不是一条待核实的论断——谎言也是交流的一部分，可不可信要看上下文和人，不该由一层存储盖章。
+- 它**不做可信度分级**。对原灵来说所有原始数据都来自外部（QQ、B站、按需抓的网页），给某几类标"外部数据"等于给整个记忆库降级。
+- 凡是被改过的地方都留痕：超长截断（`truncated`）、脱敏、跳过的条数（只记数不记内容）。真实与否留给提炼层和模型，保真归原始层。
+
 三条线**贯穿所有层**：
 
 - **版本线**：任何写盘都进内容寻址的 blob + append-only journal，回滚是"生成新版本"，不是"抹掉过去"。
@@ -274,6 +280,7 @@ D:\yuanling\
 | 安装位置 | **数据目录内**：`system/modules/<id>/`，注册表 `system/modules.json` |
 | 日志 | `system/log/modules/<id>.log`，由核心代写（stderr + 关键事件） |
 | 导出 | `yuanling module export <id>` → `system/exports/<id>-<version>.tgz`（换机器拷一个文件） |
+| 取数（v1.1） | 模块在 manifest 声明 `sources`，核心/模型按需用 `source.fetch` 向它要一次数据，**取回的东西先落 raw 再给人用** |
 
 **四条硬边界**（模块再强也越不过去）：
 
@@ -284,22 +291,39 @@ D:\yuanling\
 
 第 4 条在代码里的落点是**能力授予**：模块 manifest 里声明 `send`，但**只有被授予后**才能收到 `send`；未被授予时核心直接回 `E_NO_CAP`。能力清单是**封闭词表**（协议 §5.3），写个词表外的能力会被拒装。
 
+**装完是空授权**（协议 v1.1）：安装时把声明的全部能力列一次，问一次"是否全部授予"——一次决定，不逐条勾选（逐条只会让人闭眼按回车）。答不授予也不拦安装，模块装上空转，随时补授。非交互环境（管道、CI）默认按"不授予"处理，要放行必须显式 `--grant`。
+
 ### 模块怎么管
 
 ```powershell
 yuanling module list                     # 列表（含状态与已授予能力）
 yuanling module show qq                  # 详情（配置、日志尾巴）
-yuanling module install --url <tgz地址>   # 从发行包装（https；http 仅限本机）
-yuanling module install --file <本地.tgz> # 从本地包装
+yuanling module install --url <库的网址>    # 填 Gitee/GitHub 仓库地址即可：核心去它的发行版里找 .tgz
+yuanling module install --url <tgz直链>    # 也可以直接给包地址（https；http 仅限本机）
+yuanling module install --file <本地.tgz>  # 从本地包装（--grant 表示非交互直接授予）
 yuanling module grant qq send off         # 收回发消息权限
+yuanling module grant-all qq --yes        # 一次性授予它声明的全部能力
 yuanling module disable qq                # 停用（重启 DSH 也不会自动启动）
 yuanling module export qq                 # 导出 tgz，换机器用
 yuanling module uninstall qq --yes        # 卸载（删目录与配置）
 ```
 
-管理台的「模块」页做同样的事：卡片列表 + 详情（能力开关、配置、日志）。**下载只在 CLI 或外部完成**——把联网和 sha256 塞进一次 HTTP 请求里，用户看到的就是"点了没反应"。
+管理台的「模块」页做同样的事：卡片列表 + 详情（能力开关、配置、日志），以及一个**安装框**——填库的网址就能装，填 tgz 直链或本地路径也行。填库网址时核心会去它的发行版里挑 `.tgz` 资产（源码 `.zip` / `.tar.gz` 不认）；查不到发行版会告诉你下一步该做什么，不是"点了没反应"。
 
-自带模块：`qq`（OneBot v11）、`bili`（只读采集），都会是独立仓库。
+**已经能装的模块**（都是独立仓库，原灵只认协议）：
+
+| 模块 | 库的网址 | 干什么 |
+|---|---|---|
+| `bili` | `https://gitee.com/dshqqb/dsh-yuanling-bili`（[GitHub 镜像](https://github.com/dshqqb/dsh-yuanling-bili)） | 只读：搜视频、拉官方字幕；她可以主动向它要数据 |
+| `qq` | 尚无（等 NapCat 那边的桥） | OneBot v11 网关：收消息、发消息 |
+
+装一个 B 站模块的完整流程：
+
+```powershell
+yuanling module install --url https://gitee.com/dshqqb/dsh-yuanling-bili --root "D:\yuanling"
+# → 核心去它的发行版里找 bili-0.1.0.tgz → 装到 system/modules/bili/
+# → 问一次"是否授予 provide.source" → 重启 DSH → 她的工具列表里就多出 yuanling_fetch
+```
 
 > 协议全文见 [`doc/PROTOCOL.md`](doc/PROTOCOL.md)：消息格式、能力协商、错误码、trace 规则、`§17` 的七条验收单。
 
@@ -490,6 +514,8 @@ DSH 设置里只暴露最关键的三个，其余在 profile 的 `cordis.patch.y
 | `yuanling_context` | 取回记忆卡 + `[惦记]` + 在场人物卡（私聊传 `channel`） |
 | `yuanling_recall` | 按词检索记忆，返回事实与证据指针 |
 | `yuanling_person_identity` | **写**：把学到的账号归属写回档案（原文正本，解析派生；已属别人的号只报冲突） |
+| `yuanling_sources` | 看已装模块里有哪些数据能被她**主动要**（v1.1：模块声明 `sources` 才有） |
+| `yuanling_fetch` | **取一次数**：向某个模块要数据，**先落原始层再给她看**，所以查过就记得；一次最多 20 条 |
 
 **用一条命令登记，不用手改 YAML：**
 
@@ -570,7 +596,7 @@ yuanling purpose list|mine|drives|close <id>     # 目的账本（惦记）
 yuanling identity claim --platform bili --id abc123 --src-last 1 --channel private:10001
 yuanling mcp status|install|uninstall             # 把记忆登记成 DSH 的 MCP 工具
 yuanling module list|show <id>                    # 模块列表 / 详情
-yuanling module install --url <tgz> | --file <本地.tgz>
+yuanling module install --url <库的网址|tgz直链> | --file <本地.tgz>
 yuanling module grant <id> <cap> on|off           # 授予/收回能力（如 send）
 yuanling module enable|disable <id>               # 停用是持久的（重启也不起）
 yuanling module export <id>                       # 导出 tgz，换机器用

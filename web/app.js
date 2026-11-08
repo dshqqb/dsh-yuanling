@@ -539,6 +539,7 @@ const CAP_LABELS = {
   'media.read': '读媒体',
   send: '发消息',
   actuate: '生成内容',
+  'provide.source': '提供数据',
 }
 
 /** send 是唯一"能往外说话"的能力，单独标风险。 */
@@ -735,21 +736,64 @@ $('module-uninstall').addEventListener('click', async () => {
 })
 
 $('module-install').addEventListener('click', async () => {
-  const file = $('module-file').value.trim()
+  const input = $('module-file').value.trim()
   const msg = $('module-install-msg')
-  if (!file) {
-    msg.textContent = '请填本地 .tgz 的绝对路径'
+  if (!input) {
+    msg.textContent = '请填库的网址、.tgz 直链，或本地 .tgz 的绝对路径'
     return
   }
-  msg.textContent = '安装中…'
+  const isUrl = /^https?:\/\//i.test(input)
+  msg.textContent = isUrl ? '正在查发行版并下载…（要联网，慢的话等 30 秒）' : '安装中…'
   try {
-    const r = await postApi('/api/modules/install', { file, source: 'manual' })
-    msg.textContent = `✓ 已安装 ${r.id} v${r.version}${r.updated ? '（更新）' : ''}`
+    const r = isUrl
+      ? await postApi('/api/modules/install-url', { url: input })
+      : await postApi('/api/modules/install', { file: input, source: 'manual' })
+    const from = r.assetName ? `（${r.assetName}${r.ref ? ` · ${r.ref}` : ''}）` : ''
+    msg.textContent = `✓ 已安装 ${r.id} v${r.version}${r.updated ? '（更新）' : ''}${from}`
     $('module-file').value = ''
     await loadModules()
+    showGrantBox(r)
   } catch (err) {
     msg.textContent = `安装失败：${err.message}`
   }
+})
+
+/**
+ * 装完的能力确认（协议 §2.1，v1.1）：一次列全、一个按钮，不逐条勾选。
+ * 默认是空授权，所以这段是"要不要开"的唯一入口。
+ */
+function showGrantBox(r) {
+  const box = $('module-grant-box')
+  const list = $('module-grant-list')
+  const caps = Array.isArray(r.capabilities) ? r.capabilities : []
+  if (!box || !caps.length) return
+  list.textContent = ''
+  for (const c of caps) {
+    const li = el('li', 'muted small')
+    li.append(document.createTextNode(CAP_LABELS[c] ?? c), el('span', 'muted small', `  ${c}`))
+    list.append(li)
+  }
+  box.hidden = false
+  $('module-grant-msg').textContent = ''
+  state.pendingGrantId = r.id
+}
+
+$('module-grant-all').addEventListener('click', async () => {
+  const id = state.pendingGrantId
+  const msg = $('module-grant-msg')
+  if (!id) return
+  try {
+    const r = await postApi('/api/modules/grant-all', { id, granted: true })
+    msg.textContent = `✓ 已授予：${(r.granted ?? []).join('、') || '无'}`
+    await loadModules()
+  } catch (err) {
+    msg.textContent = `授予失败：${err.message}`
+  }
+})
+
+$('module-grant-skip').addEventListener('click', () => {
+  $('module-grant-box').hidden = true
+  state.pendingGrantId = null
 })
 $('theme-toggle').addEventListener('click', toggleTheme)
 

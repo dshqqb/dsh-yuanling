@@ -28,12 +28,18 @@ export function normalizeEnvelope(env) {
 
 /**
  * 摄入一个信封。
- * @returns {{accepted:number, deduped:number, skipped:number, errors:string[]}}
+ *
+ * `withRecords` 是给 v1.1 的 `source.fetch` 用的：那条链路要把「刚落进哪一行」
+ * 回给调用方（模型看到的是指针，不是计数）。默认不带，是因为 /inbox 的响应
+ * 不该因为内部多了个需求就变大。
+ *
+ * @returns {{accepted:number, deduped:number, skipped:number, errors:string[], records?:Array}}
  */
-export function ingest(root, env, { now, maxBytes } = {}) {
+export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
   const { source, acct, items } = normalizeEnvelope(env)
   const rules = loadIngestRules(root)
   const out = { accepted: 0, deduped: 0, skipped: 0, errors: [] }
+  if (withRecords) out.records = []
 
   for (const item of items) {
     try {
@@ -75,6 +81,17 @@ export function ingest(root, env, { now, maxBytes } = {}) {
       )
       if (r.deduped) out.deduped += 1
       else out.accepted += 1
+      if (withRecords) {
+        out.records.push({
+          id: r.id,
+          file: r.file,
+          deduped: Boolean(r.deduped),
+          // 显示用的字段取"写进去的那份"：policy.text 是脱敏后的正文
+          ts: item.ts ? String(item.ts) : (now ?? localIso()),
+          actor: item.actor ?? null,
+          text: policy.text,
+        })
+      }
     } catch (err) {
       out.errors.push(String(err?.message ?? err))
     }

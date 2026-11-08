@@ -122,7 +122,7 @@ function seenMap(root, dateStr) {
         if (!line.trim()) continue
         try {
           const r = JSON.parse(line)
-          if (r.h) map.set(r.h, `${relDayDir(dateStr)}/${name}`)
+          if (r.h) map.set(r.h, { file: `${relDayDir(dateStr)}/${name}`, id: r.id })
         } catch {
           /* 坏行跳过，不阻塞 */
         }
@@ -191,14 +191,16 @@ export function appendRecord(root, input, { maxBytes = MAX_RAW_BYTES, now } = {}
 
   const seen = seenMap(root, dateStr)
   if (seen.has(rec.h)) {
-    // 去重也要给出它落在哪儿：调用方需要指针，不能只给 id
-    return { ok: true, deduped: true, id: rec.id, file: seen.get(rec.h) }
+    // 去重要给出**原来那条**的 id 与文件：指针必须能解析回已经存在的记录。
+    // （旧实现回的是本次新生成的 id，拼出来的指针指向一个不存在的行——踩过）
+    const hit = seen.get(rec.h)
+    return { ok: true, deduped: true, id: hit?.id ?? rec.id, file: hit?.file ?? null }
   }
 
   const { abs, name } = pickShard(root, dateStr, source, maxBytes)
   fs.appendFileSync(abs, JSON.stringify(rec) + '\n', 'utf8')
   const rel = `${relDayDir(dateStr)}/${name}`
-  seen.set(rec.h, rel)
+  seen.set(rec.h, { file: rel, id: rec.id })
   return { ok: true, id: rec.id, file: rel, deduped: false }
 }
 

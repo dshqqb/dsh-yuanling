@@ -13,6 +13,7 @@ import {
   makeEntry,
   mergeGranted,
   setGranted,
+  setGrantedAll,
   grantedOf,
   recordCrash,
   setState,
@@ -96,7 +97,7 @@ test('registry：写入再读出，字段完整', () => {
   assert.equal(back.modules.qq.repo, 'https://x')
   assert.equal(back.modules.qq.source, 'github')
   assert.equal(back.modules.qq.enabled, true)
-  assert.deepEqual(back.modules.qq.granted, ['ingest.message', 'send'])
+  assert.deepEqual(back.modules.qq.granted, [], 'v1.1：声明 ≠ 授予，装完是空授权')
 })
 
 test('registry：更新时保留既有授予，不偷偷扩权', () => {
@@ -105,7 +106,10 @@ test('registry：更新时保留既有授予，不偷偷扩权', () => {
 })
 
 test('registry：send 可以单独收回；没声明的能力不许授予', () => {
-  const entry = makeEntry({ manifest: validateManifest(MANIFEST).manifest })
+  // v1.1：makeEntry 默认空授权，先一次性授予再测收回
+  const entry = setGrantedAll(makeEntry({ manifest: validateManifest(MANIFEST).manifest }), true)
+  assert.deepEqual(grantedOf(entry), ['ingest.message', 'send'], '声明了就给得出来')
+
   const off = setGranted(entry, 'send', false)
   assert.deepEqual(grantedOf(off), ['ingest.message'])
 

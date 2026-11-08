@@ -79,7 +79,7 @@ test('service：装上之后列表能反映版本/源/能力', () => {
   assert.equal(list[0].id, 'demo')
   assert.equal(list[0].version, '1.0.0')
   assert.equal(list[0].source, 'github')
-  assert.deepEqual(list[0].granted, ['ingest.message', 'send'])
+  assert.deepEqual(list[0].granted, [], 'v1.1：装完是空授权，等人在安装时点头')
   assert.equal(list[0].enabled, true)
 })
 
@@ -99,6 +99,7 @@ test('service：ingest 单批超过 100 条 → E_BATCH（不静默截断）', a
   const root = tmpRoot()
   installFromBytes({ root, bytes: pkg() })
   const svc = new ModuleService({ root, onIngest: () => ({ accepted: 0 }) })
+  svc.grant('demo', 'ingest.message', true)
 
   const items = Array.from({ length: 101 }, (_, i) => ({ text: `m${i}` }))
   await assert.rejects(
@@ -129,13 +130,19 @@ test('service：log.data 超过 4KB 会被截断并标记', async () => {
 
 test('service：没授予的能力，模块请求被拒（E_NO_CAP）', async () => {
   const { root, svc } = withModule()
-  svc.grant('demo', 'send', false)
 
+  // v1.1：装完什么都没授予，所以连 ingest 都该被拒
+  await assert.rejects(svc.handleModuleRequest('demo', { op: 'ingest', data: { items: [] } }), (e) => e.code === 'E_NO_CAP')
+  await assert.rejects(svc.handleModuleRequest('demo', { op: 'send', data: {} }), (e) => e.code === 'E_NO_CAP')
+
+  // 单独授回 ingest，send 仍是拒的
+  svc.grant('demo', 'ingest.message', true)
   await assert.rejects(svc.handleModuleRequest('demo', { op: 'send', data: {} }), (e) => e.code === 'E_NO_CAP')
 })
 
 test('service：授予了但核心没接处理器时明确报错（不假装成功）', async () => {
   const { svc } = withModule()
+  svc.grant('demo', 'ingest.message', true)
   await assert.rejects(svc.handleModuleRequest('demo', { op: 'ingest', data: {} }), /未配置 ingest 处理器/)
 })
 
@@ -144,6 +151,7 @@ test('service：接了处理器就能收到 ingest', async () => {
   installFromBytes({ root, bytes: pkg() })
   const seen = []
   const svc = new ModuleService({ root, onIngest: ({ id, data }) => { seen.push({ id, data }); return { accepted: 1 } } })
+  svc.grant('demo', 'ingest.message', true)
   const r = await svc.handleModuleRequest('demo', { op: 'ingest', data: { items: [{ text: 'x' }] } })
   assert.equal(r.accepted, 1)
   assert.equal(seen[0].id, 'demo')

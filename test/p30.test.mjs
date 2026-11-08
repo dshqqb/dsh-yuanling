@@ -13,6 +13,7 @@ import {
   moduleDetail,
   moduleSummary,
   setModuleGranted,
+  setModuleGrantedAll,
   setModuleEnabled,
   exportModule,
   tailModuleLog,
@@ -75,7 +76,7 @@ test('manage：列表带 name/description/source/能力/授予', () => {
   assert.equal(list[0].name, '演示模块')
   assert.equal(list[0].description, '给测试用的模块')
   assert.equal(list[0].source, 'gitee')
-  assert.deepEqual(list[0].granted, ['ingest.message', 'send'])
+  assert.deepEqual(list[0].granted, [], 'v1.1：装完是空授权')
   assert.equal(list[0].enabled, true)
 })
 
@@ -111,6 +112,9 @@ test('manage：日志能读到（页面右下角那块）', () => {
 
 test('manage：授予与收回（send 可以单独关）', () => {
   const root = withModule()
+  const all = setModuleGrantedAll(root, 'demo', true)
+  assert.deepEqual(all.granted, ['ingest.message', 'send'], '一次性授予把声明过的全给上')
+
   const r = setModuleGranted(root, 'demo', 'send', false)
   assert.deepEqual(r.granted, ['ingest.message'])
 
@@ -178,6 +182,7 @@ const u = (p) => new URL(p, 'http://127.0.0.1')
 
 test('API 写：授予/停用/卸载 都走 handleApiWrite', () => {
   const root = withModule()
+  setModuleGrantedAll(root, 'demo', true) // v1.1：装完是空的，先给上再测收回
 
   const g = handleApiWrite(root, u('/api/modules/grant'), { id: 'demo', capability: 'send', granted: false })
   assert.equal(g.status, 200)
@@ -200,7 +205,9 @@ test('API 写：install 缺 file 时给可读错误（不是让你自己猜）',
   const root = tmpRoot()
   const r = handleApiWrite(root, u('/api/modules/install'), {})
   assert.equal(r.status, 400)
-  assert.match(r.body.error, /yuanling module install --url/)
+  // 现在两种入口都要在错误里说清：本地路径走这个接口，网址走 install-url
+  assert.match(r.body.error, /file/)
+  assert.match(r.body.error, /url/)
 })
 
 test('API 写：install 从本地 tgz 装上（管理台路径）', () => {
@@ -216,5 +223,22 @@ test('API 写：install 从本地 tgz 装上（管理台路径）', () => {
   const r = handleApiWrite(root, u('/api/modules/install'), { file: tgz, source: 'manual', repo: 'local' })
   assert.equal(r.status, 200)
   assert.equal(r.body.id, 'demo')
+  // v1.1：装完把能力清单交给页面，由页面「全部授予」再点头一次
+  assert.deepEqual(r.body.capabilities, ['ingest.message', 'send'])
+  assert.deepEqual(r.body.granted, [], '装完不授权')
   assert.equal(listModules(root).length, 1)
+})
+
+test('API 写：grant-all 一次授予全部声明能力（安装确认页那个按钮）', () => {
+  const root = withModule()
+
+  const all = handleApiWrite(root, u('/api/modules/grant-all'), { id: 'demo', granted: true })
+  assert.equal(all.status, 200)
+  assert.deepEqual(all.body.granted, ['ingest.message', 'send'])
+
+  const none = handleApiWrite(root, u('/api/modules/grant-all'), { id: 'demo', granted: false })
+  assert.deepEqual(none.body.granted, [], '也要能一次全收回')
+
+  const bad = handleApiWrite(root, u('/api/modules/grant-all'), {})
+  assert.equal(bad.status, 400)
 })

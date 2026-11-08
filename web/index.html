@@ -286,10 +286,20 @@
           <div class="card">
             <div class="card-head"><h3>安装新模块</h3></div>
             <div class="field-row">
-              <input id="module-file" placeholder="本地 .tgz 的绝对路径（下载请用 CLI：yuanling module install --url）" />
+              <input id="module-file" placeholder="库的网址（https://gitee.com/owner/repo）或 .tgz 直链，也可以填本地 .tgz 路径" />
               <button id="module-install" class="btn">安装</button>
             </div>
+            <div class="muted small">填库的网址会自动去它的发行版里找 .tgz 包；国内优先用 Gitee。</div>
             <div class="muted small" id="module-install-msg"></div>
+            <div id="module-grant-box" hidden>
+              <div class="subhead">这个模块声明的能力（默认未授予）</div>
+              <ul id="module-grant-list" class="list"></ul>
+              <div class="field-row">
+                <button id="module-grant-all" class="btn ghost small">全部授予</button>
+                <button id="module-grant-skip" class="btn ghost small">先不授予</button>
+                <span id="module-grant-msg" class="muted small"></span>
+              </div>
+            </div>
           </div>
         </section>
       </main>

@@ -1,6 +1,6 @@
-# PROTOCOL · 原灵模块协议（v1.0）
+# PROTOCOL · 原灵模块协议（v1.1）
 
-> 状态：**v1.0 冻结（2026-11-08）**。§17 七条 spike 全部通过，实现已在 `src/core/modules/` 落地。
+> 状态：**v1.1 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过；v1.1 的两刀都已落地：① `sources` 声明、`provide.source` 能力、安装即空授权；② `source.fetch` 与模型工具 `yuanling_sources` / `yuanling_fetch`。
 > 谱系：glm v0.1 → ds v0.2 → glm v0.3 → ds v0.3-ds → **本文（合并定稿）**。三方评审的全部结论已并入正文，修订史见文末附录；`PROTOCOL_glm.md`、`PROTOCOL_ds.md`、`PROTOCOL_ds_0.3.md` 为历史评审稿，已归档。
 > spike 逼出来的东西优先于本文任何一段推演。
 >
@@ -15,6 +15,20 @@
 1. 模块不 import 核心代码，只通过协议说话；**协议是唯一的接触面**。
 2. 核心是唯一的写者：raw、记忆、媒体、日志，全部只有核心进程落盘。
 3. 协议面前人人平等：`qq`、`bili` 与第三方模块走**完全相同**的路径，核心不认亲儿子。
+
+### 0.1 原始层语义（其余所有约定都建立在它上面）
+
+**raw 只保证一件事：记下来的，跟你收到的，一致且没丢。**
+
+1. **不做真伪判断。** 群友说"我昨天去了北京"就是一条记录，不是一条待核实的论断。谎言也是交流的一部分；将来她判断这句话可不可信，靠的是上下文与人，不是原始层盖的章。
+2. **不做可信度分级。** 对原灵来说，**所有**原始层数据都是外部来的——QQ 是外部，B 站是外部，按需抓回来的网页也是外部。给某几类盖"外部数据"等于给整个记忆库降级。
+3. **只对保真负责**：单行超长截断要留痕（`flags: ["truncated"]`）、脱敏要留痕、去重不改内容——凡是"我改过它"的地方，都必须能在记录本身看出来。
+4. **不丢**：写失败就是失败，不静默跳过；被规则挡下的条数进 `system/inbox/.skipped.ndjson` 计数（只记数、不记内容）。
+
+由此推出两条实现约束：
+
+- 提炼层（`propose.fact` / 候选事实）**只记"谁在什么时候说的"**，不写"已证实/存疑"这类判决。真假判断留给读到注入的模型。
+- 任何新的数据入口（模块 `ingest`、v1.1 的 `source.fetch` 回填）都必须复用同一条落盘路径，不经捷径写 raw——否则上面四条会在某个入口失效，而且没人知道是哪个。
 
 ## §1 四条硬边界
 
@@ -39,7 +53,9 @@
 **装的是发行包，不是仓库。**（2026-11-08 修订，原 `git clone` 方案作废）
 
 ```
-输入 URL（release 里的 .tgz）或本地 .tgz 路径
+输入：库的网址（Gitee / GitHub） | release 里的 .tgz 直链 | 本地 .tgz 路径
+  → 若给的是**库的网址**：查它的发行版（Gitee `api/v5` / GitHub `api.github.com`），
+    取最新非预发布那条，从 assets 里挑 `.tgz` 附件（**源码 .zip/.tar.gz 一律不认**）
   → 下载字节（只允许 https；http 仅限 127.0.0.1 / localhost）
   → 校验 sha256（若给了期望值）
   → 解包到内存，按 §4.1 的清单检查：拒绝对路径、`..`、符号链接/设备文件
@@ -47,8 +63,23 @@
   → 检查 routes 与已装模块无重叠
   → 先写 <id>.installing-<rand>/，再把旧目录改名备份、整体替换
   → 写 VERSION（version/api/sha256/source/repo/ref/at）
-  → 写 system/modules.json
+  → 写 system/modules.json（granted 为空）
+  → 把 manifest 声明的全部能力列一次，问一次"是否全部授予"
 ```
+
+**"给个库网址就能装"是 2026-11-08 加的**（管理台 + CLI 同一套解析，实现见 `installer.js` 的 `resolveInstallUrl`）。
+
+理由：模块的常识是"从某个仓库发出来的"，要人自己拼 `https://gitee.com/x/y/releases/download/v1/y-1.0.0.tgz` 等于让他先学会 release 的目录规则。代价是核心多了一次外部 API 调用，所以：
+
+- 解析只发生在**库网址**这一种输入上；`.tgz` 直链直接用，不多打一次请求；
+- 发行版只能提供**包**，不能提供"指令"：资产名必须是 `.tgz`，而且解包后仍要过 §3.3 的 manifest 校验；
+- 拿不到资产时报的是**下一步怎么做**（"去建一个发行版，把 pack.mjs 打出来的 tgz 传上去"），不是"安装失败"。
+
+**默认不授予（v1.1 改定）**：装完 `granted: []`，模块是"装着但不干活"。
+
+为什么改：v1.0 实现里是"装完即授予声明的一切"，而文档写的是"`send` 由人点"——两边打架，实际生效的是代码那边，等于任何第三方包装上就能用你的名义说话。
+
+确认的粒度是**一次决定，不是逐条勾选**：把全部能力连同中文说明列清，人回答 Y / n。逐条勾选只会让人闭眼按回车，反而更不安全。答 n 也不拦安装——装上空转，随时能补授（`yuanling module grant-all <id> --yes` 或管理台的「全部授予」）。非交互环境（管道、CI）默认按 n 处理，要放行必须显式 `--grant`。
 
 为什么不用 `git clone`：
 
@@ -72,9 +103,11 @@
 
 以下任一变化 → **回到人工确认**，等价于重新安装：
 
-`kind` / `permissions` / `capabilities` / `routes` / `media.send` / `media.receive` / `entry.command` / `entry.env` / `entry.os` / `entry.install` / `config.schema`
+`kind` / `permissions` / `capabilities` / `routes` / `sources` / `media.send` / `media.receive` / `entry.command` / `entry.env` / `entry.os` / `entry.install` / `config.schema`
 
 其余字段（description、name）变化静默通过。注册表记 `installedRef` 与 `version`；旧版本目录保留，回滚 = 把注册表指回去。核心**永不**因模块崩溃而自动更新。
+
+更新时的授权：**取交集**（新 manifest 里已不声明的能力自动失效），**不自动扩权**——新增的能力仍需人再点一次。
 
 ### 2.3 切换模块网址
 
@@ -145,6 +178,24 @@ actuator 模块示例（capabilities 用 `actuate.<kind>` 声明产出能力，�
 { "id": "tts", "kind": "actuator", "capabilities": ["actuate.speech"], "routes": [] }
 ```
 
+v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 `api: "1.1"` 且声明 `provide.source`）。
+
+```jsonc
+"sources": [
+  {
+    "id": "bili.search_video",   // 必须 "<模块id>.<名字>"；模型只看到这个 id，靠前缀追得回来源
+    "title": "按关键词搜 B 站视频",   // 必填，给模型看的一句话
+    "params": {                   // 可选；只允许 string / number / boolean + required
+      "type": "object",
+      "properties": { "q": { "type": "string", "description": "关键词" } },
+      "required": ["q"]
+    }
+  }
+]
+```
+
+`sources` 是**声明**不是目录：核心不猜它能干什么，模型也不知道它的存在，除非有人调 `source.fetch`。不声明 `sources` 的模块（绝大多数）完全不受 v1.1 影响。
+
 ### 3.1 config：配置归核心
 
 - 模块只声明 schema（JSON Schema 子集：`type / properties / required / enum / default / description`）。
@@ -168,7 +219,8 @@ actuator 模块示例（capabilities 用 `actuate.<kind>` 声明产出能力，�
 5. `entry.command` 非空数组，首元素不含路径分隔符；
 6. `capabilities` / `permissions` 无未知值——合法值集合是**封闭的**，就是 §5.3 与 §12 那两张表（含 `actuate.<kind>` 模式），一处不多一处不少；
 7. `media.send/receive` 的 mime 在白名单内；
-8. `routes` 与已安装模块无重叠；`actuate.<kind>` 同 kind 与已安装模块无重叠（重叠 → 拒装并提示冲突模块）。
+8. `routes` 与已安装模块无重叠；`actuate.<kind>` 同 kind 与已安装模块无重叠（重叠 → 拒装并提示冲突模块）；
+9. `sources`（v1.1）：数组；每项 `id` 形如 `<模块id>.<名字>` 且不重复、`title` 非空；`params` 只允许 `type: "object"` + `properties` 里的 `string/number/boolean` + `required` 必须是已声明的键；**声明了 `sources` 就必须写 `api` ≥ `1.1`**。
 
 ### 3.4 kind 的 v1 语义
 
@@ -214,6 +266,7 @@ actuator 模块示例（capabilities 用 `actuate.<kind>` 声明产出能力，�
 | `init`（等 `ready`） | 30s | 冷启动含依赖初始化 |
 | `ingest` / `media.put.file` / `media.get` / `propose.fact` | 10s | 核心侧是本地写 |
 | `send` | 30s | 平台 API 慢是常态；按 10s 误判 undelivered 会真丢回复 |
+| `source.fetch`（v1.1） | 30s | 模块这一侧会去联网（B 站 / 网页），按 send 那一档，不能套 10s 默认 |
 | `actuate` | 300s | 语音/视频生成轻松超过 10s，一刀切会杀掉正常生成 |
 | `shutdown` | `deadline_ms` 自带 | 核心关停前预告 |
 
@@ -248,6 +301,7 @@ actuator 模块示例（capabilities 用 `actuate.<kind>` 声明产出能力，�
 | `send` | `{channel, target, text, media?, trace}` | `{ok, delivered_at, external_id?}` \| `{ok:false, code, message, retriable?}` | 唯一出站通道；`rules/action` 与 `never_do` 已跑完 |
 | `ping` | `{}` | `{}`（同一 id 的普通响应） | 心跳，见 §8.1 |
 | `actuate` | `{kind, input, trace}` | `{path, mime, size}` | **v1 一律 `E_UNSUPPORTED`**；形状见 §5.2.1 |
+| `source.fetch` | `{source, params, limit, trace}` | 标准 inbox 信封 `{v:1, source, acct, items[]}` | **v1.1 已实现**；需模块声明 `provide.source` + `sources`；见 §5.2.2 |
 | `shutdown` | `{reason, deadline_ms}` | — | 预告关停；超时强杀 |
 
 **`send` 的字段语义**：
@@ -283,6 +337,35 @@ core ──send{channel, target, media:[{path,…}]}──▶ qq 模块
 
 v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则现在冻结**，避免三个模块各写一套。
 
+#### 5.2.2 `source.fetch` 的形状（v1.1，已实现）
+
+```jsonc
+// 核心 → 模块：按需向它要一次数据
+{ "op":"source.fetch", "id":"…", "data":{
+    "source":"bili.search_video",      // 必须是该模块 manifest.sources 里声明过的 id
+    "params":{ "q":"原灵" },           // 按 manifest 里的 params 子集校验
+    "limit":10,                        // 可选，核心封顶
+    "trace":"01JCV…"
+} }
+// 模块 → 核心：标准 inbox 信封（和 gateway 收消息时投的一模一样）
+{ "id":"…", "ok":true, "result":{ "v":1, "source":"bili", "acct":"default", "items":[
+    { "ext_id":"BV1xx411c7mD", "ts":"2026-11-06T21:04:00+08:00",
+      "kind":"material", "text":"…", "actor":{ "kind":"system", "id":"bili", "name":"B站" } }
+] } }
+```
+
+三条不能省：
+
+1. **回填必须走 `ingest()`**，不另写落盘路径。脱敏、`never_record`、去重、分片、日链全都挂在 `ingest()` 上；另开一条路，就等于这些规则"对某类数据不生效"，而且没人拦得住。
+2. **`items[].ext_id` 必填且稳定**（视频 BV 号、消息 id、网页 URL 的规范化形式）。核心按 `sha256(模块id + ext_id)` 生成 `h`，**不接受模块自带 `h`**——模块若能自定指纹，就能让核心"以为见过"而静默丢条（`raw.js` 的 `h` 由输入决定这件事，对 `ingest` 保留，对 `source.fetch` 禁用）。
+3. **`source` 必须在该模块 manifest 的 `sources` 里**，否则 `E_BAD_REQUEST`。核心不猜模块能力，模块也不许临时发明 source。
+
+调用结束后核心把**落库后的条目**（带指针）回给调用方——所以"查过"这件事本身留在原始层，下次 `recall` 得到的是同一批记录，不是重新编的。
+
+失败语义：`E_NO_ROUTE`（没有模块声明这个 source，**或那个模块此刻没在运行**——不返回空结果冒充"确实没有"）/ `E_NO_CAP`（模块没被授予 `provide.source`）/ `E_RATE`（超频：每模块每分钟 10 次）/ `E_PROTO`（信封版本不对）/ `E_UNSUPPORTED`（模块没实现）。**一律不重试、不猜**；取不到就是取不到。
+
+**模型这一侧的实现约束**（v1.1 落地时的选择）：模块进程只活在被 DSH 加载的那个插件进程里，而模型工具跑在独立的 MCP 进程里。所以取数走一条内网回环：MCP 进程读 `system/console.json` 拿到控制台地址（端口可以是随机分配的，不能假定 17777）→ 带 `console.token` POST `/api/sources/fetch` → 插件宿主把它转成 `source.fetch`。控制台没在跑时**如实报"控制台没在运行"**，不假装"没有数据"。
+
 ### 5.3 capability：封闭词表
 
 | capability | 允许的 op |
@@ -292,11 +375,14 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 | `egress.text` / `egress.media` | 接收 `send` 的 text / media 形态 |
 | `media.read` | `media.get` |
 | `actuate.<kind>`（如 `actuate.speech`） | 接收 `actuate` 的对应 kind；kind 词表：`speech` \| `image` \| `video` |
+| `provide.source`（v1.1） | 接收 `source.fetch`；须同时在 manifest 里声明 `sources` |
 | `enrich.*` | v1 只保留名，不实现 |
 
 - 不在表内的 capability → 拒装（§3.3 第 6 条）。
 - `raw.write` 已删除：与 `ingest.message` 重复，一把锁不配两把钥匙。
-- capability 是**声明**不是授权：能不能发，由核心 rules 每次 `send` 时决定。
+- capability 是**声明**不是授权：能不能发，由核心 rules 每次 `send` 时决定；能不能被取数，由 `granted` 里有没有 `provide.source` 决定（**默认没有**，见 §2.1）。
+
+> ⚠️ 已知不一致（留给 v1.1 第二刀收口）：代码里 `CAPABILITIES` 用的是扁平词 `send` / `actuate`，本文表格写的是 `egress.text` / `egress.media` / `actuate.<kind>`。这是 v1.0 时代"文档先行、实现简化"留下的差口，**本轮不动语义**，只把 `provide.source` 两边都补上；收口要单独一轮改代码 + 迁注册表，不能在补功能时顺手改。
 
 **`E_NO_CAP` 双向生效**：
 
@@ -437,7 +523,9 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
       "installedRef": "9f2c…",              // commit SHA
       "previousRepo": null,
       "routes": ["private:*", "group:*"],
+      "sources": [],                        // v1.1：manifest.sources 的 id 快照
       "capabilities": ["ingest.message", "egress.text", "egress.media"],
+      "granted": ["ingest.message"],        // 实际授权；声明 ≠ 授予
       "permissions": ["net.out"],
       "enabled": true,
       "state": "running",                   // running | stopped | crashed
@@ -449,7 +537,8 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 ```
 
 - **注册表是 `repo` / `installedRef` / `previousRepo` / `installed_at` / `last_crash` / `enabled` 的唯一权威**——这些字段不在 manifest 里，重扫 `system/modules/` 恢复不出来；审计线索在 `changes.ndjson`。
-- 其余字段（id / version / api / routes / capabilities / permissions）与 manifest 一致，以 manifest 为准。
+- `granted` 是**授权**的唯一权威（manifest 只声明"我想要什么"）。v1.1 起新装默认是空数组；更新时与旧值取交集，不自动扩权。删掉这个字段会让"声明即授权"回来——那正是 §2.1 要避免的。
+- 其余字段（id / version / api / routes / sources / capabilities / permissions）与 manifest 一致，以 manifest 为准。
 - `state` 是**运行时快照**（advisory）：核心重启后所有 enabled 模块重新 spawn，`state` 重置；它不是持久事实，只是管理台展示"上次已知状态"。
 - 写入走原子替换（与核心其他 JSON 一致）。
 
@@ -487,3 +576,4 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 | **本文（合并稿）** | `actuate.<kind>` capability 与寻址；超时按 op 分表（send 30s / actuate 300s）；`E_NO_CAP` 双向定义；砍 `YUANLING_ROOT` 注入；修正注册表"可重建"声明（repo/ref 等以注册表为唯一权威，state 为运行时快照） |
 | 合并稿 + ds 校订 | ① `YUANLING_TMP` 语义统一：它就是模块自己的临时目录（`system/tmp/<id>/`），删掉三处 `YUANLING_TMP/<id>/` 的自相矛盾写法；② §2.2 的 diff 触发清单补 `kind` 与 `entry.os`（改 kind 等于改行为，改 os 等于改能否启动）；③ 全篇去引文，只留规范正文与修订史 |
 | **v1.0 冻结（2026-11-08）** | 实现落地后回填的三处：① §2.1 安装方式从 `git clone` 改为**发行包 tgz**（不依赖 git、不跑构建脚本、可回滚），并写明"模块装在数据目录内"的决策与代价；② 新增 §2.1.1 整体导出；③ §17 改为逐条状态表，标注每条由哪个测试验证、哪两条必须有人在桌面环境跑。七条 spike 全过，去掉"候选稿"标记 |
+| **v1.1（2026-11-08）** | ① 新增 §0.1 **原始层语义**：raw 只保证"记录与收到一致、不丢"，不做真伪判断与可信度分级；② manifest 增 `sources`（带 `api ≥ 1.1` 约束），能力词表增 `provide.source`，新增 core→module 的 `source.fetch`（§5.2.2）；③ **安装即空授权**：装完 `granted: []`，一次列出全部能力、一次确认，非 TTY 默认拒绝——修掉 v1.0 "文档说要点、代码闭眼给"的差口；④ 注册表补 `granted` / `sources` 两个字段的权威说明；⑤ 顺带修掉一个真 bug：raw 去重时回的指针指向**新生成的 id**（那个 id 根本没有落盘），现在回的是原来那条的 id；⑥ §2.1 **支持填"库的网址"直接安装**（查发行版 → 挑 .tgz 资产），源码归档（.zip/.tar.gz）不认 |

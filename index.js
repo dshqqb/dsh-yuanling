@@ -413,6 +413,14 @@ export function apply(ctx, config) {
         // 只靠 dispose 不够——宿主关停时可能根本不会调我们的 dispose，
         // 那样更新会卡在 `graceful deadline exceeded`（管理台开着时必现）。
         unref: true,
+        // v1.1：模型工具（跑在 mcp-server 进程）通过这条路由向模块要数据。
+        // 模块进程只活在**这个**进程里，所以回调必须由这里注入，api.js 拿不到。
+        onSourceFetch: async (payload) => {
+          if (!modules) {
+            throw Object.assign(new Error('模块宿主还没起来（插件刚启动或启动失败）'), { code: 'E_NO_ROUTE' })
+          }
+          return modules.fetchSource(payload)
+        },
         // 自证：/root 会把这段原样吐出来，用来排查"配置改了但进程还用旧值"
         meta: {
           source,

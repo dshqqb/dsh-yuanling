@@ -3,7 +3,7 @@
 // 纯函数，不碰文件系统：给它一个已解析的对象，回 {ok, errors[]}。
 // 校验规则逐条对应 §3.3，宁可拒装，也不让一个坏的 manifest 进注册表。
 export const API_MAJOR = 1
-export const API_MINOR = 0
+export const API_MINOR = 1
 
 /** §3.2 id 保留字：模块 id 会成为 raw 的来源名，撞名会污染原始层。 */
 export const RESERVED_IDS = [
@@ -11,7 +11,20 @@ export const RESERVED_IDS = [
 ]
 
 /** §5.3 / §12 的能力词表——**封闭**：一处不多一处不少。 */
-export const CAPABILITIES = ['ingest.message', 'propose.fact', 'media.put.file', 'media.read', 'send', 'actuate']
+export const CAPABILITIES = [
+  'ingest.message',
+  'propose.fact',
+  'media.put.file',
+  'media.read',
+  'send',
+  'actuate',
+  // v1.1：模块可以被核心按需要数据（配合 manifest.sources 与 op source.fetch）。
+  // 与 send 方向相反——send 是往外说话，这个是往里取数，所以是独立的一个词。
+  'provide.source',
+]
+
+/** §3.4（v1.1）：`sources[].params` 只允许这个子集，超出的类型一律拒装。 */
+const PARAM_TYPES = ['string', 'number', 'boolean']
 
 export const KINDS = ['gateway', 'actuator', 'enricher']
 
@@ -44,6 +57,75 @@ export function checkApi(api) {
     return { ok: false, reason: `模块要求 api ${s.major}.${s.minor}，核心只实现到 ${API_MAJOR}.${API_MINOR}` }
   }
   return { ok: true }
+}
+
+/**
+ * v1.1 §3.4：`sources[]` 的形状。
+ *
+ * 为什么 id 必须带模块前缀：source 出现在模型工具参数里（`yuanling_fetch` 的 source），
+ * 全局唯一才不会两个模块抢同一个名字；前缀由模块自己的 id 定，不需要第二张注册表。
+ */
+function validateSources(raw, moduleId, err) {
+  if (!Array.isArray(raw.sources)) {
+    err('sources', 'BAD_FORMAT', 'sources 必须是数组')
+    return []
+  }
+  const out = []
+  const seen = new Set()
+  raw.sources.forEach((s, i) => {
+    const at = `sources[${i}]`
+    if (!s || typeof s !== 'object' || Array.isArray(s)) {
+      err(at, 'BAD_FORMAT', '每项必须是对象')
+      return
+    }
+    if (!isString(s.id)) err(`${at}.id`, 'MISSING', 'id 必填')
+    else if (!/^[a-z][a-z0-9._-]{2,63}$/.test(s.id)) {
+      err(`${at}.id`, 'BAD_FORMAT', 'id 只能是小写字母/数字/点/下划线/连字符（3~64 字符，首字符是字母）')
+    } else if (!String(s.id).startsWith(`${moduleId}.`)) {
+      // 前缀不是排版洁癖：模型只看到 source id，看不到模块，靠前缀才追得回是谁给的
+      err(`${at}.id`, 'BAD_PREFIX', `source id 必须以「${moduleId}.」开头`)
+    } else if (seen.has(s.id)) {
+      err(`${at}.id`, 'DUPLICATE', `source id 重复：${s.id}`)
+    }
+    if (isString(s.id)) seen.add(s.id)
+    if (!isString(s.title)) err(`${at}.title`, 'MISSING', 'title 必填（给模型看的一句话说明）')
+
+    if (s.params !== undefined) {
+      const p = s.params
+      if (!p || typeof p !== 'object' || Array.isArray(p)) {
+        err(`${at}.params`, 'BAD_FORMAT', 'params 必须是对象')
+      } else {
+        if (p.type !== 'object') err(`${at}.params.type`, 'BAD_FORMAT', 'params.type 只能是 "object"')
+        const props = p.properties ?? {}
+        if (typeof props !== 'object' || Array.isArray(props)) {
+          err(`${at}.params.properties`, 'BAD_FORMAT', 'properties 必须是对象')
+        } else {
+          for (const [k, v] of Object.entries(props)) {
+            if (!v || typeof v !== 'object') err(`${at}.params.properties.${k}`, 'BAD_FORMAT', '每个属性必须是对象')
+            else if (!PARAM_TYPES.includes(v.type)) {
+              err(`${at}.params.properties.${k}.type`, 'UNSUPPORTED', `参数类型只支持 ${PARAM_TYPES.join(' / ')}`)
+            }
+          }
+          if (Array.isArray(p.required)) {
+            for (const k of p.required) {
+              if (!Object.hasOwn(props, String(k))) {
+                err(`${at}.params.required`, 'BAD_FORMAT', `required 里的「${k}」没有在 properties 里声明`)
+              }
+            }
+          } else if (p.required !== undefined) {
+            err(`${at}.params.required`, 'BAD_FORMAT', 'required 必须是数组')
+          }
+        }
+      }
+    }
+
+    out.push({
+      id: s.id,
+      title: s.title,
+      params: s.params ?? null,
+    })
+  })
+  return out
 }
 
 /**
@@ -103,6 +185,17 @@ export function validateManifest(raw) {
     }
   }
 
+  // sources（v1.1）：声明"我这儿有什么数据可以被要"。带它就必须声明 api 1.1，
+  // 不然一个只认 1.0 的核心装上去，模块会等一个永远不会来的 source.fetch。
+  let sources = []
+  if (raw.sources !== undefined) {
+    const s = parseSemver(raw.api)
+    if (s && s.minor < 1) {
+      err('api', 'INCOMPATIBLE', '声明了 sources 就必须写 api "1.1" 或更高（source.fetch 是 v1.1 的 op）')
+    }
+    sources = validateSources(raw, raw.id, err)
+  }
+
   // routes：两种语法（前缀 / 精确），且不能与别人的重叠 —— 重叠检查需要外部信息，这里只验形状
   if (raw.routes !== undefined) {
     if (!Array.isArray(raw.routes)) err('routes', 'BAD_FORMAT', 'routes 必须是数组')
@@ -137,6 +230,7 @@ export function validateManifest(raw) {
       capabilities: raw.capabilities ?? [],
       permissions: raw.permissions ?? [],
       routes: raw.routes ?? [],
+      sources,
       config: raw.config ?? null,
     },
   }

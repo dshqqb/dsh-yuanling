@@ -11,6 +11,7 @@ import { P } from '../paths.js'
 import { readRegistry, writeRegistry, setGranted, grantedOf, setState, recordCrash, moduleDir, listIds } from './registry.js'
 import { installFromBytes, uninstall, moduleTmpDir, sha256Of } from './installer.js'
 import { ModuleProcess } from './host.js'
+import { resolveSource, normalizeReply, storeFetched, fetchError, FETCH_MAX_ITEMS, FETCH_RATE } from './sources.js'
 
 /** 协议 §5.1：单批 ingest 最多 100 条。超了拒绝，不静默截断（截断会让模块以为全写进去了）。 */
 export const INGEST_BATCH_MAX = 100
@@ -71,6 +72,7 @@ export class ModuleService {
     this.spawnImpl = spawnImpl
     this.procs = new Map() // id -> ModuleProcess
     this.logs = new Map() // id -> string[] 最近若干行（内存里，页面即时看）
+    this.fetchTimes = new Map() // id -> number[] 取数时间戳（限频用）
   }
 
   /** 当前注册表快照。 */
@@ -320,6 +322,56 @@ export class ModuleService {
     const granted = grantedOf(readRegistry(this.root).modules[id])
     if (!granted.includes('send')) throw Object.assign(new Error('能力未授予：send'), { code: 'E_NO_CAP' })
     return proc.request('send', payload, { timeoutMs: 30_000 })
+  }
+
+  /**
+   * 向模块要一次数据并落 raw（协议 §5.2.2，v1.1）。
+   *
+   * 顺序是刻意的：**先落盘，再返回**。调用方（模型）看到的每条都带指针，
+   * 所以"她查过什么"这件事本身留在原始层里，下次 recall 得到的是同一批记录。
+   *
+   * @returns {{sourceId:string, moduleId:string, records:Array, truncated:boolean, total:number}}
+   */
+  async fetchSource({ source, params = {}, limit } = {}) {
+    const { moduleId, spec } = resolveSource(this.root, source)
+    const entry = readRegistry(this.root).modules[moduleId]
+
+    if (!grantedOf(entry).includes('provide.source')) {
+      throw fetchError('E_NO_CAP', `模块「${moduleId}」没被授予 provide.source（在管理台或 CLI 里补授）`)
+    }
+    const proc = this.procs.get(moduleId)
+    if (!proc?.child) {
+      // 没在运行就取不到。用 E_NO_ROUTE 而不是"假装返回空"：空结果会被模型当成"确实没有"
+      throw fetchError('E_NO_ROUTE', `模块「${moduleId}」没在运行，取不到数据（先启用它）`)
+    }
+    if (!this.consumeFetchRate(moduleId)) {
+      throw fetchError('E_RATE', `模块「${moduleId}」被取得太频繁了（每分钟最多 ${FETCH_RATE.limit} 次）`)
+    }
+
+    const reply = await proc.request(
+      'source.fetch',
+      { source: spec.id, params, limit: limit ?? FETCH_MAX_ITEMS },
+      { timeoutMs: 30_000 },
+    )
+    const { items, truncated, total } = normalizeReply({ moduleId, sourceId: spec.id, reply, limit })
+
+    const ackedAt = localIso()
+    const { records } = storeFetched(this.root, { moduleId, sourceId: spec.id, items, ackedAt })
+    appendModuleLog(this.root, moduleId, `source.fetch ${spec.id} → ${records.length}/${total} 条已落 raw${truncated ? '（截断）' : ''}`)
+
+    return { sourceId: spec.id, moduleId, records, truncated, total }
+  }
+
+  /** 简单计数窗口。进程内即可——"每分钟几次"不是需要持久化的事实。 */
+  consumeFetchRate(id, now = Date.now()) {
+    const list = (this.fetchTimes.get(id) ?? []).filter((t) => now - t < FETCH_RATE.windowMs)
+    if (list.length >= FETCH_RATE.limit) {
+      this.fetchTimes.set(id, list)
+      return false
+    }
+    list.push(now)
+    this.fetchTimes.set(id, list)
+    return true
   }
 
   /**

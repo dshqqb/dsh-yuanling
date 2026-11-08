@@ -10,7 +10,7 @@ import path from 'node:path'
 
 import { localIso, readJson, ensureDir, exists } from '../fsx.js'
 import { P } from '../paths.js'
-import { readRegistry, writeRegistry, setGranted, grantedOf, moduleDir } from './registry.js'
+import { readRegistry, writeRegistry, setGranted, setGrantedAll, grantedOf, moduleDir } from './registry.js'
 import { sha256Of } from './installer.js'
 import { untar, stripPackagePrefix } from './untar.js'
 
@@ -54,6 +54,7 @@ export function listModules(root) {
         capabilities: e.capabilities ?? [],
         granted: grantedOf(e),
         routes: e.routes ?? [],
+        sources: e.sources ?? [],
         // 有配置 schema 才能在页面上渲染表单
         hasConfig: Boolean(manifest?.config?.schema),
       }
@@ -91,6 +92,17 @@ export function setModuleGranted(root, id, capability, granted) {
   const entry = reg.modules[id]
   if (!entry) throw new Error(`没有这个模块：${id}`)
   const next = setGranted(entry, capability, granted)
+  reg.modules[id] = next
+  writeRegistry(root, reg)
+  return { id, granted: grantedOf(next) }
+}
+
+/** 一次性授予全部声明能力 / 全收回（安装确认页用）。 */
+export function setModuleGrantedAll(root, id, granted) {
+  const reg = readRegistry(root)
+  const entry = reg.modules[id]
+  if (!entry) throw new Error(`没有这个模块：${id}`)
+  const next = setGrantedAll(entry, granted)
   reg.modules[id] = next
   writeRegistry(root, reg)
   return { id, granted: grantedOf(next) }

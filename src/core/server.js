@@ -4,11 +4,10 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { exists } from './fsx.js'
+import { exists, ensureDir, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { ingest, healthReport } from './inbox.js'
-import { handleApi, handleApiWrite } from './api.js'
-
+import { handleApi, handleApiWrite, handleModuleInstallFromUrl } from './api.js'
 const BODY_LIMIT = 4 * 1024 * 1024
 const WEB_ROOT = fileURLToPath(new URL('../../web/', import.meta.url))
 
@@ -79,10 +78,37 @@ function serveStatic(res, pathname) {
 }
 
 /**
- * @param {string} root
- * @param {{token?: string, meta?: object}} opts
+ * 把「控制台现在在哪个端口」写到数据目录里。
+ *
+ * 为什么要这个文件：控制台端口可以是 0（系统随机分配），而模型工具跑在
+ * **另一个进程**（mcp-server）里，它没法知道随机端口。写一个自以为是的
+ * "默认 17777" 只会在换了端口时静默连错地方。
  */
-export function createServer(root, { token = readToken(root), meta = null } = {}) {
+export function writeConsoleRuntime(root, { url, port, host }) {
+  const p = path.join(root, P.consoleRuntime)
+  ensureDir(path.dirname(p))
+  writeJsonAtomic(p, { url, port, host, pid: process.pid, at: localIso() })
+  return p
+}
+
+/** 关掉时清掉自己的那份记录；pid 不符就别动（不是我们写的）。 */
+export function clearConsoleRuntime(root) {
+  const p = path.join(root, P.consoleRuntime)
+  try {
+    if (!exists(p)) return
+    const cur = JSON.parse(fs.readFileSync(p, 'utf8'))
+    if (cur?.pid && cur.pid !== process.pid) return
+    fs.unlinkSync(p)
+  } catch {
+    /* 清不掉不影响主流程，mcp-server 那边会拿到连接失败并如实说 */
+  }
+}
+
+/**
+ * @param {string} root
+ * @param {{token?: string, meta?: object, onSourceFetch?: Function}} opts
+ */
+export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null } = {}) {
   if (!token) throw new Error('控制台令牌不存在，先跑 yuanling init 或 yuanling token --reset')
 
   return http.createServer(async (req, res) => {
@@ -153,6 +179,37 @@ export function createServer(root, { token = readToken(root), meta = null } = {}
         } catch {
           return json(res, 400, { ok: false, error: 'body 不是合法 JSON' })
         }
+
+        // 取数要跟**活着的模块进程**说话，而进程只存在于插件宿主里，
+        // 所以这条路由不能走 api.js（那是无状态的）——它由宿主注入回调。
+        if (url.pathname === '/api/sources/fetch') {
+          if (!onSourceFetch) {
+            return json(res, 503, {
+              ok: false,
+              error: '这个进程没有模块宿主（CLI 起的控制台不带取数能力）；用 DSH 里的插件时才有',
+            })
+          }
+          try {
+            const r = await onSourceFetch({
+              source: String(body.source ?? ''),
+              params: body.params && typeof body.params === 'object' ? body.params : {},
+              limit: Number(body.limit) || undefined,
+            })
+            return json(res, 200, { ok: true, ...r })
+          } catch (err) {
+            const code = err?.code ?? ''
+            const status = code === 'E_NO_ROUTE' ? 404 : code === 'E_NO_CAP' ? 403 : code === 'E_RATE' ? 429 : 400
+            return json(res, status, { ok: false, code, error: String(err?.message ?? err) })
+          }
+        }
+
+        // 从网址装模块：要联网（查发行版、下 tgz），所以必须 await。
+        // 时间给足：Gitee/GitHub 查一次 + 下载一个 20KB 的包，但国内网络会慢。
+        if (url.pathname === '/api/modules/install-url') {
+          const w = await handleModuleInstallFromUrl(root, body)
+          return json(res, w.status, w.body)
+        }
+
         const w = handleApiWrite(root, url, body)
         return json(res, w.status, w.body)
       }
@@ -178,8 +235,12 @@ export function createServer(root, { token = readToken(root), meta = null } = {}
  *
  * @returns {Promise<{server:http.Server, port:number, url:string}>}
  */
-export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false } = {}) {
-  const server = createServer(root, token === undefined ? { meta } : { meta, token })
+export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null } = {}) {
+  const server = createServer(root, {
+    meta,
+    onSourceFetch,
+    ...(token === undefined ? {} : { token }),
+  })
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {
@@ -190,7 +251,14 @@ export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, to
         // keep-alive 连接也是独立句柄，同样不能钉住宿主
         server.on('connection', (socket) => socket.unref?.())
       }
-      resolve({ server, port: p, url: `http://${host}:${p}` })
+      const url = `http://${host}:${p}`
+      try {
+        writeConsoleRuntime(root, { url, port: p, host })
+      } catch {
+        /* 写不进去也要把服务起起来：取数找不到地址是可降级的，控制台起不来是硬故障 */
+      }
+      server.once('close', () => clearConsoleRuntime(root))
+      resolve({ server, port: p, url })
     })
   })
 }

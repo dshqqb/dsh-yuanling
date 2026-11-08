@@ -42,8 +42,8 @@ import {
   MCP_ENTRY_ID,
 } from './mcpinstall.js'
 import { setIdentityText } from './entities.js'
-import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleEnabled, exportModule } from './modules/manage.js'
-import { installFromBytes, download, uninstall } from './modules/installer.js'
+import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule } from './modules/manage.js'
+import { installFromBytes, fetchModuleBytes, uninstall } from './modules/installer.js'
 import { refreshDrives } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, closePurpose, duePurposes, expirePurposes, purposesPath } from './purposes.js'
 import { scan as scanProposals, listProposals, findProposal, approve, reject, rollback, sweep, readPolicy } from './proposals.js'
@@ -78,11 +78,69 @@ function err(text) {
   process.stderr.write(text + '\n')
 }
 
+/** 能力的中文一句话——安装确认时人得看明白自己在批什么。 */
+const CAP_HINT = {
+  'ingest.message': '把外部消息写进原始层',
+  'propose.fact': '提交候选事实',
+  'media.put.file': '把媒体文件交进来',
+  'media.read': '读走核心里的媒体',
+  send: '用她的名义往外说话',
+  actuate: '被核心调用来生成内容',
+  'provide.source': '允许核心/模型按需向它取数',
+}
+
+/** 问一句。只在真正的终端里问；管道/CI 下返回 null，由调用方走默认。 */
+async function askLine(question) {
+  const { createInterface } = await import('node:readline')
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    rl.question(question, (answer) => {
+      rl.close()
+      resolve(answer)
+    })
+  })
+}
+
 /**
- * 装模块：下载（可选）→ 校验 sha256 → 落盘。
+ * 装完的能力确认（协议 §2.1，v1.1）：列全部 → 问一次 → 给或全不给。
+ * 非 TTY 不猜：默认不授予，除非显式 --grant。理由：脚本里默认放行等于没护栏。
+ */
+async function confirmGrant(root, id, { flags, print }) {
+  // 在 node --test 下绝不交互：测试不该等人按回车。
+  // 顺序有讲究——先看环境变量，短路掉对 process.stdin 的任何访问：
+  // 真 TTY 下读 process.stdin.isTTY 会把 stdin 构造成 ref 着的流，事件循环就永远不空。
+  const canPrompt = !process.env.NODE_TEST_CONTEXT && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY)
+
+  let grant
+  if (flags.grant) grant = true
+  else if (flags['no-grant']) grant = false
+  else if (canPrompt) {
+    const a = String(await askLine('  全部授予？[Y/n] ')).trim().toLowerCase()
+    grant = a === '' || a === 'y' || a === 'yes' || a === '是'
+  } else {
+    grant = false
+  }
+
+  if (grant) {
+    const r = setModuleGrantedAll(root, id, true)
+    print(`  ✓ 已授予：${r.granted.join(', ')}`)
+  } else {
+    print('  · 未授予任何能力：模块装着但不干活。随时可补授：')
+    print(`    yuanling module grant-all ${id} --yes`)
+    print(`    yuanling module grant ${id} <capability> on`)
+  }
+  return grant
+}
+
+/**
+ * 装模块：下载（可选）→ 校验 sha256 → 落盘 → 能力一次性确认。
  *
  * 为什么下载放在 CLI 而不是管理台：它要联网、要超时、要看到进度。
  * 塞进一次 HTTP 请求里，用户看到的就是"点了没反应"。
+ *
+ * 授权语义（协议 §2.1 / v1.1）：**装完是空授权**。这里把声明的能力一次列清，
+ * 问一次"是否全部授予"，答否就装上空转，之后随时 `yuanling module grant` 补。
+ * 不逐条勾选——用户没那个耐心，逐条反而让人闭眼狂按回车。
  */
 async function installModuleCommand(root, { url, file, flags, out: print, err: fail }) {
   let bytes = null
@@ -97,11 +155,17 @@ async function installModuleCommand(root, { url, file, flags, out: print, err: f
     bytes = fs.readFileSync(p)
     print(`· 读取本地包 ${p}（${(bytes.length / 1024).toFixed(1)} KB）`)
   } else {
-    print(`· 下载 ${url} …`)
+    print(`· 解析地址 ${url} …`)
     try {
-      bytes = await download(url)
+      const { bytes: downloaded, resolved } = await fetchModuleBytes(url)
+      bytes = downloaded
+      if (resolved?.tgzUrl && resolved.tgzUrl !== url) {
+        print(`  → 找到发行包：${resolved.assetName ?? ''}（${resolved.repo} ${resolved.ref ?? ''}）`)
+        print(`  → ${resolved.tgzUrl}`)
+      }
+      repo = resolved?.repo ?? repo
     } catch (error) {
-      fail(`✗ 下载失败：${error?.message ?? error}`)
+      fail(`✗ ${error?.message ?? error}`)
       return EXIT.GENERAL
     }
     print(`  已下载 ${(bytes.length / 1024).toFixed(1)} KB`)
@@ -119,9 +183,13 @@ async function installModuleCommand(root, { url, file, flags, out: print, err: f
     print(`✓ 已${r.updated ? '更新' : '安装'} ${r.manifest.id} v${r.manifest.version}`)
     print(`  目录：${r.dir}`)
     print(`  sha256：${r.sha256}`)
-    if (r.manifest.capabilities?.length) {
-      print(`  声明能力：${r.manifest.capabilities.join(', ')}`)
-      print('  ⚠ 新模块默认已授予其声明的能力；若要收紧，用 ' + `yuanling module grant ${r.manifest.id} send off`)
+
+    const caps = r.manifest.capabilities ?? []
+    if (caps.length) {
+      print('')
+      print(`  这个模块声明了 ${caps.length} 项能力：`)
+      for (const c of caps) print(`    · ${c}${CAP_HINT[c] ? ` —— ${CAP_HINT[c]}` : ''}`)
+      await confirmGrant(root, r.manifest.id, { flags, print })
     }
     print('  重启 DSH 后才会真正启动模块。')
     return EXIT.OK
@@ -179,8 +247,11 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling purpose list|mine|drives|close <id>   目的账本（惦记）
   yuanling mcp status|install|uninstall         把记忆登记成 DSH 的 MCP 工具
   yuanling module list|show <id>               模块列表 / 详情
-  yuanling module install --url <tgz> | --file <本地.tgz> [--sha256 h] [--source s]
-  yuanling module export <id> | grant <id> <cap> on|off | enable|disable <id>
+  yuanling module install --url <库的网址|tgz直链> | --file <本地.tgz> [--sha256 h] [--grant]
+                              库的网址（gitee/github）会去它的发行版里找 .tgz 资产
+                              装完列出全部能力，问一次是否授予（--grant 非交互直接授予）
+  yuanling module export <id> | grant <id> <cap> on|off | grant-all <id> --yes
+  yuanling module enable|disable <id>          启动 / 持久停用
   yuanling module uninstall <id> --yes         卸载（会删模块目录与配置）
   yuanling proposal list|show|approve|reject|rollback|sweep|policy
   yuanling group show|set <群号> [--name --intro --tone]
@@ -754,7 +825,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         const url = flags.url ? String(flags.url) : null
         const file = flags.file ? String(flags.file) : null
         if (!url && !file) {
-          err('用法：yuanling module install (--url <tgz 地址> | --file <本地 .tgz>) [--sha256 <hash>] [--source github|gitee|manual]')
+          err('用法：yuanling module install (--url <库的网址|tgz直链> | --file <本地 .tgz>) [--sha256 <hash>] [--grant]')
           return EXIT.CONFIG
         }
         return installModuleCommand(root, { url, file, flags, out, err })
@@ -770,6 +841,21 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         out(`✓ 已导出 ${r.path}`)
         out(`  ${(r.bytes / 1024).toFixed(1)} KB  sha256 ${r.sha256}`)
         out(`  装到别处：yuanling module install --file "${r.path}"`)
+        return EXIT.OK
+      }
+
+      if (sub === 'grant-all') {
+        const id = _[2]
+        if (!id) {
+          err('用法：yuanling module grant-all <id> --yes')
+          return EXIT.CONFIG
+        }
+        if (!flags.yes) {
+          err('这会一次性授予该模块声明的全部能力。确认请加 --yes')
+          return EXIT.CONFIG
+        }
+        const r = setModuleGrantedAll(root, id, true)
+        out(`✓ ${id} 已全部授予：${r.granted.join(', ') || '（它没有声明任何能力）'}`)
         return EXIT.OK
       }
 
@@ -808,7 +894,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.OK
       }
 
-      err('用法：yuanling module list|show <id>|install|export <id>|grant|enable|disable|uninstall')
+      err('用法：yuanling module list|show <id>|install|export <id>|grant|grant-all|enable|disable|uninstall')
       return EXIT.CONFIG
     }
 

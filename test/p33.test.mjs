@@ -111,10 +111,15 @@ test('§17-1：路径含中文与空格的目录里，spawn 模块不炸', skip,
   installDemoModule(root)
 
   const svc = new ModuleService({ root })
-  await svc.start('demo')
-  const pong = await svc.procs.get('demo').ping()
-  assert.equal(pong.pong, true, '中文/空格路径下 ping 应该能通')
-  await svc.stopAll()
+  try {
+    await svc.start('demo')
+    const pong = await svc.procs.get('demo').ping()
+    assert.equal(pong.pong, true, '中文/空格路径下 ping 应该能通')
+  } finally {
+    // ⚠️ finally 里的 stopAll 不是洁癖：断言一挂，这个子进程就没人收，
+    // 它会一直活到 node --test 判"事件循环空了但 promise 没结束"，看起来就是卡死。
+    await svc.stopAll().catch(() => {})
+  }
 })
 
 test('§17-7：ingest 一条 → 落 raw → 回 accepted:1 → shutdown 干净退出', skip, async () => {
@@ -144,23 +149,27 @@ test('§17-7：ingest 一条 → 落 raw → 回 accepted:1 → shutdown 干净�
   })
 
   await svc.start('demo')
+  // v1.1：装完是空授权，端到端这条必须先授 ingest（否则 E_NO_CAP，且断言一挂就漏收尸）
+  svc.grant('demo', 'ingest.message', true)
 
-  const res = await svc.handleModuleRequest('demo', {
-    op: 'ingest',
-    data: { items: [{ text: '这条消息应该落进 raw', ts: localIso() }] },
-  })
-  assert.equal(res.accepted, 1, '应该接受 1 条')
+  try {
+    const res = await svc.handleModuleRequest('demo', {
+      op: 'ingest',
+      data: { items: [{ text: '这条消息应该落进 raw', ts: localIso() }] },
+    })
+    assert.equal(res.accepted, 1, '应该接受 1 条')
 
-  // 落盘验证：raw/<月>/<日>/demo.ndjson 里能读到
-  const days = listDays(root)
-  assert.ok(days.length >= 1, '应该有当天的 raw')
-  const recs = readDay(root, days[days.length - 1], { source: 'demo' })
-  assert.equal(recs.length, 1, 'raw 里应该有这条记录')
-  assert.match(recs[0].text, /应该落进 raw/)
-  assert.equal(recs[0].source, 'demo', 'source 由核心盖章')
-
-  // 干净退出：shutdown 之后进程不再活着
-  await svc.stopAll()
+    // 落盘验证：raw/<月>/<日>/demo.ndjson 里能读到
+    const days = listDays(root)
+    assert.ok(days.length >= 1, '应该有当天的 raw')
+    const recs = readDay(root, days[days.length - 1], { source: 'demo' })
+    assert.equal(recs.length, 1, 'raw 里应该有这条记录')
+    assert.match(recs[0].text, /应该落进 raw/)
+    assert.equal(recs[0].source, 'demo', 'source 由核心盖章')
+  } finally {
+    // 干净退出：shutdown 之后进程不再活着。放 finally 是为了断言失败时也收尸。
+    await svc.stopAll().catch(() => {})
+  }
   assert.equal(svc.procs.size, 0)
 })
 
@@ -173,17 +182,19 @@ test('§17-7b：进程被外部弄死 → 记崩溃（不报 stopped）', skip, 
   await svc.start('demo')
 
   const proc = svc.procs.get('demo')
-  // kill() 的语义是"意外中断"（不设 stopping），所以会走 crash 流程。
-  // 用 stop() 才是主动停 → 报 stopped。这两个别混（踩过）。
-  proc.autoRestart = false
-  proc.kill()
-  await new Promise((r) => setTimeout(r, 300))
+  try {
+    // kill() 的语义是"意外中断"（不设 stopping），所以会走 crash 流程。
+    // 用 stop() 才是主动停 → 报 stopped。这两个别混（踩过）。
+    proc.autoRestart = false
+    proc.kill()
+    await new Promise((r) => setTimeout(r, 300))
 
-  const state = readRegistry(root).modules.demo.state
-  assert.equal(state, 'crashed', `意外死亡要记成 crashed，实际 ${state}`)
-  assert.ok(readRegistry(root).modules.demo.last_crash, '要留下 last_crash 记录')
-
-  await svc.stopAll().catch(() => {})
+    const state = readRegistry(root).modules.demo.state
+    assert.equal(state, 'crashed', `意外死亡要记成 crashed，实际 ${state}`)
+    assert.ok(readRegistry(root).modules.demo.last_crash, '要留下 last_crash 记录')
+  } finally {
+    await svc.stopAll().catch(() => {})
+  }
 })
 
 test('§17-7c：主动 stop() 报 stopped，不记崩溃', skip, async () => {

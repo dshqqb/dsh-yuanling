@@ -13,7 +13,15 @@ import { P } from '../paths.js'
 export const REGISTRY_VERSION = 1
 
 /** §3.3：capabilities 的封闭词表（与 manifest.js 同源，这里只做白名单过滤）。 */
-export const GRANTABLE = ['ingest.message', 'propose.fact', 'media.put.file', 'media.read', 'send', 'actuate']
+export const GRANTABLE = [
+  'ingest.message',
+  'propose.fact',
+  'media.put.file',
+  'media.read',
+  'send',
+  'actuate',
+  'provide.source',
+]
 
 export function registryPath(root) {
   return path.join(root, P.modulesRegistry)
@@ -62,9 +70,11 @@ export function makeEntry({ manifest, source, repo, ref = null, retrievedAt = nu
     api: manifest.api,
     kind: manifest.kind,
     routes: (manifest.routes ?? []).map((r) => r.path),
+    sources: (manifest.sources ?? []).map((s) => s.id),
     capabilities,
-    // 授予的能力：默认取 manifest 声明的全部（调用方可以少给，比如初始不给 send）
-    granted: granted ?? capabilities,
+    // 声明 ≠ 授予（v1.1 改定）：装完是空授权，由人在安装时一次性确认全部。
+    // 之前这里是 `granted ?? capabilities`——那等于"装上就能往外说话"，文档写着要人点，代码闭着眼给。
+    granted: granted ?? [],
     permissions: manifest.permissions ?? [],
     source: source ?? null,
     repo: repo ?? null,
@@ -97,6 +107,14 @@ export function setGranted(entry, capability, granted) {
   if (granted) cur.add(capability)
   else cur.delete(capability)
   return { ...entry, granted: GRANTABLE.filter((c) => cur.has(c)) }
+}
+
+/** 一次性授予全部声明的能力，或全收回。安装确认用：一次通知、一个决定，不做逐条勾选。 */
+export function setGrantedAll(entry, granted) {
+  return {
+    ...entry,
+    granted: granted ? GRANTABLE.filter((c) => (entry.capabilities ?? []).includes(c)) : [],
+  }
 }
 
 /** 运行时状态（advisory，重启后重置）。 */

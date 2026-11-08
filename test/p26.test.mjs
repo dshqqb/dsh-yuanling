@@ -77,6 +77,65 @@ test('manifest：不是对象时明确报错，不抛', () => {
   }
 })
 
+// ── sources（v1.1）────────────────────────────────────────────────────
+
+const SRC = {
+  id: 'qq.search_video',
+  title: '按关键词搜视频',
+  params: {
+    type: 'object',
+    properties: { q: { type: 'string', description: '关键词' } },
+    required: ['q'],
+  },
+}
+
+test('manifest：sources 需要 api 1.1（只认 1.0 的核心装不上它）', () => {
+  const r = validateManifest({ ...GOOD, capabilities: ['provide.source'], sources: [SRC] })
+  assert.equal(r.ok, false)
+  assert.match(summarizeErrors(r.errors), /api "1\.1"/)
+})
+
+test('manifest：api 1.1 + sources 正常通过，字段被规整', () => {
+  const r = validateManifest({ ...GOOD, api: '1.1', capabilities: ['provide.source'], sources: [SRC] })
+  assert.equal(r.ok, true, summarizeErrors(r.errors))
+  assert.deepEqual(r.manifest.sources, [SRC])
+  assert.ok(CAPABILITIES.includes('provide.source'))
+})
+
+test('manifest：source id 必须以「模块id.」开头（模型只看到 id，靠它追来源）', () => {
+  const r = validateManifest({ ...GOOD, api: '1.1', sources: [{ ...SRC, id: 'other.search' }] })
+  assert.equal(r.ok, false)
+  assert.match(summarizeErrors(r.errors), /必须以「qq\.」开头/)
+})
+
+test('manifest：source id 重复、title 缺失都拒', () => {
+  const dup = validateManifest({ ...GOOD, api: '1.1', sources: [SRC, SRC] })
+  assert.equal(dup.ok, false)
+  assert.match(summarizeErrors(dup.errors), /重复/)
+
+  const noTitle = validateManifest({ ...GOOD, api: '1.1', sources: [{ id: 'qq.a' }] })
+  assert.equal(noTitle.ok, false)
+  assert.match(summarizeErrors(noTitle.errors), /title 必填/)
+})
+
+test('manifest：params 只收 string/number/boolean；required 必须已声明', () => {
+  const badType = validateManifest({
+    ...GOOD,
+    api: '1.1',
+    sources: [{ id: 'qq.a', title: 'x', params: { type: 'object', properties: { n: { type: 'array' } } } }],
+  })
+  assert.equal(badType.ok, false)
+  assert.match(summarizeErrors(badType.errors), /只支持/)
+
+  const badReq = validateManifest({
+    ...GOOD,
+    api: '1.1',
+    sources: [{ id: 'qq.a', title: 'x', params: { type: 'object', properties: {}, required: ['q'] } }],
+  })
+  assert.equal(badReq.ok, false)
+  assert.match(summarizeErrors(badReq.errors), /没有在 properties 里声明/)
+})
+
 // ── tar ────────────────────────────────────────────────────────────────
 
 /** 造一个最小 tar（普通文件）。注意 size 字段是**八进制**，写十进制会解出错误的长度。 */

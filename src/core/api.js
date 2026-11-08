@@ -10,8 +10,9 @@ import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, 
 import { listDays, readDay, today } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 import fs from 'node:fs'
-import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleEnabled, exportModule } from './modules/manage.js'
-import { installFromBytes } from './modules/installer.js'
+import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule } from './modules/manage.js'
+import { listSources } from './modules/sources.js'
+import { installFromBytes, fetchModuleBytes } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
 
 /**
@@ -53,6 +54,11 @@ export function handleApi(root, url) {
   // ── 模块（读）──────────────────────────────────────────────────────────
   if (pathname === '/api/modules') {
     return { status: 200, body: { ok: true, modules: listModules(root), summary: moduleSummary(root) } }
+  }
+
+  // v1.1：有哪些模块能被"要数据"（模型工具也读这一个视图）
+  if (pathname === '/api/sources') {
+    return { status: 200, body: { ok: true, sources: listSources(root) } }
   }
 
   if (pathname === '/api/module') {
@@ -329,11 +335,15 @@ export function handleApiWrite(root, url, body) {
     }
 
     // ── 模块管理 ─────────────────────────────────────────────────────────
-    // 下载交给 CLI（管理台只做"校验 + 落盘"），因为下载要联网、要有超时与 sha256。
+    // 本地 .tgz：读字节 → 校验 → 落盘。
+    // 网址：走 fetchModuleBytes（要联网，所以放在下面的 handleModuleInstallFromUrl 里，由 server await）。
     if (pathname === '/api/modules/install') {
       const file = String(b.file ?? '')
       if (!file) {
-        return { status: 400, body: { ok: false, error: '需要 file（本地 .tgz 路径）；下载请用 CLI：yuanling module install --url' } }
+        return {
+          status: 400,
+          body: { ok: false, error: '需要 file（本地 .tgz 路径）或 url（库的网址 / .tgz 直链）' },
+        }
       }
       if (!fs.existsSync(file)) return { status: 400, body: { ok: false, error: `找不到文件：${file}` } }
       const bytes = fs.readFileSync(file)
@@ -345,7 +355,26 @@ export function handleApiWrite(root, url, body) {
         ref: b.ref === undefined ? null : String(b.ref),
         expectSha256: b.sha256 ? String(b.sha256) : null,
       })
-      return { status: 200, body: { ok: true, id: r.manifest.id, version: r.manifest.version, updated: r.updated, sha256: r.sha256 } }
+      // 装完是**空授权**（v1.1）：把声明的能力连同结果一起回给页面，
+      // 页面负责"一次通知 + 一个全部授予的按钮"。核心不替人点头。
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          id: r.manifest.id,
+          version: r.manifest.version,
+          updated: r.updated,
+          sha256: r.sha256,
+          capabilities: r.manifest.capabilities ?? [],
+          granted: r.entry?.granted ?? [],
+        },
+      }
+    }
+
+    if (pathname === '/api/modules/grant-all') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      return { status: 200, body: { ok: true, ...setModuleGrantedAll(root, id, b.granted !== false) } }
     }
 
     if (pathname === '/api/modules/uninstall') {
@@ -377,4 +406,64 @@ export function handleApiWrite(root, url, body) {
   }
 
   return { status: 404, body: { ok: false, error: 'no such api' } }
+}
+
+/**
+ * 从**网址**装模块（管理台那条）。
+ *
+ * 为什么单独一个 async 函数而不是塞进 handleApiWrite：handleApiWrite 是同步的
+ * （页面里绝大多数写操作只是同步读写注册表）。这条要联网、要等两个平台回话，
+ * 混进去会让所有同步调用方都被迫处理 Promise。server.js 单独 await 这一条。
+ *
+ * 接受两种网址：
+ *   · 库的网址（Gitee / GitHub）→ 去它的发行版里找 .tgz 资产
+ *   · .tgz 直链 → 直接用
+ */
+export async function handleModuleInstallFromUrl(root, body, opts = {}) {
+  const b = body && typeof body === 'object' ? body : {}
+  const url = String(b.url ?? '').trim()
+  if (!url) return { status: 400, body: { ok: false, error: '需要 url（库的网址或 .tgz 直链）' } }
+
+  const pid = readMarker(root)?.active
+  if (!pid) return { status: 503, body: { ok: false, error: '没有激活人格' } }
+
+  let bytes = null
+  let resolved = null
+  try {
+    ;({ bytes, resolved } = await fetchModuleBytes(url, opts))
+  } catch (error) {
+    const code = error?.code ?? ''
+    const status = code === 'E_NO_REPO' ? 404 : code === 'E_RATE' ? 429 : 400
+    return { status, body: { ok: false, error: String(error?.message ?? error) } }
+  }
+
+  try {
+    const r = installFromBytes({
+      root,
+      bytes,
+      repo: resolved?.repo ?? url,
+      source: resolved?.source ?? 'url',
+      ref: resolved?.ref ?? null,
+      expectSha256: b.sha256 ? String(b.sha256) : null,
+    })
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        id: r.manifest.id,
+        version: r.manifest.version,
+        updated: r.updated,
+        sha256: r.sha256,
+        // 让页面能显示"这个包是从哪儿来的"，排查时省一轮
+        resolvedFrom: resolved?.tgzUrl ?? url,
+        repo: resolved?.repo ?? null,
+        ref: resolved?.ref ?? null,
+        assetName: resolved?.assetName ?? null,
+        capabilities: r.manifest.capabilities ?? [],
+        granted: r.entry?.granted ?? [],
+      },
+    }
+  } catch (error) {
+    return { status: 400, body: { ok: false, error: String(error?.message ?? error) } }
+  }
 }

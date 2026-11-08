@@ -252,17 +252,34 @@ test('host：重启次数用尽 → 标 crashed，不再自动拉起', skipIfSan
   const states = []
   const host = makeHost({ onState: (e) => states.push(e.state), maxRestarts: 1, restartBackoffMs: [30] })
   host.start()
-  await new Promise((r) => setTimeout(r, 250))
+  // echo 模块不做 init 握手，状态会停在 starting——所以等的是"子进程真的起来了"，不是 ready
+  await waitFor(() => Boolean(host.child), 3000, '进程起来')
 
   host.request('die', {}, { timeoutMs: 300 }).catch(() => {})
-  await new Promise((r) => setTimeout(r, 400))
+  // 等"重启完成、子进程又活着"再补第二刀：只等 restarts>=1 会打在退避窗口里，
+  // 请求被 E_NOT_RUNNING 拒掉，第二刀就落空（这也是它偶尔变红的原因）。
+  await waitFor(() => host.restarts >= 1 && Boolean(host.child), 8000, '重启完成')
   host.request('die', {}, { timeoutMs: 300 }).catch(() => {})
-  await new Promise((r) => setTimeout(r, 400))
 
-  assert.ok(host.state === 'crashed', `应该是 crashed，实际 ${host.state}`)
+  await waitFor(() => host.state === 'crashed', 5000, '重启用尽后变 crashed')
   await assert.rejects(host.ping(), (e) => e.code === 'E_CRASHED')
   host.dispose()
 })
+
+/**
+ * 轮询等待某个条件成立。
+ *
+ * 为什么不用固定 `setTimeout(N)`：这条链路里有子进程启动、退避重启、超时判定，
+ * 全量测试并行跑时机器一慢，N 就不够——测试变成看运气。等条件成立，慢一点也只是慢。
+ */
+async function waitFor(pred, timeoutMs, what) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (pred()) return
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  throw new Error(`等「${what}」超时（${timeoutMs}ms）`)
+}
 
 test('host：未启动时请求被明确拒绝', skipIfSandboxed, async () => {
   const host = makeHost()

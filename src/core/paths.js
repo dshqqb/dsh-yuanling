@@ -153,6 +153,8 @@ export const P = {
   imports: 'system/imports',
   secrets: 'system/secrets',
   consoleToken: 'system/secrets/console.token',
+  /** 控制台运行时的自我描述（url/port/pid），供同机其他进程找它。 */
+  consoleRuntime: 'system/console.json',
   policy: 'system/policy.json',
   modules: 'system/modules',
   modulesRegistry: 'system/modules.json',

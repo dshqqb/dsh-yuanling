@@ -60,10 +60,11 @@ README.md                可选
 |---|---|---|
 | `id` | ✅ | 小写字母开头，`[a-z0-9-]`，2~32 字符。**它会成为 raw 的来源名**（`raw/<月>/<日>/<id>.ndjson`），所以 `system` / `raw` / `media` / `rules` 这些是保留字，撞了会被拒装 |
 | `version` | ✅ | 完整 semver（`1.2.3`）。更新时用来判断新旧 |
-| `api` | ✅ | 协议版本。核心实现 1.0，所以写 `"1.0"`；**主版本必须相同**，次版本不能高于核心 |
+| `api` | ✅ | 协议版本。核心实现 **1.1**（也接受 1.0）；**主版本必须相同**，次版本不能高于核心。声明 `sources` 就必须 ≥ `1.1` |
 | `kind` | ⬜ | `gateway`（收消息，v1 唯一实现）/ `actuator`（由核心触发生成内容，v1 接口留、调用回 `E_UNSUPPORTED`）/ `enricher`（加工管道，语义未定） |
 | `entry.command` | ✅ | 非空数组，`[0]` 是命令名，**不能含路径分隔符**。`"node"` 会被核心换成本机的 node 可执行文件；用别的命令就写裸名字 |
 | `capabilities` | ⬜ | 封闭词表，见下节 |
+| `sources` | ⬜ | v1.1：声明"我这儿有什么数据可以被要"（`id` / `title` / `params`）。`id` 必须形如 `<模块id>.<名字>` |
 | `config` | ⬜ | 声明了就给 `schema`（JSON Schema 子集），核心据此渲染表单并保管值 |
 | `routes` | ⬜ | 模块自己提供的 HTTP 路由（管理台扩展），不能与已装模块重叠 |
 
@@ -77,8 +78,11 @@ README.md                可选
 | `media.read` | 通过指针读回媒体 | 中 —— 同样**v1 未实现** |
 | `send` | 收到核心的 `send` 请求后**真的把消息发出去** | **高**：唯一能"往外说话"的能力 |
 | `actuate` | 生成语音/视频/图片 | **v1 未实现**（接口形状冻结，调用回 `E_UNSUPPORTED`） |
+| `provide.source` | 被核心调 `source.fetch` 时交出一次数据 | 中：数据会进 raw、进她的上下文；**v1.1 第二刀，⬜ 核心侧未实现** |
 
 **声明 ≠ 授予**。你在 manifest 里声明 `send`，装完之后是否真的授予由人决定；未被授予时核心直接回 `E_NO_CAP`，你的请求会被拒。所以：**代码里要能优雅处理 `E_NO_CAP`**，不要假定自己有权限。
+
+**v1.1 起装完是空授权**：安装时核心把声明的能力全部列给用户看一次，用户回一个 Y / n。所以你的模块"装上了但什么都没被授予"是完全正常的初始状态，不是装坏了。
 
 ---
 
@@ -134,7 +138,23 @@ stdout 与 stdin 上都是 **NDJSON**：一行一条 JSON，UTF-8 无 BOM，行�
 | `media.put.file` | 交一个临时文件给核心归档 | `media.put.file` | ⬜ |
 | `media.get` | 按指针读回媒体 | `media.read` | ⬜ |
 
-**写模块时请先只依赖 ✅ 那四个。** 标 ⬜ 的两个在核心补齐之前，声明了能力也拿不到结果——协议冻结的是"形状"，不是"已实现"。
+**核心可以调的 op（核心 → 模块，v1.1）**
+
+| op | 你要做什么 | 需要 | 状态 |
+|---|---|---|---|
+| `init` | 回 `{ready:true, api}` | — | ✅ |
+| `ping` | 回 `{}` | — | ✅ |
+| `send` | 真的把消息投出去 | `send` + 被授予 | ✅ |
+| `source.fetch` | 按 `data.source` 交一批数据（**标准 inbox 信封**） | `provide.source` + `sources` + 被授予 | ✅ v1.1 |
+| `actuate` | 生成语音/视频 | `actuate` | ⬜ 回 `E_UNSUPPORTED` |
+| `shutdown` | 收尾退出 | — | ✅ |
+
+`source.fetch` 的两条硬要求（协议 §5.2.2）：
+
+1. **`items[].ext_id` 必填且稳定**（BV 号、消息 id、规范化 URL）。核心按 `sha256(模块id + source + ext_id)` 自己算 `h` 去重，**不收你自报的 `h`**——否则你能让核心"以为见过"而静默丢条。
+2. 回的是**标准 inbox 信封**，核心会把它当普通投递走 `ingest()`：脱敏、`never_record`、分片、日链全部照常生效。所以别在 `text` 里塞 JSON 字符串，就当它是"这个来源说的一段话"。
+
+**写模块时请先只依赖 ✅ 的那些。** 标 ⬜ 的在核心补齐之前，声明了能力也拿不到结果——协议冻结的是"形状"，不是"已实现"。
 
 `ingest` 的入参与返回值：
 
@@ -254,13 +274,29 @@ node bin/yuanling.js module export demo   # 导出 tgz，拷到另一台机器
 https://<你的仓库>/releases/download/v0.1.0/echo-0.1.0.tgz
 ```
 
-用户可以：
+用户可以**直接填库的网址**（省得自己去拼资产地址）：
 
 ```powershell
-yuanling module install --url <上面的地址> --sha256 <hash> --source github
+# 库的网址：核心会去它的发行版里找 .tgz 资产（Gitee / GitHub 都认）
+yuanling module install --url https://gitee.com/<owner>/<repo>
+yuanling module install --url https://github.com/<owner>/<repo>
+
+# 指定版本：/releases/tag/<tag>
+yuanling module install --url https://gitee.com/<owner>/<repo>/releases/tag/v0.1.0
+
+# 直链也行（不给 --sha256 就只记下来，方便以后核对）
+yuanling module install --url <tgz 直链> --sha256 <hash>
 ```
 
-**只允许 https**（`http` 仅限本机回环）。给了 `--sha256` 就一定会校验；不给就只记下来，方便以后核对。
+管理台的「模块」页有同一个输入框：填库网址或 tgz 直链都行，填本地路径也可以。
+
+**只允许 https**（`http` 仅限本机回环）。
+
+三条要知道的：
+
+1. **资产必须是 `.tgz`**。两个平台都会把源码归档（`v1.0.0.tar.gz` / `.zip`）混进 assets，核心一律不认——它解出来是仓库源码，没有 `yuanling.module.json`。
+2. **优先最新、非预发布**。想装预发布或用旧版本，就在地址后面加 `/releases/tag/<tag>`。
+3. 没有发行版时，报错会告诉你下一步：先建 release、先传 tgz，而不是"安装失败"。
 
 ---
 
@@ -276,7 +312,7 @@ yuanling module install --url <上面的地址> --sha256 <hash> --source github
 
 | 文件 | 是什么 |
 |---|---|
-| [`PROTOCOL.md`](PROTOCOL.md) | **规范**（冻结 v1.0）：信封、方法表、错误码、能力协商、trace、§17 验收单 |
+| [`PROTOCOL.md`](PROTOCOL.md) | **规范**（v1.1 进行中；v1.0 的七条 spike 已冻结）：信封、方法表、错误码、能力协商、trace、§17 验收单 |
 | 本文 | **教程**：怎么做一个模块 |
 | [`SECURITY.md`](SECURITY.md) | 安全边界：暴露面、密钥、越权防护 |
 | [`PURPOSE_ANALYSIS.md`](PURPOSE_ANALYSIS.md) | 「目的层」的设计来源与取舍（不是模块相关） |

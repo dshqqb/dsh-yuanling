@@ -101,6 +101,38 @@ test('CLI：install --file 走通，注册表里有记录', async () => {
   assert.equal(reg.modules.demo.version, '0.1.0')
 })
 
+test('CLI：装完不授予（非 TTY 不猜），并给出补授命令', async () => {
+  const root = tmpRoot()
+  const tgz = makePkg(root)
+
+  const r = await run(['module', 'install', '--file', tgz, '--root', root])
+  assert.equal(r.code, 0)
+  assert.match(r.out, /ingest\.message/, '要把声明的能力列出来')
+  assert.match(r.out, /未授予任何能力/)
+  assert.match(r.out, /module grant-all demo --yes/)
+  assert.deepEqual(readRegistry(root).modules.demo.granted, [], 'v1.1：装完是空授权')
+})
+
+test('CLI：install --grant 是显式同意，直接全部授予', async () => {
+  const root = tmpRoot()
+  const r = await run(['module', 'install', '--file', makePkg(root), '--grant', '--root', root])
+  assert.equal(r.code, 0)
+  assert.deepEqual(readRegistry(root).modules.demo.granted, ['ingest.message'])
+})
+
+test('CLI：grant-all 不给 --yes 时拒绝；给了才授予', async () => {
+  const root = tmpRoot()
+  await run(['module', 'install', '--file', makePkg(root), '--root', root])
+
+  const no = await run(['module', 'grant-all', 'demo', '--root', root])
+  assert.equal(no.code, 2)
+  assert.match(no.err, /--yes/)
+
+  const ok = await run(['module', 'grant-all', 'demo', '--yes', '--root', root])
+  assert.equal(ok.code, 0)
+  assert.deepEqual(readRegistry(root).modules.demo.granted, ['ingest.message'])
+})
+
 test('CLI：install 缺参数时报用法，不崩', async () => {
   const root = tmpRoot()
   const r = await run(['module', 'install', '--root', root])

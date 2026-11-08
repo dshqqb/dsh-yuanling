@@ -27,6 +27,190 @@ export function sha256Of(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex')
 }
 
+/** 托管平台：只有这两个能"给个库地址就自动找发行包"。 */
+export const REPO_HOSTS = ['github.com', 'gitee.com']
+
+/**
+ * 把"库的网址"拆成 owner / repo / 可选 tag。
+ *
+ * 认这些写法（管理台里人真的会这么粘）：
+ *   https://gitee.com/o/r
+ *   https://gitee.com/o/r.git
+ *   https://github.com/o/r/tree/main
+ *   https://github.com/o/r/releases/tag/v0.1.0     ← 指定版本
+ * 不认的（archive 源码包、issues 之类）交给上层报错，别硬猜。
+ */
+export function parseRepoUrl(raw) {
+  let u
+  try {
+    u = new URL(String(raw))
+  } catch {
+    return null
+  }
+  if (!REPO_HOSTS.includes(u.hostname)) return null
+
+  const seg = u.pathname.split('/').filter(Boolean)
+  if (seg.length < 2) return null
+  const owner = seg[0]
+  const repo = seg[1].replace(/\.git$/, '')
+  if (!owner || !repo) return null
+
+  // 指定版本：/releases/tag/<tag>（GitHub 也支持 /releases/tags/<tag>）
+  let tag = null
+  const i = seg.indexOf('releases')
+  if (i >= 0 && seg[i + 1] === 'tag' && seg[i + 2]) tag = decodeURIComponent(seg[i + 2])
+
+  return { host: u.hostname, owner, repo, tag }
+}
+
+/** 一个 URL 是不是 .tgz 直链（含 /releases/download/<tag>/x.tgz 这种）。 */
+export function isTgzUrl(raw) {
+  try {
+    const u = new URL(String(raw))
+    return u.pathname.toLowerCase().endsWith('.tgz')
+  } catch {
+    return false
+  }
+}
+
+function apiHeaders(host) {
+  // GitHub 要 UA，不然 403；Gitee 匿名可访问、不需要 token
+  return host === 'github.com'
+    ? { 'user-agent': 'yuanling-module-installer', accept: 'application/vnd.github+json' }
+    : { 'user-agent': 'yuanling-module-installer', accept: 'application/json' }
+}
+
+/** 从发行版条目里挑一个 tgz 资产。
+ *
+ * **只认 `.tgz`**：两个平台都会把源码归档（`v1.2.3.tar.gz` / `.zip`）塞进 assets，
+ * 它长得像模块包但解出来是仓库源码（没有 yuanling.module.json）。
+ * 曾经放行 `tar.gz` 就把源码包当模块包下载了——所以这里的正则故意写死成 tgz。
+ */
+export function pickTgzAsset(assets) {
+  const list = Array.isArray(assets) ? assets : []
+  const items = list
+    .map((a) => ({
+      name: String(a?.name ?? ''),
+      url: String(a?.browser_download_url ?? a?.url ?? ''),
+    }))
+    .filter((a) => a.url && /\.tgz$/i.test(a.name) && !/source|archive/i.test(a.name))
+  if (!items.length) return null
+  // 有多个时优先名字里带版本的（`bili-0.1.0.tgz`），否则按名字排序取第一个，保证结果可复现
+  const versioned = items.find((a) => /\d+\.\d+\.\d+/.test(a.name))
+  return versioned ?? items.slice().sort((a, b) => a.name.localeCompare(b.name))[0]
+}
+
+/** 按 created_at 倒序，挑"最新且非预发布"的那一条。 */
+export function latestRelease(releases) {
+  const list = Array.isArray(releases) ? releases.filter((r) => r && typeof r === 'object') : []
+  const stable = list.filter((r) => r.prerelease !== true)
+  const pool = stable.length ? stable : list
+  return pool
+    .slice()
+    .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))[0] ?? null
+}
+
+/**
+ * 把"库的网址"或".tgz 直链"解析成可以下载的 tgz 地址。
+ *
+ * @returns {Promise<{tgzUrl:string, repo:string|null, ref:string|null, source:string, assetName:string|null}>}
+ */
+export async function resolveInstallUrl(raw, { fetchImpl = globalThis.fetch, timeoutMs = 20_000 } = {}) {
+  const input = String(raw ?? '').trim()
+  if (!input) throw new Error('请填一个地址：库的网址（Gitee / GitHub）或 .tgz 直链')
+
+  const checked = checkUrl(input)
+  if (!checked.ok) throw new Error(checked.reason)
+
+  if (isTgzUrl(input)) {
+    return { tgzUrl: input, repo: null, ref: null, source: 'url', assetName: null }
+  }
+
+  const repo = parseRepoUrl(input)
+  if (!repo) {
+    throw new Error(
+      `看不懂这个地址：${input}\n` +
+        '能填两种：① 库的网址（https://gitee.com/<owner>/<repo> 或 https://github.com/<owner>/<repo>）；② 模块包 .tgz 的直链。',
+    )
+  }
+
+  if (typeof fetchImpl !== 'function') throw new Error('当前环境没有 fetch，无法查询发行版')
+
+  const repoUrl = `https://${repo.host}/${repo.owner}/${repo.repo}`
+  const api =
+    repo.host === 'github.com'
+      ? `https://api.github.com/repos/${repo.owner}/${repo.repo}/releases`
+      : `https://gitee.com/api/v5/repos/${repo.owner}/${repo.repo}/releases?per_page=20`
+
+  let releases = null
+  try {
+    const res = await fetchImpl(api, {
+      headers: apiHeaders(repo.host),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+    })
+    if (res.status === 404) {
+      // 库不存在、是私有库、或 owner/repo 打错——这三种在页面上长得一模一样
+      throw Object.assign(
+        new Error(`找不到这个库（HTTP 404）：${repoUrl}。检查 owner/repo 拼写；私有库需要先公开`),
+        { code: 'E_NO_REPO' },
+      )
+    }
+    if (res.status === 403) {
+      throw Object.assign(
+        new Error(`${repo.host} 拒绝匿名访问（HTTP 403）：可能被限流了，稍后再试或改用 grep 直链`),
+        { code: 'E_RATE' },
+      )
+    }
+    if (!res.ok) throw new Error(`${repo.host} 返回 HTTP ${res.status}（${api}）`)
+    releases = await res.json()
+  } catch (error) {
+    const msg = String(error?.message ?? error)
+    if (/AbortError|timeout/i.test(msg)) throw new Error(`查发行版超时（${timeoutMs}ms）：${api}`)
+    if (error?.code) throw error
+    throw new Error(`查发行版失败：${msg}`)
+  }
+
+  const list = Array.isArray(releases) ? releases : []
+  if (!list.length) {
+    throw new Error(
+      `这个库还没有发行版：${repoUrl}\n` +
+        '去库里建一个发行版（Release），把 scripts/pack.mjs 打出来的 .tgz 作为附件传上去，再回来装；\n' +
+        '或者直接填那个 .tgz 的直链。',
+    )
+  }
+
+  const entry = repo.tag ? list.find((r) => String(r.tag_name) === repo.tag) ?? null : latestRelease(list)
+  if (!entry) {
+    throw new Error(`发行版里找不到 tag「${repo.tag}」：${repoUrl}/releases`)
+  }
+
+  const asset = pickTgzAsset(entry.assets)
+  if (!asset) {
+    throw new Error(
+      `发行版 ${entry.tag_name ?? ''} 里没有 .tgz 附件。\n` +
+        '源码 zip/tar.gz 不能装（协议 §2.1 装的是发行包）。把 pack.mjs 打出来的 tgz 传上去再试。',
+    )
+  }
+
+  return {
+    tgzUrl: asset.url,
+    repo: repoUrl,
+    ref: String(entry.tag_name ?? '') || null,
+    source: repo.host === 'gitee.com' ? 'gitee' : 'github',
+    assetName: asset.name,
+  }
+}
+
+/**
+ * 解析 + 下载。CLI 与管理台共用这一条，避免两边对"库网址"的理解走偏。
+ * @returns {Promise<{bytes:Buffer, resolved:object}>}
+ */
+export async function fetchModuleBytes(raw, { fetchImpl = globalThis.fetch, timeoutMs = 20_000 } = {}) {
+  const resolved = await resolveInstallUrl(raw, { fetchImpl, timeoutMs })
+  const bytes = await download(resolved.tgzUrl, { fetchImpl, timeoutMs: Math.max(timeoutMs, 60_000) })
+  return { bytes, resolved }
+}
+
 /** 只允许 https；http 仅限本机（测试与本地联调用）。 */
 export function checkUrl(url) {
   let u
@@ -174,8 +358,8 @@ export function installFromBytes({
     source,
     repo: repo ?? prev?.repo ?? null,
     ref,
-    // 更新时保留既有授予；新装时按 defaultGranted（调用方决定 send 这类能力给不给）
-    granted: prev ? undefined : manifest.capabilities,
+    // 新装 = 空授权（§2.1：装完把声明的能力列一次，让人一次性确认）。
+    // 更新则保留既有授予（下面按新 manifest 取交集），不会偷偷扩权，也不会偷偷降权。
   })
   if (prev) {
     entry.granted = (prev.granted ?? []).filter((c) => (manifest.capabilities ?? []).includes(c))

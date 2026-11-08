@@ -70,8 +70,11 @@ test('模块页：卸载前会二次确认', () => {
   assert.match(app, /confirm\(/, '卸载是不可逆操作，必须确认')
 })
 
-test('模块页：install 只接受本地路径（下载走 CLI）', () => {
-  assert.match(html, /yuanling module install --url/, '页面要说明下载用 CLI')
+test('模块页：装载框接受库的网址，也接受本地路径（2026-11-08 起管理台能直接联网装）', () => {
+  assert.match(html, /库的网址/, '输入框要说明可以填库的网址')
+  assert.match(app, /\/api\/modules\/install-url/, '填网址时走 install-url 这条异步接口')
+  assert.match(app, /\/api\/modules\/install\b/, '填本地路径时仍走同步的 install')
+  assert.match(app, /install-url', \{ url: input \}/, '要把用户填的值作为 url 传过去')
 })
 
 test('样式：模块页要用的类都有定义', () => {
