@@ -44,9 +44,9 @@ const SAMPLE = `# 原灵 · 骨架
 - 语气：短句
 - 口癖：偶尔「嗯」
 
-## 演化区
+## 备注
 
-- 最近在意的事：<留空，让她自己长>
+- 只给人看的一段，不进上下文
 `
 
 function post(pathname, body) {
@@ -86,7 +86,7 @@ test('parseMd：切出标题、引言与三个小节', () => {
   assert.match(p.preamble, /这一页是「我是谁」/)
   assert.deepEqual(
     p.sections.map((s) => s.title),
-    ['核心身份', '说话方式', '演化区'],
+    ['核心身份', '说话方式', '备注'],
   )
   assert.equal(p.hasSections, true)
   // 每节的 body 都要能原位还原：用区间切出来的必须等于记录下来的 body
@@ -104,8 +104,8 @@ test('applySectionEdits：只改一节时，其余字节一个不动', () => {
   const r = applySectionEdits(p, [{ title: '说话方式', body: '- 语气：更短\n- 口癖：偶尔「行」' }])
   assert.equal(r.ok, true)
   assert.equal(r.changed, 1)
-  // 演化区往后一字不差
-  assert.ok(r.text.endsWith('## 演化区\n\n- 最近在意的事：<留空，让她自己长>\n'))
+  // 备注往后一字不差
+  assert.ok(r.text.endsWith('## 备注\n\n- 只给人看的一段，不进上下文\n'))
   // 标题与引言也不动
   assert.ok(r.text.startsWith('# 原灵 · 骨架\n\n> 这一页是「我是谁」。只有人能动它。\n'))
   assert.match(r.text, /## 说话方式\n\n- 语气：更短\n- 口癖：偶尔「行」/)
@@ -193,8 +193,8 @@ test('readCard：每节带自己的预算，超出预算的节看得出来', () 
   const core = self.sections.find((s) => s.title === '核心身份')
   assert.equal(core.injected, true)
   assert.equal(core.budget, card.budgets.core)
-  const evo = self.sections.find((s) => s.title === '演化区')
-  assert.equal(evo.injected, false)
+  const note = self.sections.find((s) => s.title === '备注')
+  assert.equal(note.injected, false)
 })
 
 // 真数据的坑：真 SELF.md 里那一节叫「价值观（按优先级）」，注入是用前缀匹配认它的。
@@ -211,6 +211,25 @@ test('readCard：小节名带后缀（价值观（按优先级））也算进上
   assert.equal(sec.title, '价值观（按优先级）')
   assert.equal(sec.injected, true)
   assert.equal(sec.budget, card.budgets.values)
+})
+
+test('readCard：老文件里的「演化区」不会出现在卡片上（已彻底废弃）', () => {
+  createPersona(root, 'legacy', '老文件')
+  const rel = personaPaths('legacy').self
+  fs.writeFileSync(
+    path.join(root, rel),
+    '# 老文件 · 骨架\n\n## 核心身份\n\n- 名字：老文件\n\n## 演化区\n\n- 最近在意的事：随便写的\n',
+    'utf8',
+  )
+
+  const { card } = readCard(root, 'legacy')
+  const titles = card.files.find((f) => f.key === 'self').sections.map((s) => s.title)
+  assert.ok(titles.includes('核心身份'))
+  assert.ok(!titles.includes('演化区'), '废弃的节不该再露出来')
+
+  // 但文件内容不替人删：那一节还在盘上
+  const raw = fs.readFileSync(path.join(root, rel), 'utf8')
+  assert.match(raw, /## 演化区/)
 })
 
 test('saveCardFile：写盘 + 进版本历史 + actor 是人', () => {
@@ -273,7 +292,7 @@ test('saveCardFiles：正常一批就都写进去，并逐份回执', () => {
   const r = saveCardFiles(root, PID, [
     {
       file: 'self',
-      sections: self.sections.map((s) => (s.title === '演化区' ? { ...s, body: '- 最近在意的事：把话说短' } : s)),
+      sections: self.sections.map((s) => (s.title === '备注' ? { ...s, body: '- 换一段备注' } : s)),
       expect: self.expect,
     },
     { file: 'lines', text: `${lines.text.trimEnd()}\n- 不替人做重大决定\n`, expect: lines.expect },

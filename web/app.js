@@ -471,11 +471,7 @@ function sectionBlock(s, areas) {
   const sect = el('div', 'sect')
   const sh = el('div', 'sect-head')
   sh.append(el('span', 'sect-title', s.title))
-  if (s.deprecated) {
-    // 老文件里还留着这一节：不替人删字，但必须说清它早就不生效了
-    sh.append(el('span', 'tag warn', '已废弃'))
-    sh.append(el('span', 'muted small', '这一节从没被任何代码读写；她学到的表达请写到「表达层」'))
-  } else if (s.injected) {
+  if (s.injected) {
     // 比的是**她真正读到的那一行**，不是这一节的字节数——
     // 一节里可能只有两条被抽走（核心身份只取名字/存在的原因），拿整节去比会误报超预算。
     const over = s.lineBytes > s.budget
