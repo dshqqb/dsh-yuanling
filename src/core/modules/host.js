@@ -194,9 +194,21 @@ export class ModuleProcess {
       this.consecutiveTimeouts = 0
       if (frame.ok) waiter.resolve(frame.result ?? {})
       else {
-        const e = new Error(frame.error?.message ?? '模块返回失败')
-        e.code = frame.error?.code ?? 'E_MODULE'
-        e.retry = Boolean(frame.error?.retry)
+        // 协议 §4.2 要求失败帧是嵌套的 `error:{code,message,retry}`。
+        // 有些模块会把 code/message 摊在顶层——照收（否则真实错误码全丢，只剩
+        // "模块返回失败"这种没法排查的话），但要**明确警告**，否则作者永远不知道
+        // 自己不合协议。宁可吵一点，也不要静默吞掉错误码。
+        const nested = frame.error && typeof frame.error === 'object' ? frame.error : null
+        if (!nested && (frame.code || frame.message)) {
+          this._emitLog(
+            'warn',
+            `模块 ${this.id} 的失败帧用了扁平的 code/message，协议 §4.2 要求 {error:{code,message,retry}}（id=${frame.id}）`,
+          )
+        }
+        const src = nested ?? frame
+        const e = new Error(src?.message ?? '模块返回失败')
+        e.code = src?.code ?? 'E_MODULE'
+        e.retry = Boolean(src?.retry)
         waiter.reject(e)
       }
       return

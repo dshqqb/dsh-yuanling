@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 
-import { validateManifest, summarizeErrors, UI_MAX_TABS, UI_KINDS } from '../src/core/modules/manifest.js'
+import { validateManifest, summarizeErrors, UI_MAX_TABS, UI_KINDS, UI_RESERVED } from '../src/core/modules/manifest.js'
 import { normalizeUiPayload, UI_LIMITS } from '../src/core/modules/ui.js'
 import { ModuleService } from '../src/core/modules/service.js'
 import { moduleDetail, setModuleGrantedAll } from '../src/core/modules/manage.js'
@@ -55,6 +55,22 @@ test('ui：核心的 tab id / 名字不许占用', () => {
   const bad2 = validateManifest(withUi([{ id: 'mine', label: '概况', kind: 'text' }]))
   assert.equal(bad2.ok, false)
   assert.match(summarizeErrors(bad2.errors), /核心的 tab 名/)
+})
+
+test('ui：v1.4 加的两个基础 tab（审计 / 诊断）也必须被挡住', () => {
+  // 不挡的话：模块声明同名 tab 能过校验，点开却被静默顶成核心那页——
+  // 模块自己的页面永远打不开，还不报错
+  for (const id of ['audit', 'diag']) {
+    const r = validateManifest(withUi([{ id, label: 'mine', kind: 'text' }]))
+    assert.equal(r.ok, false, `${id} 应该被拒`)
+    assert.match(summarizeErrors(r.errors), /保留的 tab id/)
+  }
+  for (const label of ['审计', '诊断']) {
+    const r = validateManifest(withUi([{ id: 'mine', label, kind: 'text' }]))
+    assert.equal(r.ok, false, `名字「${label}」应该被拒`)
+    assert.match(summarizeErrors(r.errors), /核心的 tab 名/)
+  }
+  assert.deepEqual(UI_RESERVED, ['brief', 'log', 'audit', 'diag'])
 })
 
 test('ui：kind 只认三种，不能自带 html', () => {

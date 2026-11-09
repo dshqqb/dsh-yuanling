@@ -132,8 +132,15 @@ function validateSources(raw, moduleId, err) {
 export const UI_KINDS = ['list', 'kv', 'text', 'config', 'records']
 /** 最多几个自定义 tab：管理台的 tab 条再长就没法用了。 */
 export const UI_MAX_TABS = 5
-/** 核心保留的 tab id：`brief` / `log` 已经被核心占了。 */
-export const UI_RESERVED = ['brief', 'log']
+/**
+ * 核心保留的 tab id：模块详情页的前四个永远是核心的（概况 / 日志 / 审计 / 诊断）。
+ *
+ * v1.4 加了后两个。不挡的话，模块声明同 id 的 tab 能过校验，点开却被静默顶成
+ * 核心那页——模块自己的页面永远打不开，还不报错（这种"能用但看不到"最难查）。
+ */
+export const UI_RESERVED = ['brief', 'log', 'audit', 'diag']
+/** 这些 tab 名也归核心，模块别用（同名会让人分不清点的是哪个）。 */
+export const UI_RESERVED_LABELS = ['概况', '日志', '审计', '诊断']
 
 /**
  * v1.2 §3.5：`ui` 的形状。
@@ -175,8 +182,8 @@ function validateUi(raw, err) {
     }
     if (!isString(t.label)) err(`${at}.label`, 'MISSING', 'label 必填（tab 上显示的名字）')
     else if (String(t.label).length > 16) err(`${at}.label`, 'TOO_LONG', 'label 最多 16 个字')
-    else if (String(t.label) === '概况' || String(t.label) === '日志') {
-      err(`${at}.label`, 'RESERVED', '「概况」「日志」是核心的 tab 名')
+    else if (UI_RESERVED_LABELS.includes(String(t.label))) {
+      err(`${at}.label`, 'RESERVED', `「${UI_RESERVED_LABELS.join('」「')}」是核心的 tab 名`)
     }
     if (t.kind !== undefined && !UI_KINDS.includes(String(t.kind))) {
       err(`${at}.kind`, 'UNKNOWN', `kind 只能是 ${UI_KINDS.join(' / ')}`)
