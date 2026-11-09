@@ -358,6 +358,34 @@ export function _resetSeenCache() {
  * 最近的消息，带可直接使用的指针。
  * 手动测试与排障用：不用自己拼 `raw/…/qq.ndjson#ULID`。
  */
+/**
+ * 原始层里出现过的频道（最近 N 天，按最近一次活动倒序）。
+ *
+ * 用途：管理台的「注入预览」要让人能挑一个真实频道看效果。手打频道名容易打错，
+ * 而打错的频道和"没有这个频道"在页面上长得一样——都是同一份通用预览，看不出输入无效。
+ *
+ * @returns {Array<{channel:string, messages:number, lastAt:string}>}
+ */
+export function listChannels(root, { days = 30, limit = 50 } = {}) {
+  const seen = new Map()
+  const recent = listDays(root).slice(-Math.max(1, days))
+  for (const date of recent) {
+    for (const r of readDay(root, date)) {
+      if ((r.type ?? 'message') !== 'message') continue
+      const ch = String(r.channel ?? '')
+      if (!ch) continue
+      const cur = seen.get(ch) ?? { channel: ch, messages: 0, lastAt: null }
+      cur.messages += 1
+      const ts = String(r.ts ?? '')
+      if (!cur.lastAt || ts > cur.lastAt) cur.lastAt = ts
+      seen.set(ch, cur)
+    }
+  }
+  return [...seen.values()]
+    .sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)))
+    .slice(0, limit)
+}
+
 export function recentMessages(root, { limit = 5, source = null } = {}) {
   const out = []
   const days = listDays(root).slice(-3).reverse()

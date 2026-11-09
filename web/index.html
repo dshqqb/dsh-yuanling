@@ -136,18 +136,13 @@
               <span class="muted small">她这一轮真正读到的整段文字（和模型同一个函数算出来）</span>
             </div>
             <div class="field-row">
-              <input id="card-channel" placeholder="频道，例如 private:10001（可留空）" />
-              <button id="card-load" class="btn">生成</button>
+              <select id="card-channel"></select>
+              <button id="card-load" class="btn">重新生成</button>
             </div>
+            <div class="muted small" id="card-channel-hint"></div>
             <pre id="card-out" class="code"></pre>
             <div id="card-meta" class="muted small"></div>
           </div>
-
-          <!-- 不进上下文的文件不占位置，但不藏起来 -->
-          <details class="card persona-extra">
-            <summary>还有一份<b>不进上下文</b>的文件：用户画像（<code>persona/user.md</code>）</summary>
-            <div id="persona-extra-body"></div>
-          </details>
         </section>
 
         <!-- 人格 → 记忆：同一批数据两张脸，一页两视图 -->
@@ -304,17 +299,41 @@
         <section id="tab-rules" class="page" hidden>
           <div class="page-head">
             <h2>规则</h2>
-            <p class="muted">只管"能不能做"，不塑造人格。越具体的层越优先。</p>
+            <p class="muted">只管"能不能做"，不塑造人格。改了不点保存不算数。</p>
           </div>
+
           <div class="card">
-            <div class="field-row">
-              <input id="rule-channel" placeholder="频道（留空 = 只叠全局）" />
-              <button id="rule-load" class="btn">查看</button>
+            <div class="card-head">
+              <h3>这些规则从哪来</h3>
+              <span class="muted small">越具体越优先：全局 → 群 → 私聊</span>
             </div>
+            <div class="field-row">
+              <select id="rule-channel"></select>
+            </div>
+            <div class="muted small" id="rule-channel-hint"></div>
             <div id="rule-src" class="muted small"></div>
-            <pre id="rule-out" class="code"></pre>
+          </div>
+
+          <div id="rule-form"></div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>根级硬线（不参与合并，谁都改不动）</h3>
+              <span class="muted small">guardrails.json</span>
+            </div>
+            <div id="rule-guardrails" class="list"></div>
+          </div>
+
+          <div class="card save-bar">
+            <div class="field-row">
+              <button id="rule-save" class="btn">保存规则</button>
+              <button id="rule-reload" class="btn small ghost">放弃改动</button>
+              <span id="rule-msg" class="muted small">改了不点保存不算数</span>
+            </div>
             <div class="muted small">
-              这里看到的是<b>当前人格</b>的有效规则（全局 → 群 → 私聊三层合并）。根级 <code>guardrails.json</code> 的硬线不参与合并、单独硬拦；模块自己的上限在「模块」页里。
+              保存只写<b>当前人格</b>的全局层（<code>personas/&lt;人格&gt;/rules/global.json</code>）。
+              群与私聊的覆盖层故意不做页面编辑——那是"越具体越优先"的继承，压平写回某一层等于把继承改掉。
+              模块自己的能力上限在「模块」页里。
             </div>
           </div>
         </section>

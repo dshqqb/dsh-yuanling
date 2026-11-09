@@ -3,7 +3,10 @@
 // 与文档的一处有意偏差：条目与人物档案用 JSON，不用 Markdown。
 // 理由：这些文件是**机器写、机器读**的结构化数据（槽位 / 时效 / 指针 / 重要度），
 // 用 md 每次都要整篇重写、还得再写一个解析器；人设骨架（SELF.md / lines.md /
-// user.md / style.md）仍然是 Markdown——那是人写的散文。
+// style.md）仍然是 Markdown——那是人写的散文。
+//
+// 曾经的 `persona/user.md`（"用户画像"）2026-11-09 已废弃并删除：它从来没被任何代码
+// 读写，而"关于你"这件事由**记忆事实 + 人物卡**覆盖，不需要第三份。
 import fs from 'node:fs'
 import path from 'node:path'
 import { exists, isDir, readJson, localIso, ulid } from './fsx.js'
@@ -446,7 +449,8 @@ export const SKELETON_BYTES = { core: 120, speak: 200, values: 160 }
  * 两份"不是记忆，但每轮都该在她眼前"的底稿：
  *   · `lines.md`（硬线）——`guardrails.json` 是**代码**在拦，她看不见；这段是让她知道边界。
  *   · `style.md`（表达层）——提案学会的说话习惯。不注入的话，采纳一条提案等于什么都没发生。
- * `user.md` 故意不注入：它和"记忆 + 人物卡"是同一类东西的第三份，接进来只会三处打架。
+ *
+ * "关于你"那类东西不在这里：它由记忆事实 + 人物卡提供，不再有第三份 markdown。
  */
 export const HARD_LINE_BYTES = 200
 export const EXPRESSION_BYTES = 160

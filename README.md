@@ -214,10 +214,9 @@ D:\yuanling\
 │     ├─ persona.json            人格标记（id / 名字 / 创建时间）
 │     ├─ persona\
 │     │  ├─ SELF.md              骨架：名字、存在的原因（**永不自动修改**）
-│     │  ├─ lines.md             口吻样例
-│     │  └─ user.md              关于主人的设定
-│     ├─ core.json               核心档案：身份、边界、说话习惯
-│     ├─ style.md                表达层（演化提案只落这里）
+│     │  └─ lines.md             硬线：绝对不做的事（进注入，200 字节）
+│     ├─ core.json               核心档案预留位（当前没被读取）
+│     ├─ style.md                表达层（演化提案只落这里，进注入，160 字节）
 │     ├─ entities\
 │     │  ├─ people\person_x.json 她对这个人的认识：素描、weight、first_met、身份描述原文
 │     │  └─ groups\qq_123456.json 她对这个地方的印象：平台/id、name、feature、topics、members

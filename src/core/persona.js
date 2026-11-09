@@ -77,7 +77,6 @@ export function createPersona(root, id, name = id, { from = null } = {}) {
   const template = {
     self: () => T.selfMd(name),
     lines: () => T.linesMd(),
-    user: () => T.userMd(),
     style: () => T.styleMd(),
     globalRule: () => JSON.stringify(T.globalRuleJson(), null, 2) + '\n',
   }
@@ -90,7 +89,6 @@ export function createPersona(root, id, name = id, { from = null } = {}) {
     const copies = [
       [src.self, pp.self],
       [src.lines, pp.lines],
-      [src.user, pp.user],
       [src.style, pp.style],
       [src.globalRule, pp.globalRule],
     ]

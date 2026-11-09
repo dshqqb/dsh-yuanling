@@ -65,7 +65,9 @@ export function doctor(root, { fast = false, appDir } = {}) {
       const missing = m.personas.filter((p) => !isDir(path.join(root, P.personas, p.id))).map((p) => p.id)
       if (missing.length) return { status: 'fail', detail: { missing } }
       const active = personaPaths(m.active)
-      const required = [active.self, active.lines, active.user, active.core]
+      // 只查"真的有一份底稿必须存在"的那几个。`user.md` 已废弃（2026-11-09），
+      // `core.json` 目前没人读——把它们列进必检项，等于保证全新数据目录体检不过。
+      const required = [active.self, active.lines, active.core]
       const absent = required.filter((rel) => !exists(path.join(root, rel)))
       if (absent.length) return { status: 'fail', detail: { missing_files: absent } }
       return { status: 'pass', detail: { checked: required.length } }

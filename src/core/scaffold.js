@@ -64,7 +64,6 @@ export function fileList({ personaId, name, now }) {
     [pp.manifest, () => JSON.stringify(T.personaJson({ id: personaId, name, now }), null, 2) + '\n'],
     [pp.self, () => T.selfMd(name)],
     [pp.lines, () => T.linesMd()],
-    [pp.user, () => T.userMd()],
     [pp.core, () => JSON.stringify(T.coreJson(), null, 2) + '\n'],
     [pp.style, () => T.styleMd()],
     [pp.globalRule, () => JSON.stringify(T.globalRuleJson(), null, 2) + '\n'],

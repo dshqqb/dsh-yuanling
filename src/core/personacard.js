@@ -6,11 +6,12 @@
 //   ② 每次写都走 `writeTracked`：带原因、进版本历史、能回滚。
 //   ③ 保存是**原位替换**（见 mdtext.js）：没动过的段落一个字节都不重写。
 //
-// 四份底稿的生效面（2026-11-09 定，Q2=A）：
+// 四份底稿的生效面（2026-11-09 定，Q2=A / Q3=A）：
 //   · `SELF.md`     → `[骨架] [说话] [在乎]`（三段，各带预算）
 //   · `lines.md`    → `[硬线]` 200 字节。guardrails.json 是代码在拦、她看不见，这段是让她知道边界
 //   · `style.md`    → `[习惯]` 160 字节。提案学到的说话习惯；不注入的话采纳提案等于什么都没发生
-//   · `user.md`     → **不进上下文**。它和"记忆 + 人物卡"是同一类东西的第三份，接进来只会三处打架
+//   · `persona/user.md`（"用户画像"）**已废弃并删掉了**：它从未被任何代码读写，
+//     而"关于你"这件事由**记忆事实 + 人物卡**覆盖。老数据目录里可能还留着那份文件，我们不删它。
 //   · `core.json`   → **没人读**，纯死数据。所以卡上不出现它——不留没有作用的开关。
 import fs from 'node:fs'
 import path from 'node:path'
@@ -57,15 +58,6 @@ export const CARD_FILES = [
     tag: '[习惯]',
     budget: EXPRESSION_BYTES,
     note: '她学到的说话习惯。采纳的提案写在这里，会进上下文。注意：回滚某条提案会把整个文件退回应用前那一版，手改也会一起被覆盖。',
-  },
-  {
-    key: 'user',
-    label: '用户画像',
-    path: (pid) => personaPaths(pid).user,
-    editable: false,
-    tag: null,
-    budget: null,
-    note: '关于你稳定成立的事。**不进上下文**——它和"记忆 + 人物卡"是同一类东西的第三份，留着当人给自己看的备注。',
   },
 ]
 
@@ -147,7 +139,7 @@ function describeFile(root, pid, spec, injected) {
       : [],
     hasSections: Boolean(parsed?.hasSections),
     title: parsed?.title ?? '',
-    // 原文也给出去：切不出小节的文件（lines.md / style.md / user.md）在页面上按整篇展示
+    // 原文也给出去：切不出小节的文件（lines.md / style.md）在页面上按整篇展示
     text: text ?? '',
     // 整篇的指纹：保存时用它判断"你打开之后文件有没有被别人改过"
     expect: text === null ? null : textSha256(text),
@@ -206,7 +198,7 @@ export function readCard(root, pid) {
  * 保存一份底稿（内部实现，不校验批量）。
  *
  * @param {object} opts
- * @param {'self'|'lines'|'style'|'user'} opts.file
+ * @param {'self'|'lines'|'style'} opts.file
  * @param {Array<{title:string, body:string}>} [opts.sections] 分节保存
  * @param {string} [opts.text] 整篇保存
  * @param {string} [opts.expect] 打开时的指纹；对不上就拒绝（409 语义）

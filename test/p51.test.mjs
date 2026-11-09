@@ -18,6 +18,8 @@ import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from '../
 import { contextFor } from '../src/core/memory.js'
 import { createPersona } from '../src/core/persona.js'
 import { readPurposes, writePurposes } from '../src/core/purposes.js'
+import { appendRecord, listChannels } from '../src/core/raw.js'
+import { localIso } from '../src/core/fsx.js'
 import { history } from '../src/core/version.js'
 import { textSha256 } from '../src/core/fsx.js'
 
@@ -140,18 +142,16 @@ test('replaceTitle：换名字但保住「· 骨架」后缀', () => {
 
 // ── readCard / saveCardFile ───────────────────────────────────────────
 
-test('readCard：四个文件都在，user.md 是唯一不进上下文的那个', () => {
+test('readCard：三份底稿都在，且全部可编辑（user.md 已废弃）', () => {
   const { card, personas } = readCard(root, PID)
   assert.equal(personas.length, 1)
   assert.equal(personas[0].active, true)
   const byKey = Object.fromEntries(card.files.map((f) => [f.key, f]))
-  assert.deepEqual(Object.keys(byKey).sort(), ['lines', 'self', 'style', 'user'])
+  assert.deepEqual(Object.keys(byKey).sort(), ['lines', 'self', 'style'])
   assert.equal(byKey.self.injected, true)
-  // Q2=A：硬线与表达层接进注入了；用户画像不接（和"记忆 + 人物卡"重复）
+  // Q2=A：硬线与表达层接进注入了
   assert.equal(byKey.lines.injected, true)
   assert.equal(byKey.style.injected, true)
-  assert.equal(byKey.user.injected, false)
-  assert.equal(byKey.user.editable, false, '不进上下文的文件不给编辑入口')
 })
 
 test('readCard：注入实测和真注入同源（[骨架] 里有名字）', () => {
@@ -161,14 +161,13 @@ test('readCard：注入实测和真注入同源（[骨架] 里有名字）', () 
   assert.match(card.injected[0], /原灵/)
 })
 
-test('注入：硬线进 [硬线]、表达层进 [习惯]、用户画像不进', () => {
+test('注入：硬线进 [硬线]、表达层进 [习惯]', () => {
   // 表达层平时由提案写入；这里手写一条，等于模拟"提案采纳之后她真的读得到"
   fs.writeFileSync(path.join(root, personaPaths(PID).style), '# 表达层\n\n- 不用颜文字\n', 'utf8')
 
   const ctx = contextFor(root, PID, { channel: 'private:10001', preview: true })
   assert.match(ctx, /\[硬线\] /)
   assert.match(ctx, /\[习惯\] 不用颜文字/)
-  assert.doesNotMatch(ctx, /\[用户画像\]/)
   // 硬线是"绝对不做"，必须排在记忆前面（记忆先被裁，硬线不该被挤掉）
   assert.ok(ctx.indexOf('[硬线]') < ctx.indexOf('[索引]'))
 })
@@ -244,7 +243,8 @@ test('saveCardFile：不认识的文件名直接拒，不猜', () => {
 })
 
 test('saveCardFile：不进上下文的文件不给编辑入口', () => {
-  assert.throws(() => saveCardFile(root, PID, { file: 'user', text: 'x' }), /不提供编辑入口/)
+  // user.md 已经整个废弃（不再是卡上的一员），但仍然不许从这个入口被写
+  assert.throws(() => saveCardFile(root, PID, { file: 'user', text: 'x' }), /不认识的文件/)
 })
 
 test('saveCardFiles：一份指纹过期，整批都不写（不留半截状态）', () => {
@@ -313,7 +313,7 @@ test('GET /api/persona：给清单也给卡', async () => {
   assert.equal(d.ok, true)
   assert.equal(d.active, PID)
   assert.equal(d.card.id, PID)
-  assert.ok(d.card.files.length === 4)
+  assert.ok(d.card.files.length === 3)
 })
 
 test('POST /api/persona/save：保存后读回来是新内容', async () => {
@@ -396,8 +396,39 @@ test('GET /api/card：连着看两次预览，账本一个字节都不动', asyn
   assert.equal(after.items[0].status, 'open')
 })
 
-test('GET /api/motive：给五股劲和账本，且读页面不写盘', async () => {
-  const p = path.join(root, personaPaths(PID).purposes)
+// ── 注入预览的频道 ────────────────────────────────────────────────────
+
+test('listChannels：从原始层数出真实频道（注入预览只让人挑存在的）', () => {
+  const ptr = appendRecord(root, {
+    source: 'qq',
+    acct: '10001',
+    channel: 'group:123555',
+    actor: { kind: 'member', id: '10002', name: '群友' },
+    role: 'user',
+    text: '群里说一句',
+    ts: localIso(),
+  })
+  assert.ok(ptr?.id)
+
+  const list = listChannels(root, { days: 30 })
+  const g = list.find((c) => c.channel === 'group:123555')
+  assert.ok(g, '刚写进去的群聊频道应该被数出来')
+  assert.ok(g.messages >= 1)
+  // 排序：最近活动的在前
+  for (let i = 1; i < list.length; i += 1) {
+    assert.ok(String(list[i - 1].lastAt) >= String(list[i].lastAt))
+  }
+})
+
+test('GET /api/channels：返回频道清单（手打频道名打错了看不出来，所以只列真的）', async () => {
+  const d = await get('/api/channels?days=90')
+  assert.equal(d.ok, true)
+  assert.ok(Array.isArray(d.channels))
+  assert.ok(d.channels.some((c) => c.channel === 'group:123555'))
+  assert.ok(d.channels.every((c) => /^(private|group):/.test(c.channel)))
+})
+
+test('GET /api/motive：给五股劲和账本，且读页面不写盘', async () => {  const p = path.join(root, personaPaths(PID).purposes)
   const before = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null
 
   const d = await get('/api/motive')

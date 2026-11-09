@@ -347,12 +347,56 @@ async function loadStatus() {
   kv('切换人格', '在「人格 → 概况」里')
 }
 
+/**
+ * 注入预览的频道选择。
+ *
+ * 频道决定三件**只跟这个会话有关**的事：当前群卡（群聊才有）、在场人物卡（这一轮谁在场）、
+ * 以及按频道叠加的规则。不选频道 = 通用预览：没有群卡、没有人物卡。
+ *
+ * 为什么是下拉而不是输入框：手打频道名打错了，结果和"没有这个频道"长得一模一样
+ * ——都是同一份通用预览，人看不出自己输错了。所以只列原始层里**真实出现过**的频道。
+ */
+const CHANNEL_LABELS = { private: '私聊', group: '群聊' }
+
+async function loadCardChannels() {
+  const sel = $('card-channel')
+  const hint = $('card-channel-hint')
+  let channels = []
+  try {
+    const d = await api('/api/channels?days=90')
+    channels = d.channels ?? []
+  } catch {
+    channels = []
+  }
+
+  const keep = sel.value
+  sel.innerHTML = ''
+  const none = document.createElement('option')
+  none.value = ''
+  none.textContent = '（不带频道：通用预览）'
+  sel.append(none)
+
+  for (const c of channels) {
+    const o = document.createElement('option')
+    o.value = c.channel
+    o.textContent = `${CHANNEL_LABELS[c.channel.split(':')[0]] ?? c.channel} · ${c.channel}（${c.messages} 条）`
+    sel.append(o)
+  }
+
+  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep
+
+  hint.textContent = channels.length
+    ? `频道决定三件事：当前群体卡、这一轮在场的人物卡、按频道叠加的规则。共 ${channels.length} 个真实频道（近 90 天）。`
+    : '原始层里还没有任何频道记录，所以只能看通用预览：没有群体卡、没有人物卡。等收到第一条真实消息后，这里会出现具体频道。'
+  return channels.length
+}
+
 async function loadCard() {
-  const ch = $('card-channel').value.trim()
+  const ch = $('card-channel').value
   const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
   const d = await api(`/api/card${q}`)
   $('card-out').textContent = d.text || '（空）'
-  $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.channel ? ` · 频道 ${d.channel}` : ''}`
+  $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.channel ? ` · 频道 ${d.channel}` : ' · 通用（不含群体与人物卡）'}`
 }
 
 // ── 人格 → 概况 ────────────────────────────────────────────────────────
@@ -362,8 +406,9 @@ async function loadCard() {
 // "她真正读到的"没有单独一列：每一节标题右边直接写"她会读到：…"，因为能改的东西
 // 和它的效果必须挨着——分成两页，人就得来回对，对两次就懒得对了。
 //
-// 底稿的生效面（Q2=A）：SELF.md 三段 + lines.md（[硬线]）+ style.md（[习惯]）进上下文；
-// user.md 不进（它和"记忆 + 人物卡"重复），所以只读、收在页尾的 details 里。
+// 底稿的生效面（Q2=A / Q3=A）：SELF.md 三段 + lines.md（[硬线]）+ style.md（[习惯]）进上下文。
+// `persona/user.md`（"用户画像"）已经整个删掉了——它从来没被任何代码读写，
+// 而"关于你"这件事由**记忆事实 + 人物卡**覆盖，不需要第三份。
 const PERSONA_FILE_HINT = {
   self: '三段进上下文；其余段落只给人看。',
   lines: '会整段进上下文——代码在拦的那条（guardrails.json）她看不见，这段是让她知道边界。',
@@ -465,8 +510,6 @@ async function loadOverview() {
 
   const box = $('persona-files')
   box.innerHTML = ''
-  const extraBody = $('persona-extra-body')
-  extraBody.innerHTML = ''
 
   if (!card) {
     $('persona-active-tag').textContent = '还没有人格'
@@ -493,19 +536,11 @@ async function loadOverview() {
   nameCard.append(row)
   box.append(nameCard)
 
-  for (const f of card.files) {
-    if (!f.editable) continue // user.md：不进上下文，收到页尾 details 里
-    box.append(fileBlock(f, form))
-  }
-
-  const extra = card.files.find((f) => !f.editable)
-  if (extra) {
-    extraBody.append(el('div', 'muted small', PERSONA_FILE_HINT[extra.key] ?? extra.note))
-    extraBody.append(el('pre', 'code', extra.text || '（文件不存在）'))
-  }
+  for (const f of card.files) box.append(fileBlock(f, form))
 
   // 卡下面就是注入预览。它是 preview：算得出她会读到什么，但**不改她的状态**
   // （不记 offered、不挖新的、不判过期）——翻几遍管理台不该把一件事翻成"她不想提"。
+  await loadCardChannels().catch(() => {})
   await loadCard().catch(() => {})
 }
 
@@ -1063,12 +1098,195 @@ async function saveGroup() {
   await loadGroups()
 }
 
+// ── 框架 → 规则 ────────────────────────────────────────────────────────
+//
+// 以前这页只有一个频道输入框 + 一个「查看」按钮，下面是整段 JSON。
+// JSON 能看懂的人不需要这页；需要这页的人看不懂 JSON。所以改成按字段渲染的真表单：
+// 每一项有中文标签、单位、范围、以及**它到底有没有在生效**。
+//
+// 那个频道选择器的作用不是"搜索"：规则是三层继承的（全局 → 群 → 私聊），
+// 换个频道就换一条继承链，页面显示的"有效值"跟着变。但**保存只写全局层**——
+// 把合并结果压平写回某一层，等于把继承悄悄改掉。
+const RULE_INPUTS = { fields: new Map() }
+
+function ruleDirty() {
+  const msg = $('rule-msg')
+  msg.textContent = '有改动，还没保存'
+  msg.classList.add('dirty')
+}
+
+function makeRuleInput(f, value) {
+  if (f.type === 'bool') {
+    const wrap = el('label', 'switch-row')
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.checked = value !== false && value !== 'false'
+    cb.addEventListener('change', ruleDirty)
+    const track = el('span', 'switch-track')
+    track.append(el('span', 'switch-knob'))
+    wrap.append(cb, track, el('span', 'small', cb.checked ? '开' : '关'))
+    cb.addEventListener('change', () => {
+      wrap.lastChild.textContent = cb.checked ? '开' : '关'
+    })
+    return { node: wrap, get: () => cb.checked }
+  }
+
+  if (f.type === 'enum') {
+    const cb = document.createElement('select')
+    for (const [v, label] of f.options ?? []) {
+      const o = document.createElement('option')
+      o.value = v
+      o.textContent = label
+      if (String(value) === v) o.selected = true
+      cb.append(o)
+    }
+    cb.addEventListener('change', ruleDirty)
+    return { node: cb, get: () => cb.value }
+  }
+
+  if (f.type === 'int') {
+    const inp = document.createElement('input')
+    inp.type = 'number'
+    if (f.min !== null) inp.min = String(f.min)
+    if (f.max !== null) inp.max = String(f.max)
+    inp.value = String(value ?? '')
+    inp.addEventListener('input', ruleDirty)
+    return { node: inp, get: () => Number(inp.value) }
+  }
+
+  // ranges / list：都当"用逗号分隔的一串"处理，人不必记 JSON 数组语法
+  const inp = document.createElement('input')
+  inp.value = Array.isArray(value) ? value.join('，') : String(value ?? '')
+  if (f.hint) inp.placeholder = f.hint
+  inp.addEventListener('input', ruleDirty)
+  return { node: inp, get: () => inp.value }
+}
+
+function ruleGroup(g, own, effective) {
+  const card = el('div', 'card')
+  const head = el('div', 'card-head')
+  head.append(el('h3', undefined, g.group))
+  head.append(el('span', g.honored ? 'tag ok' : 'tag warn', g.honored ? '生效' : '未生效'))
+  card.append(head)
+  card.append(el('div', 'muted small', g.desc))
+  if (!g.honored && g.why) {
+    card.append(el('div', 'muted small', `为什么标「未生效」：${g.why}`))
+  }
+
+  for (const f of g.fields) {
+    const row = el('div', 'rule-row')
+    const label = el('div', 'rule-label')
+    label.append(el('span', f.label))
+    if (f.hint) label.append(el('span', 'muted small', f.hint))
+
+    const pick = (o) => f.path.split('.').reduce((cur, k) => (cur && typeof cur === 'object' ? cur[k] : undefined), o)
+    const ownVal = pick(own)
+    const effVal = pick(effective ?? {})
+    const ctl = makeRuleInput(f, ownVal ?? f.def)
+    row.append(label, ctl.node)
+
+    // 选了频道之后，"这一层写的"和"实际生效的"可能不是一回事。
+    // 不把差异说出来，人会以为自己写进去的被忽略了（其实是被更具体的层覆盖了）。
+    if (effVal !== undefined && JSON.stringify(effVal) !== JSON.stringify(ownVal ?? f.def)) {
+      const shown = Array.isArray(effVal) ? effVal.join('、') || '（空）' : String(effVal)
+      row.append(el('div', 'muted small rule-eff', `当前有效值：${shown}（被更具体的层覆盖）`))
+    }
+
+    // 键是"点了保存才会写"的那个字段；值是一个取值函数
+    RULE_INPUTS.fields.set(f.path, { get: ctl.get, def: f.def })
+  }
+  return card
+}
+
 async function loadRules() {
-  const ch = $('rule-channel').value.trim()
+  await loadRuleChannels()
+
+  const ch = $('rule-channel').value
   const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
   const d = await api(`/api/rules${q}`)
-  $('rule-out').textContent = JSON.stringify(d.rules, null, 2)
-  $('rule-src').textContent = d.sources.length ? `来源：${d.sources.join(' → ')}` : '（无规则文件，全部取默认）'
+
+  $('rule-src').textContent = d.sources.length
+    ? `这条继承链上实际读了：${d.sources.map((s) => s.split('/').slice(-1)[0] || s).join(' → ')}`
+    : '（没有任何规则文件，全部取默认值）'
+
+  const box = $('rule-form')
+  box.innerHTML = ''
+  RULE_INPUTS.fields.clear()
+  $('rule-msg').textContent = '改了不点保存不算数'
+  $('rule-msg').classList.remove('dirty')
+
+  for (const g of d.spec ?? []) box.append(ruleGroup(g, d.own ?? {}, d.rules ?? {}))
+
+  // 根级硬线：只读。它不是"规则"，是底线——页面上必须有，但不能从这里改。
+  const gbox = $('rule-guardrails')
+  gbox.innerHTML = ''
+  const gr = d.guardrails ?? {}
+  const rows = [
+    ['永不入库（连计数都不留）', gr.never_record],
+    ['永不注入', gr.never_inject],
+    ['永不执行的动作', gr.never_do],
+  ]
+  for (const [label, list] of rows) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    body.append(el('div', 't', label))
+    body.append(el('div', 's', Array.isArray(list) && list.length ? list.join('、') : '（空）'))
+    n.append(body)
+    gbox.append(n)
+  }
+}
+
+async function saveRules() {
+  const msg = $('rule-msg')
+  const btn = $('rule-save')
+  btn.disabled = true
+  msg.textContent = '保存中…'
+
+  const patch = {}
+  for (const [pathKey, io] of RULE_INPUTS.fields) patch[pathKey] = io.get()
+
+  try {
+    const r = await postApi('/api/rules', { patch, channel: $('rule-channel').value || null })
+    await loadRules()
+    msg.textContent = r.changed
+      ? `✓ 已保存${r.dropped?.length ? `（${r.dropped.length} 个未知字段被忽略：${r.dropped.join('、')}）` : ''}`
+      : '没有改动'
+  } catch (err) {
+    msg.textContent = `保存失败：${err.message}`
+    msg.classList.add('dirty')
+  } finally {
+    btn.disabled = false
+  }
+}
+
+/** 规则页的频道下拉和注入预览共用一份清单，但用途不同：这里选的是"按哪条继承链算有效值"。 */
+async function loadRuleChannels() {
+  const sel = $('rule-channel')
+  let channels = []
+  try {
+    channels = (await api('/api/channels?days=90')).channels ?? []
+  } catch {
+    channels = []
+  }
+  const keep = sel.value
+  sel.innerHTML = ''
+
+  const none = document.createElement('option')
+  none.value = ''
+  none.textContent = '（只看全局层）'
+  sel.append(none)
+
+  for (const c of channels) {
+    const o = document.createElement('option')
+    o.value = c.channel
+    o.textContent = `${CHANNEL_LABELS[c.channel.split(':')[0]] ?? c.channel} · ${c.channel}`
+    sel.append(o)
+  }
+  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep
+
+  $('rule-channel-hint').textContent = channels.length
+    ? '换个频道，页面显示的"有效值"就换一条继承链（群/私聊的覆盖层目前只能改文件）。'
+    : '原始层里还没有任何频道记录，所以现在只能看全局层。'
 }
 
 async function loadUsage() {
@@ -2551,13 +2769,19 @@ $('mem-view').addEventListener('click', (e) => {
 })
 
 
-$('card-load').addEventListener('click', () => loadCard().catch(() => {}))
-$('card-channel').addEventListener('keydown', (e) => e.key === 'Enter' && loadCard().catch(() => {}))
+$('card-load').addEventListener('click', () => loadCard().catch((err) => showPageError(err)))
+$('card-channel').addEventListener('change', () => loadCard().catch((err) => showPageError(err)))
 $('mem-go').addEventListener('click', () => loadMemory().catch(() => {}))
 $('mem-q').addEventListener('keydown', (e) => e.key === 'Enter' && loadMemory().catch(() => {}))
 $('mem-all').addEventListener('change', () => loadMemory().catch(() => {}))
-$('rule-load').addEventListener('click', () => loadRules().catch(() => {}))
-$('rule-channel').addEventListener('keydown', (e) => e.key === 'Enter' && loadRules().catch(() => {}))
+$('rule-channel').addEventListener('change', () => loadRules().catch((err) => showPageError(err)))
+$('rule-save').addEventListener('click', () => {
+  saveRules().catch((err) => {
+    $('rule-msg').textContent = `保存失败：${err.message}`
+    $('rule-save').disabled = false
+  })
+})
+$('rule-reload').addEventListener('click', () => loadRules().catch((err) => showPageError(err)))
 
 $('proposal-scan').addEventListener('click', async () => {
   try {

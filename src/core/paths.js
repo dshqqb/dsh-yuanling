@@ -175,7 +175,8 @@ export function personaPaths(id) {
     persona: `${base}/persona`,
     self: `${base}/persona/SELF.md`,
     lines: `${base}/persona/lines.md`,
-    user: `${base}/persona/user.md`,
+    // 曾经的 `persona/user.md`（"用户画像"）已废弃（2026-11-09）：它从未被任何代码读写，
+    // 而"关于你"这件事由记忆事实 + 人物卡覆盖。老数据目录里可能还留着那份文件，我们不删它。
     core: `${base}/core.json`,
     style: `${base}/style.md`,
     interests: `${base}/self/interests.json`,

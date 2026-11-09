@@ -6,11 +6,11 @@ import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from './p
 import { readDrives, DRIVE_NEEDS, DRIVE_BASE, DRIVE_CAP } from './drives.js'
 import { readPurposes, writePurposes, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED, SELECT_RECENT_MS } from './purposes.js'
 import { healthReport } from './inbox.js'
-import { loadEffectiveRules, recentRefusals } from './rules.js'
+import { loadEffectiveRules, recentRefusals, rulePaths, ruleFieldSpec, writeGlobalRules, loadGuardrails } from './rules.js'
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
 import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
-import { listDays, readDay, today } from './raw.js'
+import { listDays, readDay, today, listChannels } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -265,6 +265,15 @@ export function handleApi(root, url) {
     }
   }
 
+  // 原始层里出现过的频道：注入预览要能挑一个真实存在的，而不是让人手打（打错了看不出）
+  if (pathname === '/api/channels') {
+    const days = Number(searchParams.get('days') ?? 30)
+    return {
+      status: 200,
+      body: { ok: true, days, channels: listChannels(root, { days: Number.isFinite(days) ? days : 30 }) },
+    }
+  }
+
   if (pathname === '/api/card') {
     const channel = searchParams.get('channel') || null
     const budgetParam = searchParams.get('budget')
@@ -336,7 +345,24 @@ export function handleApi(root, url) {
   if (pathname === '/api/rules') {
     const channel = searchParams.get('channel') || null
     const { rules, sources, missing } = loadEffectiveRules(root, pid, { channel })
-    return { status: 200, body: { ok: true, channel, rules, sources, missing } }
+    // own = 当前人格 global.json 里**自己写的那一份**（不含继承），表单要用它回填。
+    // 直接把合并后的有效值塞进表单是错的：那样群/私聊覆盖会被并进全局层，等于压平继承。
+    const ownPath = rulePaths(root, pid).global
+    const own = readJsonFile(path.join(root, ownPath)) ?? {}
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        channel,
+        rules,
+        sources,
+        missing,
+        own,
+        ownPath,
+        spec: ruleFieldSpec(),
+        guardrails: loadGuardrails(root),
+      },
+    }
   }
 
   if (pathname === '/api/refusals') {
@@ -521,6 +547,17 @@ export function handleApiWrite(root, url, body) {
       if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
       const r = switchPersona(root, id)
       return { status: 200, body: { ok: true, ...r, ...readCard(root, readMarker(root)?.active ?? null) } }
+    }
+
+    if (pathname === '/api/rules') {
+      // 只写当前人格的 global.json（白名单字段见 RULE_FIELDS）。
+      // 群 / 私聊的覆盖层故意不做页面编辑：那三层是"越具体越优先"的继承，
+      // 在页面上压平写回某一层，等于把继承悄悄改掉。
+      const r = writeGlobalRules(root, pid, b.patch ?? {}, { reason: '管理台改规则（人格全局层）' })
+      return {
+        status: 200,
+        body: { ok: true, ...r, ...loadEffectiveRules(root, pid, { channel: b.channel || null }) },
+      }
     }
 
     if (pathname === '/api/purpose/close') {

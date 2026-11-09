@@ -63,6 +63,7 @@ button, input, textarea { font: inherit; color: inherit; }
 /* ── 顶栏 ───────────────────────────────────────────────────────────── */
 
 .app { display: flex; flex-direction: column; min-height: 100%; }
+/* 下面「布局」一节会把它覆盖成吃满视口 —— 那一版才是准的，这行只为老式浏览器兜底 */
 
 .topbar {
   display: flex;
@@ -119,6 +120,14 @@ button, input, textarea { font: inherit; color: inherit; }
 .dot.bad { background: var(--danger); box-shadow: 0 0 0 3px rgba(240, 68, 56, 0.16); }
 
 /* ── 布局 ───────────────────────────────────────────────────────────── */
+/*
+ * 顶栏固定、左栏固定、只有主区滚动。
+ *
+ * 为什么不用 `position: sticky` 贴在侧栏上：sticky 要生效，它的容器本身就不能滚。
+ * 现在整页跟着内容一起滚，侧栏自然被顶上去。改成"外壳吃满视口、主区自己滚"之后，
+ * 侧栏就站在原地了——而且菜单很长（模块多的时候）时，侧栏自己也能滚。
+ */
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 .workspace { display: flex; flex: 1; min-height: 0; }
 
@@ -127,6 +136,8 @@ button, input, textarea { font: inherit; color: inherit; }
   flex: 0 0 auto;
   display: flex; flex-direction: column;
   padding: 4px 12px 16px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .menu { display: flex; flex-direction: column; gap: 2px; }
@@ -146,7 +157,8 @@ button, input, textarea { font: inherit; color: inherit; }
 .side-persona { font-size: 13px; font-weight: 600; }
 .side-root { margin-top: 2px; word-break: break-all; }
 
-.main { flex: 1; min-width: 0; padding: 4px 28px 40px 8px; }
+/* 主区自己滚：左栏不动，内容再长也只在这一块里滚 */
+.main { flex: 1; min-width: 0; padding: 4px 28px 40px 8px; overflow-y: auto; overscroll-behavior: contain; }
 
 .page-head { display: flex; align-items: baseline; gap: 14px; margin: 6px 0 18px; flex-wrap: wrap; }
 .page-head h2 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: 0.2px; }
@@ -245,6 +257,33 @@ input:not([type='checkbox']), textarea {
 input:not([type='checkbox']):focus, textarea:focus { border-color: var(--accent); }
 textarea { width: 100%; min-width: 0; resize: vertical; line-height: 1.7; }
 
+/*
+ * 下拉：浏览器默认的 select 在这套圆角浅底界面里非常突兀（灰底、直角、系统箭头）。
+ * 这里整套重画：和输入框同底色同圆角，箭头用内置 SVG，聚焦时和输入框同一个高亮。
+ */
+select {
+  font: inherit; color: var(--text); cursor: pointer; outline: none;
+  background-color: var(--field);
+  border: 1px solid transparent; border-radius: 12px;
+  padding: 9px 36px 9px 12px;
+  min-width: 220px; max-width: 100%;
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%238b8b93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 2l4.5 4.5L10.5 2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  background-size: 12px 8px;
+  transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
+  text-overflow: ellipsis;
+}
+select:hover { border-color: var(--line); }
+select:focus-visible, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 128, 255, 0.15); }
+select:disabled { opacity: 0.55; cursor: not-allowed; }
+/* 展开后的列表项：Windows 上不给 option 上色会变成系统白底黑字，和深色主题打架 */
+select option, select optgroup { background: var(--card); color: var(--text); }
+
+/* 数字框窄一点：规则里的数字都是一两位数，撑成 240px 会以为是文本框 */
+input[type='number'] { min-width: 100px; width: 120px; }
+
 /* 顶栏搜索：胶囊本身就是输入框，别再叠一层底色（否则会出现"框里还有个框"） */
 .search input:not([type='checkbox']) {
   background: transparent;
@@ -318,6 +357,21 @@ textarea { width: 100%; min-width: 0; resize: vertical; line-height: 1.7; }
 
 input.narrow { min-width: 0; width: 110px; }
 
+/* ── 规则页：一行一个字段 ───────────────────────────────────────────── */
+/*
+ * 左标签右控件，行与行之间一条极淡的分隔线。规则项比较多（16 个），
+ * 不加分隔会糊成一片；用卡片阴影分反而不划算——那是"每项都重要"的错觉。
+ */
+.rule-row {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.rule-row:first-of-type { border-top: 0; }
+.rule-label { display: flex; flex-direction: column; gap: 2px; flex: 1 1 240px; min-width: 0; }
+.rule-label > span:first-child { font-size: 13px; }
+.rule-eff { flex: 1 1 100%; margin-left: 0; }
+
 /* ── 人格卡：分节编辑 ───────────────────────────────────────────────── */
 /*
  * 一节一块：标题行 + 多行框。分节的理由不是好看——保存时只替换改过的那一节，
@@ -352,11 +406,6 @@ input.narrow { min-width: 0; width: 110px; }
 .save-bar { border: 1px solid var(--line); }
 .save-bar .field-row { margin-bottom: 0; }
 #persona-save-msg.dirty { color: var(--warn); }
-
-/* 不进上下文的那份文件：折叠起来，但不藏 */
-details.persona-extra summary { cursor: pointer; font-size: 13px; }
-details.persona-extra[open] summary { margin-bottom: 12px; }
-details.persona-extra pre { margin: 8px 0 0; }
 
 /* 弹窗里的表单 */
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
