@@ -17,7 +17,7 @@ import { localIso } from '../src/core/fsx.js'
 import { addFact } from '../src/core/memory.js'
 import { personaPaths } from '../src/core/paths.js'
 import { createPersona } from '../src/core/persona.js'
-import { listProposals } from '../src/core/proposals.js'
+import { listProposals, evolvePolicy } from '../src/core/proposals.js'
 import { readStyle } from '../src/core/style.js'
 import { writeGlobalRules } from '../src/core/rules.js'
 import { evolveOnce, startEvolution } from '../src/core/evolve.js'
@@ -228,4 +228,60 @@ test('startEvolution：stop() 之后不会再跑', async () => {
   await new Promise((r) => setTimeout(r, 120))
   assert.equal(runs, after, '停掉之后不该再跑')
   assert.ok(after >= 1, '停之前至少跑过一次')
+})
+
+// ── Q10：两个"看起来在、其实不在"的开关 ────────────────────────────────
+
+test('persona.evolve 是真的闸门：关掉之后一条提案都不长', () => {
+  const root = tmpRoot()
+  writeGlobalRules(root, PID, { 'persona.evolve': false })
+  seedRepeated(root, { text: '别用颜文字' })
+
+  const r = evolveOnce(root)
+  assert.equal(r.created, 0, '关掉演化就不该扫描')
+  assert.equal(r.personas[0].skipped, 'evolve=false', '要如实说"跳过"，不是"跑了但没结果"')
+  assert.equal(listProposals(root, PID).length, 0)
+})
+
+test('persona.evolve 关掉后，已存在的提案仍会到期采纳（不冻住积压）', () => {
+  const root = tmpRoot()
+  seedRepeated(root, { text: '别用颜文字' })
+  evolveOnce(root) // 先生成一条
+  assert.equal(listProposals(root, PID).length, 1)
+
+  writeGlobalRules(root, PID, { 'persona.evolve': false })
+  const r = evolveOnce(root, { now: Date.now() + 5 * DAY })
+  assert.equal(r.created, 0, '不再扫新提案')
+  assert.equal(r.approved, 1, '但积压的提案该到期还是到期')
+})
+
+test('策略顺序：人格规则 > policy.json > 默认', () => {
+  const root = tmpRoot()
+  // policy.json 写一个很大的值
+  const policyPath = path.join(root, 'system', 'policy.json')
+  fs.writeFileSync(policyPath, JSON.stringify({ autoApproveDays: 30, dailyAutoLimit: 9 }), 'utf8')
+
+  // 人格规则写了 2 天 / 3 条：应该赢过 policy
+  writeGlobalRules(root, PID, { 'persona.auto_approve_days': 2, 'persona.daily_auto_limit': 3 })
+  let p = evolvePolicy(root, PID)
+  assert.equal(p.autoApproveDays, 2, '人格规则优先')
+  assert.equal(p.dailyLimit, 3, '人格规则优先')
+
+  // 人格规则里没写这两项时，才轮到 policy
+  fs.writeFileSync(path.join(root, personaPaths(PID).globalRule), JSON.stringify({ schema: 1, persona: {} }), 'utf8')
+  p = evolvePolicy(root, PID)
+  assert.equal(p.autoApproveDays, 30, '规则没写就用 policy')
+  assert.equal(p.dailyLimit, 9, '规则没写就用 policy')
+})
+
+test('手动扫描：演化关着时不长提案，但给出可读的理由', async () => {
+  const root = tmpRoot()
+  writeGlobalRules(root, PID, { 'persona.evolve': false })
+  seedRepeated(root, { text: '别用颜文字' })
+
+  const { mayEvolve } = await import('../src/core/proposals.js')
+  assert.equal(mayEvolve(root, PID), false)
+  // 底层 scan 也返回空（API 那层会把这句理由带给页面）
+  const { scan } = await import('../src/core/proposals.js')
+  assert.deepEqual(scan(root, PID), [])
 })

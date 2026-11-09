@@ -69,8 +69,14 @@ export const Config = z.object({
   consoleHost: z.string().default('127.0.0.1').description('监听地址。默认只允许回环；改成 0.0.0.0 必须同时打开 allowRemote。'),
   consolePort: z.number().default(17777).description('管理台端口（0 = 随机）。改动需重启。'),
   allowRemote: z.boolean().default(false).description('允许管理台监听非回环地址。打开前先想清楚：这是你的私人记忆。'),
-  autoApproveDays: z.number().default(3).description('提案无人理会几天后自动批准（默认 3 天）。'),
-  dailyAutoLimit: z.number().default(1).description('每天最多自动采纳几条提案（默认 1 条/天）。'),
+  autoApproveDays: z
+    .number()
+    .default(3)
+    .description('**兜底默认值**：提案等几天自动采纳。人格规则（人格 → 规则）写了就以那边为准。'),
+  dailyAutoLimit: z
+    .number()
+    .default(1)
+    .description('**兜底默认值**：每天最多自动采纳几条。人格规则写了就以那边为准。'),
   evolveEveryHours: z
     .number()
     .default(EVOLVE_EVERY_HOURS)

@@ -8,7 +8,7 @@ import { readPurposes, writePurposes, closePurpose, SELECT_MAX_HITS, SELECT_MAX_
 import { healthReport } from './inbox.js'
 import { loadEffectiveRules, recentRefusals, rulePaths, ruleFieldSpec, writeGlobalRules, loadGuardrails } from './rules.js'
 import { shield, unshield } from './shield.js'
-import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
+import { listProposals, approve, reject, rollback, scan as scanProposals, mayEvolve } from './proposals.js'
 import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
@@ -659,6 +659,19 @@ export function handleApiWrite(root, url, body) {
       const id = String(b.id ?? '')
       const action = String(b.action ?? '')
       if (action === 'scan') {
+        // 「允许演化」关掉 = 不扫描。手动点也一样，但要**说清为什么**——
+        // 点一下什么都没发生，比报错更让人困惑。
+        if (!mayEvolve(root, pid)) {
+          return {
+            status: 200,
+            body: {
+              ok: true,
+              created: [],
+              skipped: 'evolve=false',
+              message: '这个人的「允许演化」是关的（人格 → 规则 → 提案演化）。要扫描就先把它打开',
+            },
+          }
+        }
         // 阈值可以用请求覆盖，方便调试与演示；默认仍是 5 次 / 3 天
         const opts = {}
         if (Number(b.minRepeat) > 0) opts.minRepeat = Number(b.minRepeat)

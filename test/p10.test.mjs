@@ -11,8 +11,19 @@ import { localIso } from '../src/core/fsx.js'
 import { addFact, listEntries } from '../src/core/memory.js'
 import { scan, listProposals, findProposal, approve, reject, rollback, sweep, styleRel, readPolicy, writePolicy } from '../src/core/proposals.js'
 import { history } from '../src/core/version.js'
+import { personaPaths } from '../src/core/paths.js'
 
 const PID = 'yuanling'
+
+/**
+ * 让这一轮只看 `policy.json`。
+ *
+ * 2026-11-10 起取值顺序是**人格规则 > policy.json > 默认**：模板会给每个人格写上
+ * persona.* 四项，所以 policy 平时轮不到。要测 policy 本身，就把人格规则里那块去掉。
+ */
+function policyOnly(root) {
+  fs.writeFileSync(path.join(root, personaPaths(PID).globalRule), JSON.stringify({ schema: 1 }, null, 2), 'utf8')
+}
 
 function tmpRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p10-'))
@@ -224,9 +235,10 @@ test('sweep：默认 3 天到期（不是 7 天）', () => {
   assert.equal(sweep(root, PID, { now: daysAgo(2) }).approved.length, 1, '第 2 天应该到期')
 })
 
-test('policy：把每日上限改成 2，同一天可以批 2 条', () => {
+test('policy：把每日上限改成 2，同一天可以批 2 条（人格规则没写时才用 policy）', () => {
   const root = tmpRoot()
   writePolicy(root, { autoApproveDays: 3, dailyAutoLimit: 2 })
+  policyOnly(root)
   repeatClaim(root, { text: '别用颜文字' })
   repeatClaim(root, { text: '回话短一点' })
   scan(root, PID, { now: daysAgo(10) })
@@ -253,15 +265,33 @@ test('policy：每日配额按天重置', () => {
   assert.equal(second.approved.length, 1, '第二天配额重置，再批 1 条')
 })
 
-test('policy：把到期改成 1 天，已有提案立刻按新设置算', () => {
+test('policy：把到期改成 1 天，已有提案立刻按新设置算（人格规则没写时）', () => {
   const root = tmpRoot()
   writePolicy(root, { autoApproveDays: 1, dailyAutoLimit: 1 })
+  policyOnly(root)
   repeatClaim(root)
   scan(root, PID, { now: daysAgo(5) })
 
   const r = sweep(root, PID, { now: daysAgo(4) })
   assert.equal(r.approved.length, 1)
   assert.equal(r.days, 1)
+})
+
+test('人格规则优先于 policy.json（同一天上限）', () => {
+  const root = tmpRoot()
+  writePolicy(root, { autoApproveDays: 3, dailyAutoLimit: 5 })
+  // 人格规则写 1：应该只批 1 条
+  fs.writeFileSync(
+    path.join(root, personaPaths(PID).globalRule),
+    JSON.stringify({ schema: 1, persona: { daily_auto_limit: 1, auto_approve_days: 3 } }, null, 2),
+    'utf8',
+  )
+  repeatClaim(root, { text: '别用颜文字' })
+  repeatClaim(root, { text: '回话短一点' })
+  scan(root, PID, { now: daysAgo(10) })
+
+  const r = sweep(root, PID, { now: daysAgo(0) })
+  assert.equal(r.approved.length, 1, '人格规则说 1 条就 1 条，policy 的 5 不来插嘴')
 })
 
 test('proposal：否决后不再出现在待定列表里', () => {

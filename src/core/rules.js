@@ -248,7 +248,9 @@ export function canInject(root, text) {
 // 页面照着渲染，不在前端再抄一份（抄两份迟早对不上）。
 //
 // `honored` 是事实，不是期望：
-//   · persona.*  → proposals.js 真的读（自动采纳的开关与阈值）
+//   · persona.*  → proposals.js 真的读（自动采纳的开关与阈值）；取值顺序是
+//                  **人格规则 > 系统 policy.json > 代码默认**（2026-11-10 改的，以前 policy 优先，
+//                  导致规则页改完一重启就被设置页盖掉）
 //   · action.*   → 只有 CLI `yuanling rule check` 读；运行时没有代码执行（等 QQ 适配器）
 //   · recall.*   → checkRecall / checkRecallKind 没有任何调用者（死代码）
 //   · deny/allow → 只有 CLI 读
@@ -259,7 +261,7 @@ export const RULE_FIELDS = [
     desc: '她能不能自己长大：把反复出现的说法攒成提案，到期自动采纳。',
     honored: true,
     fields: [
-      { path: 'persona.evolve', label: '允许演化', type: 'bool', def: true, hint: '关掉就不再扫描新提案' },
+      { path: 'persona.evolve', label: '允许演化', type: 'bool', def: true, hint: '关掉之后定时任务与手动扫描都不再长新提案（已有提案仍会到期采纳）' },
       { path: 'persona.auto_adopt', label: '自动采纳', type: 'bool', def: true, hint: '关掉之后每条都要你手动点「采纳」' },
       { path: 'persona.auto_approve_days', label: '等几天才自动采纳', type: 'int', min: 0, max: 90, def: 3, hint: '0 = 立刻' },
       { path: 'persona.daily_auto_limit', label: '一天最多自动采纳', type: 'int', min: 0, max: 50, def: 1, hint: '防止她一天改自己十次' },

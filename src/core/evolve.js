@@ -11,7 +11,7 @@
 //   ③ 每次跑都留一条事件，否则"它到底跑没跑"没法查。
 //   ④ 采纳仍受 sweep 自己的闸门约束（auto_adopt=false 就整天不动；一天最多 daily_auto_limit 条）。
 import { readMarker } from './persona.js'
-import { scan, sweep } from './proposals.js'
+import { scan, sweep, mayEvolve } from './proposals.js'
 import { appendEvent } from './events.js'
 import { localIso } from './fsx.js'
 
@@ -42,8 +42,14 @@ export function evolveOnce(root, { now = Date.now() } = {}) {
     const row = { pid, created: [], approved: [], skipped: null, error: null }
 
     try {
-      const created = scan(root, pid, { now: iso })
-      row.created = (created ?? []).map((p) => p?.id ?? String(p))
+      // 「允许演化」= 真的闸门：关掉就整天不扫描（sweep 仍然跑——
+      // 已经存在的提案该到期还是到期，否则关掉演化会把她积压的申请单永远冻住）
+      if (!mayEvolve(root, pid)) {
+        row.skipped = 'evolve=false'
+      } else {
+        const created = scan(root, pid, { now: iso })
+        row.created = (created ?? []).map((p) => p?.id ?? String(p))
+      }
     } catch (err) {
       row.error = `scan: ${String(err?.message ?? err)}`
     }
@@ -51,7 +57,8 @@ export function evolveOnce(root, { now = Date.now() } = {}) {
     try {
       const r = sweep(root, pid, { now: iso })
       row.approved = r?.approved ?? []
-      row.skipped = r?.skipped ?? null
+      // 只有前面没写过跳过原因时才记 sweep 的（别把 evolve=false 冲掉）
+      if (!row.skipped && r?.skipped) row.skipped = r.skipped
     } catch (err) {
       row.error = row.error ? `${row.error}；sweep: ${String(err?.message ?? err)}` : `sweep: ${String(err?.message ?? err)}`
     }

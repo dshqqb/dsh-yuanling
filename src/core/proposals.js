@@ -14,7 +14,7 @@ import { exists, readJson, writeJsonAtomic, localIso, ulid, sha256 } from './fsx
 import { P } from './paths.js'
 import { writeTracked, history, snapshotCurrent, revertTo } from './version.js'
 import { listEntries, entryRel, EXPRESSION_BYTES } from './memory.js'
-import { loadEffectiveRules } from './rules.js'
+import { loadEffectiveRules, rulePaths } from './rules.js'
 
 export const DEFAULT_MIN_REPEAT = 5
 export const DEFAULT_MIN_DAYS = 3
@@ -94,15 +94,19 @@ function daysBetween(a, b) {
 export function scan(
   root,
   pid,
-  { now = localIso(), minRepeat = DEFAULT_MIN_REPEAT, minDays = DEFAULT_MIN_DAYS, autoApproveDays = null } = {},
+  { now = localIso(), minRepeat = DEFAULT_MIN_REPEAT, minDays = DEFAULT_MIN_DAYS, autoApproveDays = null, ignoreEvolve = false } = {},
 ) {
+  // 「允许演化」关掉就不扫描。这是真的闸门，不是摆设：
+  // 关掉之后，定时任务与手动扫描都不会长出提案（手动那条会明确告诉用户为什么）。
+  if (!ignoreEvolve && !mayEvolve(root, pid)) return []
+
   const entries = listEntries(root, pid)
   const existing = listProposals(root, pid)
   const seen = new Set(existing.map((p) => p.key))
-  const policy = readPolicy(root)
-  const autoDays = autoApproveDays ?? policy?.autoApproveDays ?? DEFAULT_AUTO_DAYS
 
   const created = []
+  // 到期天数与其余策略同源（人格规则 > policy > 默认），避免两处各算一份
+  const autoDays = autoApproveDays ?? personaPolicy(root, pid).autoApproveDays
   for (const e of entries) {
     for (const f of e.facts ?? []) {
       if (f.until) continue
@@ -143,15 +147,49 @@ export function scan(
   return created
 }
 
+/**
+ * 演化策略的取值顺序：**人格规则 > policy.json > 代码默认**。
+ *
+ * 为什么是这个顺序：这两个旋钮本来就是"按人格不同"的（一个人格可以比另一个勤快），
+ * 以前 `policy.json` 优先，于是规则页改完、插件一重启就被设置页的值盖掉，
+ * 而页面上完全看不出来。`policy.json` 现在只作为"人格没写这一项时的默认值"。
+ *
+ * 注意：模板会给每个人格写上这四项，所以实际跑起来以人格规则为准；
+ * policy 只在规则文件缺这一项时才轮到（例如手写的最小规则文件）。
+ */
 function personaPolicy(root, pid) {
   const { rules } = loadEffectiveRules(root, pid)
   const policy = readPolicy(root)
+  const r = rules.persona ?? {}
+
+  // 这两项的"人格有没有写"必须看**这个人人格自己的规则文件**，不能看合并结果：
+  // 合并会先把 DEFAULTS 铺进来，于是永远"有值"，policy 就永远轮不到。
+  const own = readJson(path.join(root, rulePaths(root, pid).global), null) ?? {}
+  const ownPersona = own.persona ?? {}
+  const pick = (key) => (ownPersona[key] === undefined ? undefined : Number(ownPersona[key]))
+
   return {
-    autoAdopt: rules.persona?.auto_adopt !== false,
-    dailyLimit: policy?.dailyAutoLimit ?? Number(rules.persona?.daily_auto_limit ?? DEFAULT_DAILY_LIMIT),
-    autoApproveDays: policy?.autoApproveDays ?? Number(rules.persona?.auto_approve_days ?? DEFAULT_AUTO_DAYS),
-    rollbackDays: Number(rules.persona?.rollback_days ?? DEFAULT_ROLLBACK_DAYS),
+    evolve: r.evolve !== false,
+    autoAdopt: r.auto_adopt !== false,
+    dailyLimit: pick('daily_auto_limit') ?? Number(policy?.dailyAutoLimit ?? DEFAULT_DAILY_LIMIT),
+    autoApproveDays: pick('auto_approve_days') ?? Number(policy?.autoApproveDays ?? DEFAULT_AUTO_DAYS),
+    rollbackDays: Number(r.rollback_days ?? DEFAULT_ROLLBACK_DAYS),
   }
+}
+
+/** 这个人格允不允许"自己长大"（`persona.evolve=false` 就整天不扫描）。 */
+export function mayEvolve(root, pid) {
+  try {
+    return evolvePolicy(root, pid).evolve
+  } catch {
+    // 规则读坏了：宁可不动（她不该在配置坏掉的时候乱长）
+    return false
+  }
+}
+
+/** 对外（测试 / 页面）读这一套策略：顺序是 人格规则 > policy.json > 默认。 */
+export function evolvePolicy(root, pid) {
+  return personaPolicy(root, pid)
 }
 
 /** 把提案应用到表达层（style.md），并记下可回滚的锚点。 */
