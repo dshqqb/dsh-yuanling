@@ -15,6 +15,7 @@ import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
 import { listSources, fetchStats } from './modules/sources.js'
 import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, ensureGroup, refreshGroupWeight } from './groups.js'
+import { setImpression } from './impressions.js'
 import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
 
@@ -368,7 +369,6 @@ export function handleApiWrite(root, url, body) {
       if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
       const patch = { __reason: '管理台编辑群体档案' }
       if (typeof b.name === 'string') patch.name = b.name.slice(0, 60)
-      if (typeof b.feature === 'string') patch.feature = b.feature.slice(0, 2000)
       if (typeof b.topics === 'string') patch.topics = b.topics.slice(0, 2000)
       if (typeof b.aliases === 'string') {
         patch.aliases = b.aliases
@@ -377,7 +377,12 @@ export function handleApiWrite(root, url, body) {
           .filter(Boolean)
           .slice(0, 10)
       }
-      const g = writeGroup(root, pid, gid, patch)
+      if (Object.keys(patch).length > 1) writeGroup(root, pid, gid, patch, { actor: 'human:editor' })
+      // 和人物的素描一样：描述走印象层，受 600 字节上限，进版本历史
+      if (typeof b.feature === 'string') {
+        setImpression(root, pid, 'group', gid, { text: b.feature, reason: '管理台手动修改', actor: 'human:editor' })
+      }
+      const g = readGroupLive(root, pid, gid)
       return { status: 200, body: { ok: true, group: g } }
     }
 
@@ -455,10 +460,14 @@ export function handleApiWrite(root, url, body) {
       const uid = String(b.uid ?? '')
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
       const patch = { __reason: '管理台编辑人物档案' }
-      if (typeof b.sketch === 'string') patch.sketch = b.sketch.slice(0, 2000)
       if (typeof b.display === 'string' && b.display.trim()) patch.display = b.display.trim().slice(0, 60)
-      const prof = writeProfile(root, pid, uid, patch)
-      return { status: 200, body: { ok: true, profile: prof } }
+      if (Object.keys(patch).length > 1) writeProfile(root, pid, uid, patch, { actor: 'human:editor' })
+      // 素描也走印象那一层：人手写同样受 600 字节上限约束，同样进版本历史。
+      // 不然界面上能存 2000 字、注入时被截到 600——那就成了"存下来的和看到的不是一回事"。
+      if (typeof b.sketch === 'string') {
+        setImpression(root, pid, 'person', uid, { text: b.sketch, reason: '管理台手动修改', actor: 'human:editor' })
+      }
+      return { status: 200, body: { ok: true, profile: readProfile(root, pid, uid) } }
     }
 
     // ── 模块管理 ─────────────────────────────────────────────────────────

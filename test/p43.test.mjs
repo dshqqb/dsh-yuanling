@@ -80,7 +80,13 @@ test('tools/list 里有 yuanling_group', async () => {
 })
 
 test('写：只给 channel 就能定位到群并建档案', async () => {
-  const text = toolText(await tool('yuanling_group', { channel: 'group:12345', feature: '老同学的群，气氛松散，爱发老照片' }))
+  const text = toolText(
+    await tool('yuanling_group', {
+      channel: 'group:12345',
+      feature: '老同学的群，气氛松散，爱发老照片',
+      reason: '刚进来看了几条，明显是老同学在叙旧',
+    }),
+  )
   assert.match(text, /已写入/)
   assert.match(text, /qq:12345/)
 
@@ -93,14 +99,14 @@ test('写：只给 channel 就能定位到群并建档案', async () => {
 })
 
 test('写：只给数字的 gid 按 QQ 群理解', async () => {
-  toolText(await tool('yuanling_group', { gid: '777', topics: '主要在聊数码和键盘' }))
+  toolText(await tool('yuanling_group', { gid: '777', topics: '主要在聊数码和键盘', reason: '看了一会儿，话题集中在键盘' }))
   const g = readGroup(root, 'yuanling', 'qq:777')
   assert.ok(g, '数字该被补成 qq:777')
   assert.match(g.topics, /键盘/)
 })
 
 test('写：第二次写是合并，不是覆盖', async () => {
-  toolText(await tool('yuanling_group', { gid: 'qq:12345', topics: '最近在聊孩子上学' }))
+  toolText(await tool('yuanling_group', { gid: 'qq:12345', topics: '最近在聊孩子上学', reason: '话题变了' }))
   const g = readGroup(root, 'yuanling', 'qq:12345')
   assert.match(g.feature, /老同学/, '原来写下的特征不能被冲掉')
   assert.match(g.topics, /孩子上学/)

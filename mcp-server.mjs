@@ -16,6 +16,7 @@ import { readMarker } from './src/core/persona.js'
 import { contextFor, recall } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel } from './src/core/groups.js'
+import { setImpression, renderImpression, IMPRESSION_MAX_BYTES } from './src/core/impressions.js'
 import { listSources, readConsoleRuntime, renderFetched, clipText } from './src/core/modules/sources.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
@@ -48,9 +49,10 @@ const TOOLS = [
   {
     name: 'yuanling_context',
     description:
-      '【每轮必调】读取原灵的长期记忆：记忆卡 + 惦记着的事 + 当前在场人物卡。\n' +
+      '【每轮必调】读取原灵的长期记忆：记忆卡 + 惦记着的事 + 当前在场人物卡 + 当前群体卡。\n' +
       '规则：每次开始新一轮对话、或对方提到过去的人/事时，**先调用本工具再开口**——不调用就等于失忆。\n' +
-      '不需要对方要求，这是你的常规动作。返回纯文本，直接当作背景信息使用。',
+      '不需要对方要求，这是你的常规动作。返回纯文本，直接当作背景信息使用。\n' +
+      '读完如果对某个人/某个群有了新印象，用 yuanling_observe 写回去（整段覆盖，必须带 reason）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -102,9 +104,10 @@ const TOOLS = [
     name: 'yuanling_group',
     description:
       '看 / 写一个"群体"的档案：一个 QQ 群、一个贴吧、一个粉丝群，各是一个群体（**不跨平台合并**）。\n' +
-      '在群里说话时，当前群体的卡已经自动出现在 yuanling_context 里；这个工具用来主动补写她的理解' +
-      '（这个群是什么地方、氛围怎样、主要在聊什么），或者查一个别人刚提到的群。\n' +
-      '只写自然语言描述，别编成员——成员由核心从原始层归集（谁在这个群说过话）。',
+      '在群里说话时，当前群体的卡已经自动出现在 yuanling_context 里；这个工具用来查一个群、' +
+      '或者改它的名字/别名/在聊什么。\n' +
+      '**群体是怎么一种地方**（`feature`）请用 yuanling_observe 写——那里有覆盖、上限与历史；' +
+      '这个工具改 description 类字段时也要带 reason。别编成员：成员由核心从原始层归集（谁在这个群说过话）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -115,6 +118,27 @@ const TOOLS = [
         topics: { type: 'string', description: '这里主要在聊什么——自然语言，≤2000 字' },
         aliases: { type: 'array', items: { type: 'string' }, description: '别名/简称，最多 10 个' },
       },
+    },
+  },
+  {
+    name: 'yuanling_observe',
+    description:
+      '写 / 读"她对某人或某个地方的印象"。人物和群体用同一套规则：**整段覆盖**（印象是"现在怎么看他"，不是日记）、' +
+      '旧版本只留在版本历史里（随时能回滚）、每次写必须带一句 reason、上限 600 字节（就是注入预算，超了页面上也只会被截断）。\n' +
+      '不传 text 就是只读；加 withHistory 能看到这份印象一路是怎么变的（每一版的时间、原因、原文）——' +
+      '想知道"我为什么现在这么看他"，就读这个，别自己编。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['person', 'group'], description: '写谁/哪里：person 或 group' },
+        id: { type: 'string', description: '人物 uid（person_xxx）或群体 gid（qq:123456）' },
+        text: { type: 'string', description: '整段印象（≤600 字节）。不传就只读' },
+        reason: { type: 'string', description: '这次为什么改——会写进版本历史，以后能回看' },
+        evidence: { type: 'string', description: '可选：raw/2026-11/07/qq.ndjson#01JCV…，必须真能解析到' },
+        withHistory: { type: 'boolean', description: '连历史一起返回（默认最近 10 版）' },
+        limit: { type: 'number', description: '历史条数，默认 10' },
+      },
+      required: ['kind', 'id'],
     },
   },
   {
@@ -306,15 +330,20 @@ async function callTool(root, name, args = {}) {
 
     const patch = {}
     if (typeof args.name === 'string' && args.name.trim()) patch.name = args.name.trim().slice(0, 60)
-    if (typeof args.feature === 'string' && args.feature.trim()) patch.feature = args.feature.trim().slice(0, 2000)
-    if (typeof args.topics === 'string' && args.topics.trim()) patch.topics = args.topics.trim().slice(0, 2000)
     if (Array.isArray(args.aliases)) {
       patch.aliases = args.aliases
         .map((x) => String(x).trim())
         .filter(Boolean)
         .slice(0, 10)
     }
-    const writing = Object.keys(patch).length > 0
+    // 描述（feature / topics）统一走 impressions：整段覆盖、要写原因、进版本历史。
+    // 这里不再自己拼 patch，免得同一段描述有两条写路径。
+    const wantFeature = typeof args.feature === 'string' && args.feature.trim()
+    const wantTopics = typeof args.topics === 'string' && args.topics.trim()
+    const reason = String(args.reason ?? '').trim()
+    if ((wantFeature || wantTopics) && !reason) throw new Error('改群体描述要带 reason：这次为什么这么改')
+
+    const writing = Object.keys(patch).length > 0 || wantFeature || wantTopics
 
     if (!writing) {
       const g = readGroupLive(root, pid, gid)
@@ -327,9 +356,51 @@ async function callTool(root, name, args = {}) {
     }
 
     ensureGroup(root, pid, gid, {})
-    writeGroup(root, pid, gid, patch, { actor: 'model:group', reason: '模型补写群体理解' })
+    if (Object.keys(patch).length) {
+      writeGroup(root, pid, gid, { ...patch, __reason: reason || '模型更新群体元信息' }, { actor: 'model:group' })
+    }
+    if (wantFeature) {
+      setImpression(root, pid, 'group', gid, { text: args.feature, reason, evidence: args.evidence ?? null })
+    }
+    if (wantTopics) {
+      writeGroup(
+        root,
+        pid,
+        gid,
+        { topics: String(args.topics).trim().slice(0, 2000), __reason: reason },
+        { actor: 'model:group' },
+      )
+    }
+
     const g = readGroupLive(root, pid, gid)
     return { text: `✓ 已写入群体 ${g.gid}\n\n${formatGroupDetail(root, pid, g)}` }
+  }
+
+  if (name === 'yuanling_observe') {
+    const kind = String(args.kind ?? '').trim()
+    const id = String(args.id ?? '').trim()
+    if (!kind || !id) throw new Error('需要 kind（person | group）和 id（人物 uid 或群体 gid）')
+    const withHistory = args.withHistory === true
+    const limit = Number(args.limit) > 0 ? Number(args.limit) : 10
+    const text = typeof args.text === 'string' ? args.text.trim() : ''
+
+    if (!text) {
+      // 只读：把"现在的印象"和"它是怎么变的"一起给出来
+      const body = renderImpression(root, pid, kind, id, { withHistory, limit })
+      return { text: body }
+    }
+
+    const r = setImpression(root, pid, kind, id, {
+      text,
+      reason: args.reason,
+      evidence: args.evidence ?? null,
+      actor: 'model:observe',
+    })
+    const head = r.changed
+      ? `✓ 已更新${kind === 'person' ? '人物' : '群体'}印象（${Buffer.byteLength(r.after, 'utf8')}/${IMPRESSION_MAX_BYTES} 字节，旧版留在版本历史里）`
+      : `· 内容没变，没有产生新版本`
+    const tail = withHistory ? `\n\n${renderImpression(root, pid, kind, id, { withHistory: true, limit })}` : ''
+    return { text: `${head}\n原因：${r.reason}${tail}` }
   }
 
   if (name === 'yuanling_sources') {
@@ -401,7 +472,7 @@ async function handle(req) {
         instructions:
           '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；' +
           '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_identity 写回档案；' +
-          '对某个群有了新理解（它是什么地方、在聊什么）就用 yuanling_group 写回去。',
+          '对某个人或某个群有了新印象，用 yuanling_observe 整段写回去（必须带 reason，旧版能回滚）。',
       })
       return
     }

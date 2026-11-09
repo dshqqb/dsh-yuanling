@@ -190,7 +190,7 @@ export function readProfile(root, pid, uid) {
 }
 
 /** 改档案（走版本，可回滚）。 */
-export function writeProfile(root, pid, uid, patch = {}) {
+export function writeProfile(root, pid, uid, patch = {}, { actor = 'system:entity' } = {}) {
   const rel = personProfileRel(pid, uid)
   const fresh = !exists(path.join(root, rel))
   const cur = readJson(path.join(root, rel), null) ?? {
@@ -207,7 +207,7 @@ export function writeProfile(root, pid, uid, patch = {}) {
   const seedDisplay = fresh && !rest.display ? loadIdentities(root).people[uid]?.display ?? '' : undefined
   const next = { ...cur, ...(seedDisplay ? { display: seedDisplay } : {}), ...rest, uid, updated_at: localIso() }
   writeTracked(root, rel, JSON.stringify(next, null, 2) + '\n', {
-    actor: 'system:entity',
+    actor,
     reason: __reason ?? '更新人物档案',
   })
   return next

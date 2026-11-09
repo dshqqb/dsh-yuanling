@@ -27,6 +27,7 @@ import {
   writeProfile,
 } from './entities.js'
 import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight, backfillGroups } from './groups.js'
+import { setImpression, renderImpression } from './impressions.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
@@ -1201,16 +1202,25 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       if (sub === 'profile') {
         const uid = _[2]
         if (!uid) {
-          err('用法：yuanling person profile <uid> --sketch "..." [--first-meet]')
+          err('用法：yuanling person profile <uid> --sketch "..." [--reason "..."] [--first-meet]')
           return EXIT.CONFIG
         }
         const patch = { __reason: '手动编辑人物档案' }
-        if (flags.sketch) patch.sketch = String(flags.sketch)
         if (flags.display) patch.display = String(flags.display)
         if (flags['first-meet']) patch.first_met = localIso()
-        const prof = writeProfile(root, pid, uid, patch)
+        if (Object.keys(patch).length > 1) writeProfile(root, pid, uid, patch, { actor: 'human:editor' })
+        // 素描走印象层：600 字节上限、进版本历史、记下为什么改（和模型写的是同一份历史）
+        if (flags.sketch) {
+          setImpression(root, pid, 'person', uid, {
+            text: String(flags.sketch),
+            reason: String(flags.reason ?? '命令行手动修改'),
+            actor: 'human:editor',
+          })
+        }
+        const prof = readProfile(root, pid, uid)
         out(`✓ 已更新 ${uid} 的档案（${pid}）`)
-        if (prof.sketch) out(`  素描：${prof.sketch}`)
+        if (prof?.sketch) out(`  素描：${prof.sketch}`)
+        if (flags.history) out(renderImpression(root, pid, 'person', uid, { withHistory: true }))
         return EXIT.OK
       }
 
@@ -1383,6 +1393,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         if (g.topics) out(`  话题：${g.topics}`)
         if (g.members.length) out(`  常出现的人（${g.memberCount}）：${g.members.join('、')}`)
         if (g.lastSeen) out(`  最后一次见到：${g.lastSeen}`)
+        if (flags.history) out(renderImpression(root, pid, 'group', gid, { withHistory: true }))
         return EXIT.OK
       }
 
@@ -1391,7 +1402,6 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         if (!gid) return EXIT.CONFIG
         const patch = { __reason: '手动编辑群体档案' }
         if (flags.name) patch.name = String(flags.name)
-        if (flags.feature) patch.feature = String(flags.feature)
         if (flags.topics) patch.topics = String(flags.topics)
         if (flags.alias) {
           patch.aliases = String(flags.alias)
@@ -1400,7 +1410,15 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
             .filter(Boolean)
             .slice(0, 10)
         }
-        const g = writeGroup(root, pid, gid, patch)
+        if (Object.keys(patch).length > 1) writeGroup(root, pid, gid, patch, { actor: 'human:editor' })
+        if (flags.feature) {
+          setImpression(root, pid, 'group', gid, {
+            text: String(flags.feature),
+            reason: String(flags.reason ?? '命令行手动修改'),
+            actor: 'human:editor',
+          })
+        }
+        const g = readGroupLive(root, pid, gid)
         out(`✓ 已更新群体 ${g.gid}：${g.name || '（未命名）'}`)
         return EXIT.OK
       }
