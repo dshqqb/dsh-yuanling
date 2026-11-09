@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import { exists, readJson, appendLine, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { parseChannel } from './entities.js'
+import { appendEvent } from './events.js'
 
 export const LEVELS = { global: 10, group: 20, private: 30 }
 
@@ -218,6 +219,15 @@ export function logRefusal(root, pid, { dim, action, channel = null, reason = ''
     action,
     channel,
     reason,
+  })
+  // 同时进事件流：拒绝记录页读 changes.ndjson（历史不变），日志页读事件流。
+  // 两处都写不是冗余——一个是"语义变更账本"，一个是"运行流水"，读者不同。
+  appendEvent(root, {
+    kind: 'refusal',
+    level: 'warn',
+    actor: 'core',
+    text: `${dim}/${action} 被拒${channel ? `（${channel}）` : ''}：${reason}`,
+    data: { dim, action, channel, reason, persona: pid ?? null },
   })
 }
 

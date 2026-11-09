@@ -10,6 +10,7 @@ import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, 
 import { listDays, readDay, today } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 import fs from 'node:fs'
+import path from 'node:path'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
@@ -18,6 +19,11 @@ import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, cl
 import { setImpression } from './impressions.js'
 import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
+import { readTimeline, readWrites } from './events.js'
+import { diagnose } from './diagnostics.js'
+import { DIAG_TTL_MS } from './modules/service.js'
+import { moduleDir } from './modules/registry.js'
+import { revertTo, trackedPaths, normRel } from './version.js'
 
 /**
  * 粗略 token 估算：以中文为主的文本，UTF-8 一个字 3 字节，1 token ≈ 0.7 字。
@@ -41,6 +47,40 @@ export function buildStatus(root) {
 
 function need(result) {
   return result ?? null
+}
+
+/**
+ * 读模块自报的诊断项（直接读文件，不依赖运行中的 service 实例——
+ * 管理台可能由 `yuanling serve` 单独起，那里没有模块进程）。
+ */
+function readModuleDiagFromFile(root, id, { now = Date.now(), ttlMs = DIAG_TTL_MS } = {}) {
+  const rec = readJsonFile(path.join(moduleDir(root, id), 'diag.json'))
+  if (!rec || !Array.isArray(rec.items)) return { items: [], at: null, stale: false }
+  const at = Date.parse(String(rec.at ?? ''))
+  const stale = !Number.isFinite(at) || now - at > ttlMs
+  return { items: stale ? [] : rec.items, at: rec.at ?? null, stale }
+}
+
+function readJsonFile(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 这个路径有没有被版本跟踪过。
+ *
+ * 存在的意义是**限制回滚的作用面**：`/api/rollback` 带 token，若不设防，
+ * 它就是一个"可以改任意文件"的口子。只认 trackedPaths 里出现过的路径。
+ */
+function isTrackedPath(root, rel) {
+  try {
+    return trackedPaths(root).includes(normRel(rel))
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -117,6 +157,56 @@ export function handleApi(root, url) {
     const d = moduleDetail(root, id)
     if (!d) return { status: 404, body: { ok: false, error: `没有这个模块：${id}` } }
     return { status: 200, body: { ok: true, module: d } }
+  }
+
+  // ── 日志 / 审计（v1.4）────────────────────────────────────────────────
+  // 同一份时间线，lens 决定看哪个镜头：all / write（审计）/ error / module / refusal。
+  // 审计行带 ref（版本 hash），页面据此给「回滚」入口。
+  if (pathname === '/api/logs') {
+    const lens = searchParams.get('lens') || 'all'
+    const limit = Number(searchParams.get('limit') ?? 200)
+    const module = searchParams.get('module') || null
+    const since = searchParams.get('since') || null
+    return { status: 200, body: { ok: true, ...readTimeline(root, { lens, limit, module, since }) } }
+  }
+
+  // 诊断：{code, stage, level, hint} 清单。只读，什么都不改。
+  if (pathname === '/api/diagnostics') {
+    const only = searchParams.get('only') !== 'all'
+    const fast = searchParams.get('fast') === '1'
+    const result = diagnose(root, {
+      onlyProblems: only,
+      fast,
+      moduleDiag: (id) => readModuleDiagFromFile(root, id),
+    })
+    return { status: 200, body: { ok: true, ...result } }
+  }
+
+  // 模块级：日志走 /api/module 里的 log 字段；审计与诊断单独给，页面三个 tab 各取一份。
+  if (pathname === '/api/module/audit') {
+    const id = searchParams.get('id') ?? ''
+    if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+    const limit = Number(searchParams.get('limit') ?? 100)
+    const writes = readWrites(root, { limit, module: id })
+    return { status: 200, body: { ok: true, module: id, writes } }
+  }
+
+  if (pathname === '/api/module/diag') {
+    const id = searchParams.get('id') ?? ''
+    if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+    const result = diagnose(root, { onlyProblems: true, fast: true, moduleDiag: (mid) => (mid === id ? readModuleDiagFromFile(root, mid) : { items: [] }) })
+    const mine = result.items.filter((x) => x.module === id || x.code.startsWith(`module.`))
+    const reported = readModuleDiagFromFile(root, id)
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        module: id,
+        items: result.items.filter((x) => x.module === id),
+        reported: { items: reported.items, at: reported.at, stale: reported.stale },
+        global: mine.length,
+      },
+    }
   }
 
   if (pathname === '/api/card') {
@@ -412,6 +502,18 @@ export function handleApiWrite(root, url, body) {
       writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount })
       refreshGroupWeight(root, pid, gid)
       return { status: 200, body: { ok: true, group: readGroupLive(root, pid, gid), members: r.members, scannedDays: r.scannedDays } }
+    }
+
+    if (pathname === '/api/rollback') {
+      // 审计行的回滚入口。参数是「路径 + 目标版本 hash」，跑的是 version.js 的 revertTo——
+      // 回滚本身也是一次新版本，不擦掉后来的历史。
+      const rel = String(b.path ?? '')
+      const hash = String(b.hash ?? '')
+      if (!rel || !hash) return { status: 400, body: { ok: false, error: '需要 path 与 hash' } }
+      // 只允许回滚被跟踪过的路径：任意路径 + token 就是"能改任何文件"，那不是回滚
+      if (!isTrackedPath(root, rel)) return { status: 400, body: { ok: false, error: '这个路径没有版本历史，不能回滚' } }
+      const r = revertTo(root, rel, hash, { actor: 'human:editor' })
+      return { status: 200, body: { ok: true, changed: r.changed, path: rel, hash: r.hash } }
     }
 
     if (pathname === '/api/person/identity') {

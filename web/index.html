@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>原灵 · 管理台</title>
-  <link rel="stylesheet" href="/style.css?v=20261110a" />
+  <link rel="stylesheet" href="/style.css?v=20261110b" />
   <script>
     // 首帧之前定主题，避免白闪一下
     ;(function () {
@@ -281,6 +281,55 @@
           </div>
         </section>
 
+        <section id="tab-logs" class="page" hidden>
+          <div class="page-head">
+            <h2>日志</h2>
+            <p class="muted">
+              最近发生了什么。「只看写入」就是审计——每条都带谁改的、为什么、能不能退回去。
+            </p>
+            <div class="seg" id="log-lens">
+              <button data-lens="all" class="is-active">全部</button>
+              <button data-lens="write">只看写入</button>
+              <button data-lens="error">只看异常</button>
+              <button data-lens="module">只看模块</button>
+              <button data-lens="refusal">只看拒绝</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>统计</h3><span class="muted small">图形化留白：以后这里放趋势图</span></div>
+            <div id="log-stats" class="stat-row"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3 id="log-title">全部事件</h3><span class="muted small" id="log-hint"></span></div>
+            <div id="log-out" class="list"></div>
+          </div>
+        </section>
+
+        <section id="tab-diag" class="page" hidden>
+          <div class="page-head">
+            <h2>诊断</h2>
+            <p class="muted">
+              每条都是可判定的一项：错在哪、哪一步、下一步做什么。诊断只读，不会自己去修。
+            </p>
+            <div class="seg" id="diag-mode">
+              <button data-mode="problems" class="is-active">只看问题</button>
+              <button data-mode="all">全部检查项</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>概览</h3><span class="muted small" id="diag-ts"></span></div>
+            <div id="diag-summary" class="stat-row"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>清单</h3><span class="muted small" id="diag-hint"></span></div>
+            <div id="diag-out" class="list"></div>
+          </div>
+        </section>
+
         <section id="tab-refusals" class="page" hidden>
           <div class="page-head">
             <h2>拒绝记录</h2>
@@ -385,6 +434,33 @@
               </div>
             </div>
 
+            <div id="module-panel-audit" hidden>
+              <div class="card">
+                <div class="card-head">
+                  <h3>审计</h3>
+                  <span class="muted small">这个模块造成的每一次写入，都带原因，都能回滚</span>
+                </div>
+                <div id="module-audit-out" class="list"></div>
+              </div>
+            </div>
+
+            <div id="module-panel-diag" hidden>
+              <div class="card">
+                <div class="card-head">
+                  <h3>诊断</h3>
+                  <span class="muted small" id="module-diag-hint"></span>
+                </div>
+                <div id="module-diag-out" class="list"></div>
+              </div>
+              <div class="card">
+                <div class="card-head">
+                  <h3>模块自报</h3>
+                  <span class="muted small">协议 v1.4 的 diag.report；15 分钟没再报就当它不再成立</span>
+                </div>
+                <div id="module-diag-reported" class="list"></div>
+              </div>
+            </div>
+
             <!-- 模块自定义 tab 的内容区（协议定了之后由模块下发的控件渲染） -->
             <div id="module-panel-custom" hidden></div>
           </div>
@@ -411,6 +487,6 @@
 
   <!-- 带版本号：浏览器对 .js 的缓存很顽固，改了脚本不换 query 就可能跑旧代码，
        排查时会一路怀疑到后端（真踩过）。后端也加了 no-cache，这里是双保险。 -->
-  <script src="/app.js?v=20261110a"></script>
+  <script src="/app.js?v=20261110b"></script>
 </body>
 </html>

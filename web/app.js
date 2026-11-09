@@ -9,6 +9,8 @@ const state = {
   mode: 'core',
   peopleSort: 'weight',
   groupGid: null,
+  logLens: 'all',
+  diagMode: 'problems',
   moduleId: null,
   // 模块模式下的左侧菜单：控制台 + 每个已装模块。列表缓存在这里，回车/点击都不用再请求
   modules: [],
@@ -57,6 +59,7 @@ const I = {
   plug: '<path d="M9 3.5v4M15 3.5v4" stroke-linecap="round"/><path d="M6.5 7.5h11v3.2a5.5 5.5 0 01-11 0V7.5z" stroke-linejoin="round"/><path d="M12 16.5v4" stroke-linecap="round"/>',
   ban: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4" stroke-linecap="round"/>',
   chart: '<path d="M4 20V9M9.3 20V4M14.7 20v-7M20 20v-4" stroke-linecap="round"/>',
+  pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21" stroke-linecap="round" stroke-linejoin="round"/>',
   // 模块菜单项用立方体：和"控制台"的插头区分开，一眼能看出"这是一个模块"
   box: '<path d="M12 3.2l7.5 4.2-7.5 4.2-7.5-4.2 7.5-4.2z" stroke-linejoin="round"/><path d="M4.5 7.4v6.6l7.5 4.2 7.5-4.2V7.4" stroke-linejoin="round"/>',
 }
@@ -72,6 +75,8 @@ const NAV = [
   { id: 'rules', label: '规则', icon: 'shield' },
   { id: 'usage', label: '用量', icon: 'chart' },
   { id: 'sources', label: '来源', icon: 'plug' },
+  { id: 'logs', label: '日志', icon: 'list' },
+  { id: 'diag', label: '诊断', icon: 'pulse' },
   { id: 'refusals', label: '拒绝记录', icon: 'ban' },
 ]
 
@@ -701,8 +706,7 @@ async function loadModuleSources() {
   }
 }
 
-async function loadRefusals() {
-  const d = await api('/api/refusals')
+async function loadRefusals() {  const d = await api('/api/refusals')
   const box = $('refusals-out')
   box.innerHTML = ''
   if (!d.refusals.length) {
@@ -719,6 +723,148 @@ async function loadRefusals() {
   }
 }
 
+// ── 日志 / 审计 ────────────────────────────────────────────────────────
+//
+// 一个页面两个镜头：lens=all 看全部，lens=write 就是审计。
+// 审计行带 hash 与 path，所以能给「回滚」——没有回滚入口的审计只是另一种日志。
+const LENS_TITLES = {
+  all: '全部事件',
+  write: '审计：每一次写入',
+  error: '异常',
+  module: '模块相关',
+  refusal: '拒绝',
+}
+
+const LEVEL_TAGS = {
+  info: ['', ''],
+  warn: ['警', 'warn'],
+  error: ['错', 'bad'],
+}
+
+async function loadLogs() {
+  const lens = state.logLens || 'all'
+  const d = await api(`/api/logs?lens=${lens}&limit=200`)
+
+  // 统计条：现在只是数字，位置留给以后画图
+  const box = $('log-stats')
+  box.innerHTML = ''
+  box.append(
+    stat('事件', d.counts.events, '运行流水'),
+    stat('写入', d.counts.writes, '可回滚'),
+    stat('异常', `${d.counts.error} / ${d.counts.warn}`, '错 / 警'),
+    stat('拒绝', d.counts.refusals, '规则拦下'),
+  )
+
+  $('log-title').textContent = LENS_TITLES[lens] || lens
+  $('log-hint').textContent = `共 ${d.items.length} 条`
+
+  const out = $('log-out')
+  out.innerHTML = ''
+  if (!d.items.length) {
+    // 空就是空：不编"暂无"，说清楚为什么空
+    out.append(
+      el(
+        'div',
+        'muted small',
+        lens === 'write'
+          ? '还没有任何写入记录。她第一次改记忆、改人物或群体档案之后，这里才有东西。'
+          : '还没有事件。收到第一条消息、装上第一个模块之后，这里才会有。',
+      ),
+    )
+    return
+  }
+
+  for (const it of [...d.items].reverse()) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const head = el('div', 't')
+    const tags = el('span')
+    const [lbl, cls] = LEVEL_TAGS[it.level] ?? ['', '']
+    if (lbl) tags.append(el('span', `tag ${cls}`, lbl))
+    if (it.module) tags.append(el('span', 'tag', it.module))
+    tags.append(el('span', 'tag', it.kind))
+    head.append(tags, document.createTextNode(String(it.ts).replace('T', ' ').slice(0, 19)))
+
+    const who = it.kind === 'write' ? it.actor || '未知' : it.actor || 'core'
+    const text = it.kind === 'write' ? it.reason || '（没写原因）' : it.text || ''
+    body.append(head, el('div', 's', `${who}${it.path ? ` · ${it.path}` : ''}`), el('div', 's', text))
+    n.append(body)
+
+    // 审计行给回滚：这是"审计"和"日志"真正的区别
+    if (it.kind === 'write') {
+      const acts = el('div', 'actions')
+      acts.append(
+        mkBtn('回滚到上一版', 'small ghost', async () => {
+          if (!confirm(`把 ${it.path} 回滚到这一版之前？\n\n回滚本身也会记一条新版本，不会抹掉后来的历史。`)) return
+          try {
+            await postApi('/api/rollback', { path: it.path, hash: it.prev })
+            await loadLogs()
+          } catch (err) {
+            alert(`回滚失败：${err.message}`)
+          }
+        }),
+      )
+      n.append(acts)
+    }
+    out.append(n)
+  }
+}
+
+// ── 诊断 ──────────────────────────────────────────────────────────────
+const DIAG_TAGS = {
+  error: ['错', 'bad'],
+  warn: ['警', 'warn'],
+  info: ['讯', ''],
+}
+
+async function loadDiag() {
+  const only = state.diagMode !== 'all'
+  const d = await api(`/api/diagnostics?only=${only ? 'problems' : 'all'}`)
+
+  $('diag-ts').textContent = `跑于 ${String(d.ts).replace('T', ' ').slice(0, 19)}`
+  const sum = $('diag-summary')
+  sum.innerHTML = ''
+  sum.append(
+    stat('结论', d.ok ? '没有硬故障' : '有硬故障', `${d.items.length} 项`),
+    stat('错', d.summary.error ?? 0, '必须处理'),
+    stat('警告', d.summary.warn ?? 0, '会影响功能'),
+    stat('提示', d.summary.info ?? 0, '说明'),
+  )
+
+  $('diag-hint').textContent = only ? '只列需要处理的' : '全部检查项（含通过的）'
+  const out = $('diag-out')
+  out.innerHTML = ''
+  if (!d.items.length) {
+    out.append(
+      el(
+        'div',
+        'muted small',
+        only
+          ? '没有需要处理的事。想看它到底查了什么，切到「全部检查项」。'
+          : '这个版本还没有内置任何检查项。',
+      ),
+    )
+    return
+  }
+
+  for (const it of d.items) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const head = el('div', 't')
+    const tags = el('span')
+    const [lbl, cls] = DIAG_TAGS[it.level] ?? ['', '']
+    if (lbl) tags.append(el('span', `tag ${cls}`, lbl))
+    if (it.module) tags.append(el('span', 'tag purple', it.module))
+    if (it.source === 'module') tags.append(el('span', 'tag', '模块自报'))
+    tags.append(el('span', 'tag', it.stage))
+    head.append(tags, document.createTextNode(it.code))
+    body.append(head)
+    if (it.hint) body.append(el('div', 's', it.hint))
+    n.append(body)
+    out.append(n)
+  }
+}
+
 // ── 切页 ──────────────────────────────────────────────────────────────
 const loaders = {
   status: loadStatus,
@@ -731,6 +877,8 @@ const loaders = {
   rules: loadRules,
   usage: loadUsage,
   sources: loadSources,
+  logs: loadLogs,
+  diag: loadDiag,
   refusals: loadRefusals,
 }
 
@@ -855,6 +1003,8 @@ async function loadModules() {
 const MODULE_BASE_TABS = [
   { id: 'brief', label: '概况' },
   { id: 'log', label: '日志' },
+  { id: 'audit', label: '审计' },
+  { id: 'diag', label: '诊断' },
 ]
 
 function renderModuleTabs(module, active) {
@@ -886,15 +1036,114 @@ function selectModuleTab(id, module = null) {
   }
   $('module-panel-brief').hidden = id !== 'brief'
   $('module-panel-log').hidden = id !== 'log'
+  $('module-panel-audit').hidden = id !== 'audit'
+  $('module-panel-diag').hidden = id !== 'diag'
   const custom = $('module-panel-custom')
   const isCustom = !MODULE_BASE_TABS.some((t) => t.id === id)
   custom.hidden = !isCustom
-  if (!isCustom) return
+  if (!isCustom) {
+    // 审计 / 诊断是核心侧的（模块不用改协议），要现取，所以在这里触发
+    if (id === 'audit') loadModuleAudit(state.moduleId).catch((err) => showTabError(err))
+    if (id === 'diag') loadModuleDiag(state.moduleId).catch((err) => showTabError(err))
+    return
+  }
 
   const spec = (current?.uiTabs ?? []).find((t) => t.id === id)
   // 两种自定义页都是异步的（要现取数据），失败只该影响这一块，不该冒到整页
   if (spec?.kind === 'config') renderConfigTab(id, current).catch((err) => showTabError(err))
   else loadModuleTabData(id, current).catch((err) => showTabError(err))
+}
+
+// ── 模块的审计 / 诊断（核心统一提供，模块不用改协议）─────────────────
+const MODULE_AUDIT_MODEL = 'actor 是 model 的，都是她自己写的；human 是你改的'
+
+async function loadModuleAudit(id) {
+  const d = await api(`/api/module/audit?id=${encodeURIComponent(id)}&limit=100`)
+  const out = $('module-audit-out')
+  out.innerHTML = ''
+  if (!d.writes.length) {
+    out.append(el('div', 'muted small', '这个模块还没有造成任何写入。它取一次数、收一条消息之后才会有。'))
+    return
+  }
+  for (const w of [...d.writes].reverse()) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const head = el('div', 't')
+    const tags = el('span')
+    tags.append(el('span', 'tag', w.actor || '未知'))
+    head.append(tags, document.createTextNode(String(w.ts).replace('T', ' ').slice(0, 19)))
+    body.append(head, el('div', 's', w.path), el('div', 's', w.reason || '（没写原因）'))
+    n.append(body)
+    const acts = el('div', 'actions')
+    acts.append(
+      mkBtn('回滚到上一版', 'small ghost', async () => {
+        if (!confirm(`把 ${w.path} 回滚到这一版之前？`)) return
+        try {
+          await postApi('/api/rollback', { path: w.path, hash: w.prev })
+          await loadModuleAudit(id)
+        } catch (err) {
+          alert(`回滚失败：${err.message}`)
+        }
+      }),
+    )
+    n.append(acts)
+    out.append(n)
+  }
+  $('module-audit-out').title = MODULE_AUDIT_MODEL
+}
+
+async function loadModuleDiag(id) {
+  const d = await api(`/api/module/diag?id=${encodeURIComponent(id)}`)
+  const out = $('module-diag-out')
+  out.innerHTML = ''
+  $('module-diag-hint').textContent = '核心自己知道的事实：进程、握手、能力、配置、崩溃'
+  if (!d.items.length) {
+    out.append(el('div', 'muted small', '没有需要处理的问题。'))
+  } else {
+    for (const it of d.items) {
+      const n = el('div', 'item')
+      const body = el('div', 'body')
+      const head = el('div', 't')
+      const tags = el('span')
+      const [lbl, cls] = DIAG_TAGS[it.level] ?? ['', '']
+      if (lbl) tags.append(el('span', `tag ${cls}`, lbl))
+      tags.append(el('span', 'tag', it.stage))
+      head.append(tags, document.createTextNode(it.code))
+      body.append(head)
+      if (it.hint) body.append(el('div', 's', it.hint))
+      n.append(body)
+      out.append(n)
+    }
+  }
+
+  const rep = $('module-diag-reported')
+  rep.innerHTML = ''
+  const r = d.reported ?? {}
+  if (!r.items?.length) {
+    rep.append(
+      el(
+        'div',
+        'muted small',
+        r.stale
+          ? '上次自报已经过期（15 分钟内没再报），不再当作有效结论。'
+          : '这个模块还没有自报过诊断项（协议 v1.4 的 diag.report 是可选的）。',
+      ),
+    )
+  } else {
+    for (const it of r.items) {
+      const n = el('div', 'item')
+      const body = el('div', 'body')
+      const head = el('div', 't')
+      const tags = el('span')
+      const [lbl, cls] = DIAG_TAGS[it.level] ?? ['', '']
+      if (lbl) tags.append(el('span', `tag ${cls}`, lbl))
+      head.append(tags, document.createTextNode(String(it.code)))
+      body.append(head)
+      if (it.hint) body.append(el('div', 's', it.hint))
+      n.append(body)
+      rep.append(n)
+    }
+  }
 }
 
 /** 自定义页取数失败：在该页里说清楚，别让用户对着空白猜。 */
@@ -1875,6 +2124,22 @@ $('group-members').addEventListener('click', async () => {
   } finally {
     btn.disabled = false
   }
+})
+
+$('log-lens').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-lens]')
+  if (!b) return
+  state.logLens = b.dataset.lens
+  for (const x of $('log-lens').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
+  loadLogs().catch(() => {})
+})
+
+$('diag-mode').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-mode]')
+  if (!b) return
+  state.diagMode = b.dataset.mode
+  for (const x of $('diag-mode').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
+  loadDiag().catch(() => {})
 })
 
 // 拖进「重要人物」即置顶

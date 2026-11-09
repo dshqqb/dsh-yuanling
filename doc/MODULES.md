@@ -75,8 +75,7 @@ README.md                可选
 | capability | 能做什么 | 风险 |
 |---|---|---|
 | `ingest.message` | 调 `ingest` 把消息落进 raw（单批 ≤100 条） | 低（核心盖章 `source`、做脱敏） |
-| `propose.fact` | 调 `propose.fact` 提候选事实 | 低（入不入库由核心判） |
-| `media.put.file` | 把临时文件交给核心归档 | 中（路径必须在自己 `$YUANLING_TMP` 内）**v1 核心尚未实现**：可以调用，但会收到"宿主不支持" |
+| `propose.fact` | 调 `propose.fact` 提候选事实 | 低（入不入库由核心判） || `media.put.file` | 把临时文件交给核心归档 | 中（路径必须在自己 `$YUANLING_TMP` 内）**v1 核心尚未实现**：可以调用，但会收到"宿主不支持" |
 | `media.read` | 通过指针读回媒体 | 中 —— 同样**v1 未实现** |
 | `send` | 收到核心的 `send` 请求后**真的把消息发出去** | **高**：唯一能"往外说话"的能力 |
 | `actuate` | 生成语音/视频/图片 | **v1 未实现**（接口形状冻结，调用回 `E_UNSUPPORTED`） |
@@ -139,6 +138,7 @@ stdout 与 stdin 上都是 **NDJSON**：一行一条 JSON，UTF-8 无 BOM，行�
 | `propose.fact` | 提交一条候选事实 | `propose.fact` | ✅（需要宿主接处理器） |
 | `config.get` | 取核心保管的配置（**不要自己读配置文件**） | — | ✅ |
 | `log` | 让核心代写日志（4KB 上限，超限截断） | — | ✅ |
+| `diag.report` | 报你自己的健康项（cookie 过期、上游限流…），并进核心的「诊断」页 | — | ✅ v1.4 |
 | `media.put.file` | 交一个临时文件给核心归档 | `media.put.file` | ⬜ |
 | `media.get` | 按指针读回媒体 | `media.read` | ⬜ |
 
@@ -178,6 +178,23 @@ stdout 与 stdin 上都是 **NDJSON**：一行一条 JSON，UTF-8 无 BOM，行�
 
 - 单批 ≤ 100 条；
 - 不保证按投递顺序落盘，需要顺序就自己串行。
+
+**`diag.report` 的入参与返回值**（v1.4，可选但值得写）：
+
+```jsonc
+// 你发
+{ "op": "diag.report", "id": "…", "data": { "items": [
+    { "code": "cookie.expired", "level": "error", "hint": "到设置页重新登录一次" }
+] } }
+
+// 核心回
+{ "id": "…", "ok": true, "result": { "accepted": 1, "truncated": false } }
+```
+
+- 一次 ≤20 条，`code` ≤60 字、`hint` ≤200 字；
+- **整份替换**（每次都重算，别做增量）；
+- **15 分钟没再报就自动撤掉**——所以你该在"发现问题"和"确认已恢复"时各报一次，恢复时传空数组；
+- 不需要能力；没写它也照样有完整的日志/审计/诊断三页（那三页由核心提供）。
 
 **防回环**（网关第一天就会用到，不是可选优化）：机器人自己发的消息必须标 `role: "bot"`；核心按 role 不触发候选事实、不计召回。
 

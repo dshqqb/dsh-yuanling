@@ -15,11 +15,17 @@ import { resolveSource, normalizeReply, storeFetched, fetchError, FETCH_MAX_ITEM
 import { normalizeUiPayload, uiError } from './ui.js'
 import { describeFields } from './configschema.js'
 import { queryRecords } from './records.js'
+import { appendEvent } from '../events.js'
 
 /** 协议 §5.1：单批 ingest 最多 100 条。超了拒绝，不静默截断（截断会让模块以为全写进去了）。 */
 export const INGEST_BATCH_MAX = 100
 /** 协议 §5.1：log.data 上限 4KB。不截的话，一个模块能靠日志把磁盘写满。 */
 export const LOG_DATA_MAX = 4096
+/** v1.4：模块自报诊断项的硬上限（条数与每条提示的长度）。 */
+export const DIAG_MAX_ITEMS = 20
+export const DIAG_HINT_MAX = 200
+/** 自报诊断的存活期：超过就当成不再成立（进程崩了，它报的"正常"必须消失）。 */
+export const DIAG_TTL_MS = 15 * 60 * 1000
 
 /** 日志文件：system/log/modules/<id>.log（协议 §10）。 */
 export function moduleLogPath(root, id) {
@@ -127,6 +133,13 @@ export class ModuleService {
   install({ bytes, repo = null, source = null, ref = null, expectSha256 = null }) {
     const r = installFromBytes({ root: this.root, bytes, repo, source, ref, expectSha256 })
     appendModuleLog(this.root, r.manifest.id, `installed ${r.manifest.version}（${source ?? 'manual'}，sha256 ${r.sha256.slice(0, 12)}…）`)
+    appendEvent(this.root, {
+      kind: 'module.install',
+      actor: 'human:editor',
+      module: r.manifest.id,
+      text: `安装 ${r.manifest.version}（${source ?? 'manual'}）`,
+      data: { version: r.manifest.version, sha256: r.sha256.slice(0, 16), source: source ?? 'manual' },
+    })
     return r
   }
 
@@ -134,6 +147,7 @@ export class ModuleService {
     this.stop(id)
     const r = uninstall(this.root, id)
     this.logs.delete(id)
+    appendEvent(this.root, { kind: 'module.uninstall', level: 'warn', actor: 'human:editor', module: id, text: '卸载模块（目录与配置一起删掉）' })
     return r
   }
 
@@ -146,6 +160,15 @@ export class ModuleService {
     reg.modules[id] = next
     writeRegistry(this.root, reg)
     appendModuleLog(this.root, id, `${granted ? 'grant' : 'revoke'} ${capability}`)
+    // 授权是"谁能做什么"的变更，进事件流（诊断页也按它比对"声明 vs 已授"）
+    appendEvent(this.root, {
+      kind: granted ? 'module.grant' : 'module.revoke',
+      level: granted ? 'info' : 'warn',
+      actor: 'human:editor',
+      module: id,
+      text: `${granted ? '授予' : '收回'}能力 ${capability}`,
+      data: { capability },
+    })
     return { granted: grantedOf(next) }
   }
 
@@ -198,6 +221,13 @@ export class ModuleService {
           setState(this.root, id, state, {})
         }
         appendModuleLog(this.root, id, `state=${state}${reason ? ` ${reason}` : ''}`)
+        appendEvent(this.root, {
+          kind: `module.${state}`,
+          level: state === 'crashed' ? 'error' : state === 'stopped' ? 'info' : 'info',
+          actor: 'core',
+          module: id,
+          text: `状态 → ${state}${reason ? `（${reason}）` : ''}`,
+        })
       },
       onRequest: (req) => this.handleModuleRequest(id, req),
       spawnImpl: this.spawnImpl,
@@ -274,13 +304,65 @@ export class ModuleService {
       if (!this.handlers.onPropose) throw new Error('核心未配置 propose 处理器')
       return this.handlers.onPropose({ id, data })
     }
+
+    // v1.4：模块回报自己的健康项（诊断页把它们并进核心那份清单）。
+    // 不需要能力：这是**报告**，不是动作；但限额很硬——一个模块不能靠诊断把页面刷满。
+    if (op === 'diag.report') {
+      return this.reportDiag(id, data)
+    }
+
     throw new Error(`宿主不支持的操作：${op}`)
   }
 
-  /** 崩溃时统一入口：写 last_crash + 落日志（两处都要，缺一个排查时就瞎）。 */
+  /**
+   * 模块自报诊断项（协议 v1.4）。
+   *
+   * 形状：`{ op:"diag.report", data:{ items:[{ code, level, hint, detail? }] } }`
+   * 纪律（三条都是硬性，超了直接改掉而不是放行）：
+   *   ① 一次最多 20 条，`code` ≤60 字、`hint` ≤200 字；
+   *   ② **整份替换**，不是累加——模块重算一遍比核心帮它做增量合并更可靠；
+   *   ③ 带 TTL：15 分钟没再报，就当它不再成立（进程死了诊断不能还绿着）。
+   */
+  reportDiag(id, data) {
+    const items = Array.isArray(data?.items) ? data.items : []
+    const clipped = items.slice(0, DIAG_MAX_ITEMS).map((x) => ({
+      code: String(x?.code ?? 'module.reported').slice(0, 60),
+      level: ['info', 'warn', 'error'].includes(x?.level) ? x.level : 'info',
+      hint: String(x?.hint ?? '').slice(0, DIAG_HINT_MAX),
+      ...(x?.detail && typeof x.detail === 'object' ? { detail: x.detail } : {}),
+    }))
+    writeJsonAtomic(path.join(moduleDir(this.root, id), 'diag.json'), {
+      at: localIso(),
+      items: clipped,
+    })
+    return { accepted: clipped.length, truncated: items.length > DIAG_MAX_ITEMS }
+  }
+
+  /**
+   * 读模块自报的诊断项：过期（默认 15 分钟）就当成"没在报"，不返回。
+   * 过期必须消失——模块崩了之后它自己报的"一切正常"还挂在页面上，
+   * 比没有诊断更糟（假绿）。
+   */
+  readModuleDiag(id, { now = Date.now(), ttlMs = DIAG_TTL_MS } = {}) {
+    const p = path.join(moduleDir(this.root, id), 'diag.json')
+    const rec = readJson(p, null)
+    if (!rec || !Array.isArray(rec.items)) return { items: [], at: null, stale: false }
+    const at = Date.parse(String(rec.at ?? ''))
+    const stale = !Number.isFinite(at) || now - at > ttlMs
+    return { items: stale ? [] : rec.items, at: rec.at ?? null, stale }
+  }
+
   notifyCrash(id, reason) {
     recordCrash(this.root, id, reason || '未知原因')
     appendModuleLog(this.root, id, `crashed: ${reason}`)
+    appendEvent(this.root, {
+      kind: 'module.crash',
+      level: 'error',
+      actor: 'core',
+      module: id,
+      text: `模块崩了：${reason || '未知原因'}`,
+      data: { reason: String(reason || '') },
+    })
   }
 
   /** 停一个模块（不写 enabled，仅本次运行）。 */
@@ -374,6 +456,13 @@ export class ModuleService {
     const ackedAt = localIso()
     const { records } = storeFetched(this.root, { moduleId, sourceId: spec.id, items, ackedAt })
     appendModuleLog(this.root, moduleId, `source.fetch ${spec.id} → ${records.length}/${total} 条已落 raw${truncated ? '（截断）' : ''}`)
+    appendEvent(this.root, {
+      kind: 'source.fetch',
+      actor: 'model:fetch',
+      module: moduleId,
+      text: `取数 ${spec.id} → ${records.length}/${total} 条已落 raw${truncated ? '（截断）' : ''}`,
+      data: { sourceId: spec.id, stored: records.length, total, truncated },
+    })
 
     return { sourceId: spec.id, moduleId, records, truncated, total }
   }

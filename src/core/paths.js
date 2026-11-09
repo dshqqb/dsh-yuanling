@@ -149,6 +149,8 @@ export const P = {
   versionsBlobs: 'system/versions/blobs',
   versionsJournal: 'system/versions/journal.ndjson',
   changes: 'system/log/changes.ndjson',
+  /** 统一事件流：日志页读它，审计 = 其中带 actor/reason/ref 的写入事件（v1.4）。 */
+  events: 'system/log/events.ndjson',
   backups: 'system/backups',
   imports: 'system/imports',
   secrets: 'system/secrets',

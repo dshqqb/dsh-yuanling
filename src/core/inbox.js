@@ -12,6 +12,7 @@ import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel } from './groups.js'
+import { appendEvent } from './events.js'
 
 export const INBOX_VERSION = 1
 
@@ -53,6 +54,13 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       if (!guard.ok) {
         countSkip(root, source)
         logRefusal(root, null, { dim: 'ingest', action: 'record', channel, reason: guard.reason })
+        appendEvent(root, {
+          kind: 'refusal',
+          level: 'warn',
+          actor: `source:${source}`,
+          text: `摄入被硬线拦下（${channel}）：${guard.reason}`,
+          data: { channel, dim: 'ingest' },
+        })
         out.skipped += 1
         continue
       }
@@ -103,6 +111,18 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
     }
   }
   if (out.errors.length === 0 && out.accepted > 0) beat(root, source, { ok: true })
+
+  // 一批记一条事件（不是一条消息一条）：日志页要的是"这批投递发生了什么"，
+  // 每句话都记一条会让事件流比消息本身还大，而且没人看得完。
+  if (out.accepted > 0 || out.deduped > 0 || out.skipped > 0 || out.errors.length) {
+    appendEvent(root, {
+      kind: out.errors.length ? 'error' : 'ingest',
+      level: out.errors.length ? 'error' : out.skipped ? 'warn' : 'info',
+      actor: `source:${source}`,
+      text: `接收 ${out.accepted} 条（去重 ${out.deduped}、跳过 ${out.skipped}）${out.errors.length ? `，${out.errors.length} 条出错` : ''}`,
+      data: { accepted: out.accepted, deduped: out.deduped, skipped: out.skipped, errors: out.errors.slice(0, 3) },
+    })
+  }
   return out
 }
 

@@ -28,6 +28,8 @@ import {
 } from './entities.js'
 import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight, backfillGroups } from './groups.js'
 import { setImpression, renderImpression } from './impressions.js'
+import { readTimeline } from './events.js'
+import { diagnose, renderDiagnostics } from './diagnostics.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
@@ -261,6 +263,9 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling group backfill              扫 raw 里出现过的群频道，补建档案
   yuanling group promote|demote <群>   置顶 / 取消置顶
   yuanling group weight <群> <0-100|auto>
+  yuanling log [--audit] [--lens all|write|error|module|refusal] [--module id] [--limit n]
+                                       日志与审计（同一份数据，两个镜头）
+  yuanling diag [--all] [--fast] [--json]  诊断：每项给"下一步做什么"，退出码 4 = 有硬故障
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
   yuanling rule show [--channel c]    看合并后的有效规则与来源
   yuanling rule check <action> [--channel c]
@@ -417,6 +422,36 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         if (!raw.length) out('raw     · 还没有已封存的日期')
       }
       return f.ok && d.ok && rawOk ? EXIT.OK : EXIT.INTEGRITY
+    }
+
+    if (cmd === 'diag') {
+      // 诊断：{code, stage, hint} 清单。和 doctor 的区别是它给"下一步做什么"，
+      // 而 doctor 只回答"哪一项红了"。
+      const d = diagnose(root, { onlyProblems: !flags.all, fast: Boolean(flags.fast) })
+      if (flags.json) out(JSON.stringify(d, null, 2))
+      else out(renderDiagnostics(d))
+      return d.ok ? EXIT.OK : 4
+    }
+
+    if (cmd === 'log') {
+      // 日志与审计是同一份数据的两个镜头：--audit 就是 lens=write。
+      const lens = flags.audit ? 'write' : String(flags.lens ?? 'all')
+      const tl = readTimeline(root, { lens, limit: Number(flags.limit ?? 40), module: flags.module ? String(flags.module) : null })
+      if (flags.json) {
+        out(JSON.stringify(tl, null, 2))
+      } else if (!tl.items.length) {
+        out(lens === 'write' ? '（还没有任何写入记录）' : '（还没有事件）')
+      } else {
+        for (const it of [...tl.items].reverse()) {
+          const who = it.kind === 'write' ? it.actor : it.actor
+          const tag = it.level === 'error' ? '✗' : it.level === 'warn' ? '!' : '·'
+          const text = it.kind === 'write' ? `${it.reason}  ${it.path}` : it.text
+          out(`${tag} ${String(it.ts).replace('T', ' ').slice(0, 19)} ${it.kind} ${who}  ${text}`)
+        }
+        out('')
+        out(`${tl.counts.total} 条：事件 ${tl.counts.events} / 写入 ${tl.counts.writes} / 警 ${tl.counts.warn} / 错 ${tl.counts.error} / 拒绝 ${tl.counts.refusals}`)
+      }
+      return EXIT.OK
     }
 
     if (cmd === 'doctor') {
