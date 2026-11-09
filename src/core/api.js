@@ -1,7 +1,10 @@
 // src/core/api.js —— 管理台的只读 API。
 // 写操作（屏蔽、回滚）留在 CLI 与后续版本；P8 先把"看得见"做出来。
-import { readMarker, listPersonas } from './persona.js'
-import { recall, listEntries, openEntry, contextFor, buildCard, CARD_BUDGET_BYTES } from './memory.js'
+import { readMarker, listPersonas, createPersona, switchPersona } from './persona.js'
+import { recall, listEntries, openEntry, contextFor, buildCard, CARD_BUDGET_BYTES, PURPOSE_INJECT_LIMIT } from './memory.js'
+import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from './personacard.js'
+import { readDrives, DRIVE_NEEDS, DRIVE_BASE, DRIVE_CAP } from './drives.js'
+import { readPurposes, writePurposes, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED, SELECT_RECENT_MS } from './purposes.js'
 import { healthReport } from './inbox.js'
 import { loadEffectiveRules, recentRefusals } from './rules.js'
 import { shield, unshield } from './shield.js'
@@ -117,6 +120,59 @@ export function handleApi(root, url) {
 
   if (pathname === '/api/status') return { status: 200, body: buildStatus(root) }
 
+  // ── 人格（P12）─────────────────────────────────────────────────────────
+  // 一台机器上有哪几个人格、当前这张卡长什么样。卡里既有原文也有"注入实测"——
+  // 两样都来自同一套函数，页面上不放近似示意。
+  if (pathname === '/api/persona') {
+    return { status: 200, body: { ok: true, ...readCard(root, pid) } }
+  }
+
+  // 动机：五股劲 + 攒着还没说的事。只读——刷新强度会写盘，那件事只该由
+  // 注入时（rememberLine）做，页面点一下不该让她的状态动一下。
+  if (pathname === '/api/motive') {
+    const drv = readDrives(root, pid)
+    const doc = readPurposes(root, pid)
+    const items = (doc.items ?? []).slice().sort((a, b) => {
+      const rank = (p) => (p.status === 'open' ? 0 : 1)
+      return rank(a) - rank(b) || String(b.created).localeCompare(String(a.created))
+    })
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        drives: { values: drv.values, at: drv.at, needs: DRIVE_NEEDS, base: DRIVE_BASE, cap: DRIVE_CAP },
+        items: items.map((p) => ({
+          id: p.id,
+          need: p.need,
+          text: p.text,
+          topic: p.topic ?? '',
+          origin: p.origin ?? null,
+          status: p.status,
+          created: p.created,
+          due: p.due,
+          hits: Number(p.hits ?? 0),
+          offered: Number(p.offered ?? 0),
+          lastHit: p.last_hit ?? null,
+          lastOffered: p.last_offered ?? null,
+          closedAt: p.closed_at ?? null,
+          closeReason: p.close_reason ?? null,
+        })),
+        counts: {
+          open: items.filter((p) => p.status === 'open').length,
+          done: items.filter((p) => p.status === 'done').length,
+          dropped: items.filter((p) => p.status === 'dropped').length,
+        },
+        rules: {
+          limit: PURPOSE_INJECT_LIMIT,
+          maxHits: SELECT_MAX_HITS,
+          maxOffered: SELECT_MAX_OFFERED,
+          recentHours: Math.round(SELECT_RECENT_MS / 3_600_000),
+        },
+      },
+    }
+  }
+
+
   // ── 模块（读）──────────────────────────────────────────────────────────
   if (pathname === '/api/modules') {
     return { status: 200, body: { ok: true, modules: listModules(root), summary: moduleSummary(root) } }
@@ -213,7 +269,8 @@ export function handleApi(root, url) {
     const channel = searchParams.get('channel') || null
     const budgetParam = searchParams.get('budget')
     const budget = budgetParam ? Number(budgetParam) : CARD_BUDGET_BYTES
-    const text = contextFor(root, pid, { channel, budget })
+    // preview：管理台里"看一眼"不该改她的状态（不记 offered、不挖新的、不判过期）
+    const text = contextFor(root, pid, { channel, budget, preview: true })
     return { status: 200, body: { ok: true, channel, text, budget, bytes: Buffer.byteLength(text, 'utf8') } }
   }
 
@@ -319,7 +376,7 @@ export function handleApi(root, url) {
       { messages: 0, bytes: 0 },
     )
 
-    const cardText = contextFor(root, pid, {})
+    const cardText = contextFor(root, pid, { preview: true })
     const cardBytes = Buffer.byteLength(cardText, 'utf8')
 
     return {
@@ -412,6 +469,70 @@ export function handleApiWrite(root, url, body) {
   const { pathname } = url
 
   try {
+    // ── 人格卡（P12）─────────────────────────────────────────────────────
+    // 底稿只有人能写。`actor` 写死 human:editor——将来若有人在这儿接模型，
+    // 版本历史里必须一眼能看出来是谁动的。
+    if (pathname === '/api/persona/save') {
+      // 两种用法：
+      //   {files:[{file, sections|text, expect}]} —— 卡上一个「保存」按钮，一次交上来几份
+      //   {file, sections|text, expect}          —— 单份（脚本用）
+      const r = Array.isArray(b.files)
+        ? saveCardFiles(root, pid, b.files, { reason: '管理台编辑人格卡' })
+        : {
+            files: [
+              saveCardFile(root, pid, {
+                file: String(b.file ?? ''),
+                sections: Array.isArray(b.sections) ? b.sections : undefined,
+                text: typeof b.text === 'string' ? b.text : undefined,
+                expect: b.expect ? String(b.expect) : undefined,
+              }),
+            ],
+          }
+      // 保存完把整张卡回给页面：指纹（expect）随之更新，下一次保存才不会误判"过期"。
+      // 形状统一成 {active, personas, card}，和 GET /api/persona 一样。
+      return { status: 200, body: { ok: true, ...r, ...readCard(root, pid) } }
+    }
+
+    if (pathname === '/api/persona/rename') {
+      const r = renameCard(root, pid, b.name, { expect: b.expect ? String(b.expect) : undefined })
+      return { status: 200, body: { ok: true, ...r, ...readCard(root, pid) } }
+    }
+
+    if (pathname === '/api/persona/create') {
+      const id = String(b.id ?? '').trim()
+      const name = String(b.name ?? '').trim() || id
+      if (!id) return { status: 400, body: { ok: false, error: '需要目录名（小写字母/数字/-/_，例如 xiaoyu）' } }
+      // from: 'copy' = 照抄当前人格的底稿（不抄记忆）；不传则用空白模板
+      const from = b.from === 'copy' ? pid : null
+      const created = createPersona(root, id, name, { from })
+      // 卡上填的那几项写进骨架（空白模板里全是 <占位符>，不清掉就永远读不到东西）
+      if (b.card && typeof b.card === 'object') {
+        try {
+          seedCard(root, id, b.card)
+        } catch {
+          /* 种子写不进去不该让新人格建不出来；建完在卡里补也一样 */
+        }
+      }
+      return { status: 200, body: { ok: true, ...created, from, ...readCard(root, pid) } }
+    }
+
+    if (pathname === '/api/persona/switch') {
+      const id = String(b.id ?? '').trim()
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      const r = switchPersona(root, id)
+      return { status: 200, body: { ok: true, ...r, ...readCard(root, readMarker(root)?.active ?? null) } }
+    }
+
+    if (pathname === '/api/purpose/close') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      const doc = readPurposes(root, pid)
+      const r = closePurpose(doc, id, { reason: String(b.reason ?? '人为放下') })
+      if (!r.changed) return { status: 404, body: { ok: false, error: '没有这条，或它已经关过了' } }
+      writePurposes(root, pid, { ...doc, items: r.items })
+      return { status: 200, body: { ok: true, id } }
+    }
+
     if (pathname === '/api/shield') {
       const targets = Array.isArray(b.targets) ? b.targets.filter(Boolean) : []
       if (!targets.length) return { status: 400, body: { ok: false, error: '缺少 targets' } }
@@ -675,7 +796,9 @@ export function handleApiWrite(root, url, body) {
       return { status: 200, body: { ok: true, ...exportModule(root, id) } }
     }
   } catch (err) {
-    return { status: 400, body: { ok: false, error: String(err?.message ?? err) } }
+    // 409 = 你手里那份过期了（文件在别处被改过）。它不是"参数错"，分开报才说得清。
+    const status = err?.code === 'E_STALE' ? 409 : 400
+    return { status, body: { ok: false, code: err?.code ?? null, error: String(err?.message ?? err) } }
   }
 
   return { status: 404, body: { ok: false, error: 'no such api' } }

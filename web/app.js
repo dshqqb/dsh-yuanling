@@ -6,11 +6,14 @@ const themeKey = 'yuanling.theme'
 const state = {
   token: localStorage.getItem(tokenKey) || '',
   tab: 'status',
-  mode: 'core',
+  mode: 'frame',
+  // 每个模式各记一个"上次停在哪"，切回来不用重找
+  tabByMode: { frame: 'status', persona: 'overview' },
   peopleSort: 'weight',
   groupGid: null,
   logLens: 'all',
   diagMode: 'problems',
+  memoryView: 'search',
   moduleId: null,
   // 模块模式下的左侧菜单：控制台 + 每个已装模块。列表缓存在这里，回车/点击都不用再请求
   modules: [],
@@ -19,6 +22,10 @@ const state = {
   // 当前打开模块的**详情**（含 uiTabs / configFields）。列表那份没有这些字段，
   // 点 tab 时要靠它判断"这页是 config 型还是 records 型"。
   moduleDetail: null,
+  // 人格卡：最近一次从服务端拿到的卡（保存时要用它的 expect 指纹防覆盖）。
+  // cardForm 里除了卡本身，还压着各个文本域——保存按钮要能一次把它们全交上去。
+  cardForm: null,
+  personaList: [],
 }
 
 /**
@@ -62,16 +69,17 @@ const I = {
   pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21" stroke-linecap="round" stroke-linejoin="round"/>',
   // 模块菜单项用立方体：和"控制台"的插头区分开，一眼能看出"这是一个模块"
   box: '<path d="M12 3.2l7.5 4.2-7.5 4.2-7.5-4.2 7.5-4.2z" stroke-linejoin="round"/><path d="M4.5 7.4v6.6l7.5 4.2 7.5-4.2V7.4" stroke-linejoin="round"/>',
+  // 动机用火苗：和人群、盾牌都不同形，扫一眼就能定位
+  flame: '<path d="M12 3.5c2.7 3.1 4.2 5.2 4.2 7.7a4.2 4.2 0 01-8.4 0c0-1.1.3-2 1-3 .3 1.3 1 2 2 2.2.6-2 .8-4.2 1.2-6.9z" stroke-linejoin="round"/>',
 }
 
-const NAV = [
+// 顶部三块：框架（共通）/ 人格（每人格一份）/ 模块（外部进程）。
+//
+// 分开的依据只有一条：**切换人格时，哪一页会变？**
+// 会变的进"人格"，不会变的进"框架"。所以"规则"在框架里（硬线在根级、意愿只有一份），
+// 而"人物 / 群体 / 动机 / 记忆"在人格里（换人格就全换）。
+const FRAME_NAV = [
   { id: 'status', label: '状态', icon: 'gauge' },
-  { id: 'card', label: '注入预览', icon: 'layers' },
-  { id: 'memory', label: '记忆', icon: 'search' },
-  { id: 'entries', label: '条目', icon: 'list' },
-  { id: 'proposals', label: '提案', icon: 'spark' },
-  { id: 'people', label: '人物', icon: 'user' },
-  { id: 'groups', label: '群体', icon: 'users' },
   { id: 'rules', label: '规则', icon: 'shield' },
   { id: 'usage', label: '用量', icon: 'chart' },
   { id: 'sources', label: '来源', icon: 'plug' },
@@ -79,6 +87,20 @@ const NAV = [
   { id: 'diag', label: '诊断', icon: 'pulse' },
   { id: 'refusals', label: '拒绝记录', icon: 'ban' },
 ]
+
+const PERSONA_NAV = [
+  { id: 'overview', label: '概况', icon: 'layers' },
+  { id: 'shape', label: '人格塑造', icon: 'spark' },
+  { id: 'memory', label: '记忆', icon: 'search' },
+  { id: 'motive', label: '动机', icon: 'flame' },
+  { id: 'people', label: '人物', icon: 'user' },
+  { id: 'groups', label: '群体', icon: 'users' },
+]
+
+const NAV_BY_MODE = { frame: FRAME_NAV, persona: PERSONA_NAV }
+const TAB_MODE = Object.fromEntries(
+  Object.entries(NAV_BY_MODE).flatMap(([mode, list]) => list.map((n) => [n.id, mode])),
+)
 
 // ── 小工具 ────────────────────────────────────────────────────────────
 function el(tag, cls, text) {
@@ -105,6 +127,32 @@ function setConn(ok, title) {
   d.className = `dot ${ok ? 'ok' : 'bad'}`
   d.title = title || (ok ? '已连接' : '连接失败')
 }
+
+// ── 页面级报错 ────────────────────────────────────────────────────────
+//
+// 为什么要这一条：`openTab` 以前把加载失败只打进 console，页面就是一片空白。
+// 空白和"真的没数据"在界面上长得一模一样——人会开始怀疑数据，而不是怀疑代码。
+// 现在失败必须写在页面上，并且给出下一步。
+function showPageError(err) {
+  const box = $('page-error')
+  if (!box) return
+  const text = String(err?.message ?? err)
+  if (text === 'unauthorized') {
+    box.textContent = '没有令牌，或令牌不对：点右上角钥匙，粘贴 system/secrets/console.token 的内容。'
+  } else if (/^404\b/.test(text)) {
+    // 最常见的 404：后端还是旧代码（新接口在重启后才存在）
+    box.textContent = `这个接口不存在（${text}）。如果是刚更新过代码，重启 DSH 再试——静态页面刷新就生效，但后端路由要重启进程。`
+  } else {
+    box.textContent = `这一页没加载出来：${text}`
+  }
+  box.hidden = false
+}
+
+function hidePageError() {
+  const box = $('page-error')
+  if (box) box.hidden = true
+}
+
 
 function showTokenBar(show) {
   $('tokenbar').hidden = !show
@@ -167,7 +215,7 @@ function buildNav() {
   nav.innerHTML = ''
 
   // 模块模式：最上面是「控制台」，下面是每个已装模块。点击模块直接进详情。
-  if (state.mode !== 'core') {
+  if (state.mode === 'modules') {
     const consoleBtn = el('button', 'nav-item' + (state.moduleView === 'console' ? ' is-active' : ''))
     consoleBtn.append(icon('plug'), el('span', 'label', '控制台'))
     consoleBtn.addEventListener('click', () => openModuleConsole())
@@ -195,7 +243,7 @@ function buildNav() {
     return
   }
 
-  for (const item of NAV) {
+  for (const item of NAV_BY_MODE[state.mode] ?? FRAME_NAV) {
     const b = el('button', 'nav-item' + (item.id === state.tab ? ' is-active' : ''))
     b.dataset.tab = item.id
     b.append(icon(item.icon), el('span', 'label', item.label))
@@ -204,24 +252,43 @@ function buildNav() {
   }
 }
 
+function paintModes() {
+  for (const m of ['frame', 'persona', 'modules']) {
+    const btn = $(`mode-${m}`)
+    if (btn) btn.classList.toggle('is-active', state.mode === m)
+  }
+}
+
+/**
+ * 切顶部的三块。
+ *
+ * 三块里只有「模块」会换掉整个页面区（它有自己的 #page-modules），另外两块共用
+ * 同一批 `.page`，靠 openTab 显隐。所以这里只记住各自停在哪一页，剩下的交给它。
+ */
 function setMode(mode) {
-  state.mode = mode
-  $('mode-core').classList.toggle('is-active', mode === 'core')
-  $('mode-modules').classList.toggle('is-active', mode !== 'core')
-  if (mode === 'core') {
-    $('page-modules').hidden = true
+  if (mode === 'modules') {
+    state.mode = 'modules'
+    paintModes()
     state.moduleView = 'console'
+    for (const s of document.querySelectorAll('.main > .page')) s.hidden = s.id !== 'page-modules'
     buildNav()
-    openTab(state.tab)
+    $('crumb-page').textContent = '控制台'
+    loadModules()
+      .then(() => {
+        buildNav()
+        autoCheckUpdates()
+      })
+      .catch(() => {})
+    showModuleView('console')
     return
   }
-  // 进模块模式：先把列表拉回来（左侧菜单直接从它渲染），默认落在控制台
-  for (const s of document.querySelectorAll('.main > .page')) s.hidden = s.id !== 'page-modules'
-  state.moduleView = 'console'
-  loadModules()
-    .then(() => autoCheckUpdates())
-    .catch(() => {})
-  showModuleView('console')
+
+  state.mode = mode
+  paintModes()
+  buildNav()
+  const want = state.tabByMode[mode]
+  const fallback = (NAV_BY_MODE[mode] ?? FRAME_NAV)[0].id
+  openTab(TAB_MODE[want] === mode ? want : fallback)
 }
 
 function applyTheme(t) {
@@ -250,24 +317,34 @@ async function loadStatus() {
     const p = await api('/api/proposals')
     pending = p.proposals.filter((x) => x.status === 'pending').length
   } catch {}
+  let mods = null
+  try {
+    mods = await api('/api/modules')
+  } catch {}
 
   $('side-persona').textContent = s.personas.find((p) => p.active)?.name || s.active || '—'
   $('side-root').textContent = s.root
 
   const box = $('status-cards')
   box.innerHTML = ''
-  box.append(stat('条目', s.entries, '个主题'), stat('事实', s.facts, '条记忆'), stat('待定提案', pending, '等你决定'), stat('人格', s.personas.length, s.active || ''))
+  box.append(
+    stat('条目', s.entries, '当前人格的主题'),
+    stat('事实', s.facts, '当前人格的记忆'),
+    stat('待定提案', pending, '等你点头'),
+    stat('人格', s.personas.length, s.active || ''),
+  )
 
-  const list = $('personas')
-  list.innerHTML = ''
-  if (!s.personas.length) list.append(el('div', 'muted small', '还没有人格'))
-  for (const p of s.personas) {
-    const n = el('div', 'item')
-    const body = el('div', 'body')
-    body.append(el('div', 't', `${p.active ? '● ' : '○ '}${p.name}`), el('div', 's', p.id))
-    n.append(body)
-    list.append(n)
+  const meta = $('status-meta')
+  meta.innerHTML = ''
+  const kv = (k, v) => meta.append(el('div', 'k', k), el('div', 'v', String(v)))
+  kv('数据目录', s.root)
+  kv('当前人格', `${s.personas.find((p) => p.active)?.name ?? '—'}（${s.active ?? '—'}）`)
+  kv('格式版本', s.format ?? '—')
+  if (mods) {
+    const running = (mods.modules ?? []).filter((m) => m.state === 'running').length
+    kv('模块', `${(mods.modules ?? []).length} 个已装，${running} 个在跑`)
   }
+  kv('切换人格', '在「人格 → 概况」里')
 }
 
 async function loadCard() {
@@ -278,7 +355,391 @@ async function loadCard() {
   $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.channel ? ` · 频道 ${d.channel}` : ''}`
 }
 
+// ── 人格 → 概况 ────────────────────────────────────────────────────────
+//
+// 一页两件事：**一张人格卡**（改了不点保存不算数）+ **一段注入预览**。
+//
+// "她真正读到的"没有单独一列：每一节标题右边直接写"她会读到：…"，因为能改的东西
+// 和它的效果必须挨着——分成两页，人就得来回对，对两次就懒得对了。
+//
+// 底稿的生效面（Q2=A）：SELF.md 三段 + lines.md（[硬线]）+ style.md（[习惯]）进上下文；
+// user.md 不进（它和"记忆 + 人物卡"重复），所以只读、收在页尾的 details 里。
+const PERSONA_FILE_HINT = {
+  self: '三段进上下文；其余段落只给人看。',
+  lines: '会整段进上下文——代码在拦的那条（guardrails.json）她看不见，这段是让她知道边界。',
+  style: '采纳的提案写在这里，会进上下文。回滚某条提案会把整个文件退回应用前那一版，手改会一起被覆盖。',
+}
+
+function markDirty() {
+  const msg = $('persona-save-msg')
+  msg.textContent = '有改动，还没保存'
+  msg.classList.add('dirty')
+}
+
+function sectionBlock(s, areas) {
+  const sect = el('div', 'sect')
+  const sh = el('div', 'sect-head')
+  sh.append(el('span', 'sect-title', s.title))
+  if (s.injected) {
+    // 比的是**她真正读到的那一行**，不是这一节的字节数——
+    // 一节里可能只有两条被抽走（核心身份只取名字/存在的原因），拿整节去比会误报超预算。
+    const over = s.lineBytes > s.budget
+    sh.append(el('span', `tag ${over ? 'bad' : 'ok'}`, `${s.lineBytes}/${s.budget} 字节`))
+    if (!s.line) sh.append(el('span', 'tag warn', '这一节没抽出可用内容（空着，或还是 &lt;占位符&gt;）'))
+  } else {
+    sh.append(el('span', 'tag', '不进上下文'))
+  }
+  sect.append(sh)
+  if (s.injected && s.line) sect.append(el('div', 'muted small mono-line', `她会读到：${s.line}`))
+
+  const ta = document.createElement('textarea')
+  ta.rows = Math.min(12, Math.max(3, s.body.split('\n').length + 1))
+  ta.value = s.body
+  ta.dataset.title = s.title
+  ta.placeholder = `## ${s.title}`
+  ta.addEventListener('input', markDirty)
+  sect.append(ta)
+  areas.push(ta)
+  return sect
+}
+
+function fileBlock(f, form) {
+  const wrap = el('div', 'card')
+  const head = el('div', 'card-head')
+  head.append(el('h3', undefined, f.label))
+  // 骨架不挂整体标签：它四节里只有三节进上下文，逐节标更准
+  if (f.key !== 'self') {
+    head.append(el('span', f.injected ? 'tag ok' : 'tag', f.injected ? '进上下文' : '不进上下文'))
+    if (f.injected && f.budget) {
+      const over = f.lineBytes > f.budget
+      const empty = !f.line
+      head.append(el('span', `tag ${over ? 'bad' : empty ? 'warn' : 'ok'}`, empty ? '还没有内容' : `${f.lineBytes}/${f.budget} 字节`))
+    }
+  }
+  wrap.append(head)
+  wrap.append(el('div', 'muted small', PERSONA_FILE_HINT[f.key] ?? f.note))
+  wrap.append(el('div', 'muted small', f.path))
+
+  if (!f.exists) {
+    wrap.append(el('div', 'zone-empty', '文件不存在。这个版本不会替你新建底稿。'))
+    return wrap
+  }
+
+  if (f.key === 'self') {
+    for (const s of f.sections) wrap.append(sectionBlock(s, form.self))
+    return wrap
+  }
+
+  // lines.md / style.md 没有 `## 小节`，就是一段话：整篇编辑
+  if (f.injected && f.line) {
+    wrap.append(el('div', 'muted small mono-line', `她会读到：${f.line}`))
+  } else if (f.injected && f.key === 'style') {
+    wrap.append(
+      el(
+        'div',
+        'muted small',
+        '这里还空着：写一条就是一条习惯（每行一条），或者等「人格塑造」里采纳的提案自动写进来。写进来的会进上下文。',
+      ),
+    )
+  }
+  const ta = document.createElement('textarea')
+  ta.rows = Math.min(14, Math.max(4, f.text.split('\n').length))
+  ta.value = f.text
+  ta.addEventListener('input', markDirty)
+  form.texts[f.key] = ta
+  wrap.append(ta)
+  return wrap
+}
+
+async function loadOverview() {
+  hidePageError()
+  const say = $('persona-save-msg')
+  say.textContent = '改了不点保存不算数'
+  say.classList.remove('dirty')
+
+  const d = await api('/api/persona')
+  state.personaList = d.personas ?? []
+  const card = d.card
+  const form = { card, self: [], texts: {}, nameEl: null }
+  state.cardForm = form
+
+  const box = $('persona-files')
+  box.innerHTML = ''
+  const extraBody = $('persona-extra-body')
+  extraBody.innerHTML = ''
+
+  if (!card) {
+    $('persona-active-tag').textContent = '还没有人格'
+    $('persona-meta').textContent = '先跑 yuanling init'
+    return
+  }
+
+  $('persona-active-tag').textContent = `● ${card.name}`
+  $('persona-meta').textContent = `（${card.id}）· personas/${card.id} · 建于 ${String(card.created_at ?? '').replace('T', ' ').slice(0, 19)}`
+
+  // 名称是卡的一部分：单独一张，放在卡最上面
+  const nameCard = el('div', 'card')
+  const nh = el('div', 'card-head')
+  nh.append(el('h3', undefined, '名称'))
+  nh.append(el('span', 'muted small', '保存时会一起改：persona.json、人格清单、骨架标题'))
+  nameCard.append(nh)
+  const nameIn = document.createElement('input')
+  nameIn.placeholder = '名字'
+  nameIn.value = card.name
+  nameIn.addEventListener('input', markDirty)
+  form.nameEl = nameIn
+  const row = el('div', 'field-row')
+  row.append(nameIn)
+  nameCard.append(row)
+  box.append(nameCard)
+
+  for (const f of card.files) {
+    if (!f.editable) continue // user.md：不进上下文，收到页尾 details 里
+    box.append(fileBlock(f, form))
+  }
+
+  const extra = card.files.find((f) => !f.editable)
+  if (extra) {
+    extraBody.append(el('div', 'muted small', PERSONA_FILE_HINT[extra.key] ?? extra.note))
+    extraBody.append(el('pre', 'code', extra.text || '（文件不存在）'))
+  }
+
+  // 卡下面就是注入预览。它是 preview：算得出她会读到什么，但**不改她的状态**
+  // （不记 offered、不挖新的、不判过期）——翻几遍管理台不该把一件事翻成"她不想提"。
+  await loadCard().catch(() => {})
+}
+
+async function saveOverview() {
+  const form = state.cardForm
+  const msg = $('persona-save-msg')
+  if (!form?.card) {
+    msg.textContent = '还没有人格可保存'
+    return
+  }
+  const btn = $('persona-save')
+  btn.disabled = true
+  msg.textContent = '保存中…'
+
+  let done = '没有改动'
+  try {
+    const files = []
+    for (const f of form.card.files) {
+      if (!f.editable) continue
+      if (f.key === 'self') {
+        files.push({ file: 'self', sections: form.self.map((t) => ({ title: t.dataset.title, body: t.value })), expect: f.expect })
+      } else if (form.texts[f.key]) {
+        files.push({ file: f.key, text: form.texts[f.key].value, expect: f.expect })
+      }
+    }
+
+    const name = form.nameEl?.value.trim() ?? ''
+    const renamed = Boolean(name) && name !== form.card.name
+    if (form.nameEl && !name) throw new Error('名字不能为空')
+
+    const r = await postApi('/api/persona/save', { files })
+    if (renamed) await postApi('/api/persona/rename', { name })
+    if (r.changed || renamed) {
+      done = `✓ 已保存${renamed ? `（名字改成「${name}」）` : ''}—— 进版本历史，可在「框架 → 日志 → 只看写入」里回滚`
+    }
+  } catch (err) {
+    const stale = String(err.message).includes('被改过')
+    await loadOverview()
+    msg.textContent = stale ? '文件在你打开之后被改过——已重新加载，请再改一次' : `保存失败：${err.message}`
+    msg.classList.add('dirty')
+    btn.disabled = false
+    return
+  }
+
+  await loadOverview()
+  await loadStatus()
+  msg.textContent = done
+  msg.classList.remove('dirty')
+  btn.disabled = false
+}
+
+// ── 新建 / 切换：都是弹窗 ──────────────────────────────────────────────
+function openNewPersona() {
+  for (const id of ['pn-name', 'pn-id', 'pn-reason', 'pn-tone', 'pn-tic', 'pn-avoid', 'pn-values']) $(id).value = ''
+  $('pn-copy').checked = false
+  $('pn-msg').textContent = ''
+  $('persona-new-modal').hidden = false
+  $('pn-name').focus()
+}
+
+async function submitNewPersona() {
+  const name = $('pn-name').value.trim()
+  const id = $('pn-id').value.trim()
+  const msg = $('pn-msg')
+  if (!name) {
+    msg.textContent = '名字要填'
+    return
+  }
+  if (!/^[a-z0-9][a-z0-9_-]{1,31}$/.test(id)) {
+    msg.textContent = '目录名：小写字母/数字/-/_，2-32 位，例如 xiaoyu'
+    return
+  }
+
+  const btn = $('pn-ok')
+  btn.disabled = true
+  msg.textContent = '正在建目录…'
+  try {
+    const values = $('pn-values')
+      .value.split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+
+    const r = await postApi('/api/persona/create', {
+      id,
+      name,
+      from: $('pn-copy').checked ? 'copy' : '',
+      card: {
+        reason: $('pn-reason').value,
+        tone: $('pn-tone').value,
+        tic: $('pn-tic').value,
+        avoid: $('pn-avoid').value,
+        values,
+      },
+    })
+
+    msg.textContent = '已建好，正在切过去…'
+    await postApi('/api/persona/switch', { id: r.id })
+    $('persona-new-modal').hidden = true
+    await loadStatus()
+    state.tabByMode.persona = 'overview'
+    await openTab('overview')
+    $('persona-save-msg').textContent = `✓ 已新建并切到「${r.name || r.id}」（personas/${r.id}/）`
+  } catch (err) {
+    msg.textContent = `失败：${err.message}`
+  } finally {
+    btn.disabled = false
+  }
+}
+
+function openSwitchPersona() {
+  const list = $('ps-list')
+  list.innerHTML = ''
+  $('ps-msg').textContent = ''
+
+  const personas = state.personaList ?? []
+  if (!personas.length) {
+    list.append(el('div', 'zone-empty', '这台机器上只有一个人格。'))
+  }
+
+  for (const p of personas) {
+    const row = el('div', 'item' + (p.active ? ' is-current' : ''))
+    const body = el('div', 'body')
+    const t = el('div', 't')
+    if (p.active) t.append(el('span', 'tag ok', '当前'))
+    t.append(document.createTextNode(p.name))
+    body.append(t, el('div', 's', `${p.id} · personas/${p.id}/${p.dirExists ? '' : ' · 目录缺失，切不了'}`))
+    row.append(body)
+
+    const acts = el('div', 'actions')
+    const btn = el('button', 'btn small ghost', p.active ? '已经是它' : '切到它')
+    btn.disabled = Boolean(p.active) || !p.dirExists
+    btn.addEventListener('click', () => switchTo(p.id))
+    acts.append(btn)
+    row.append(acts)
+    list.append(row)
+  }
+
+  $('persona-switch-modal').hidden = false
+}
+
+async function switchTo(id) {
+  const msg = $('ps-msg')
+  msg.textContent = '正在切换…'
+  try {
+    const r = await postApi('/api/persona/switch', { id })
+    $('persona-switch-modal').hidden = true
+    await loadStatus()
+    state.tabByMode.persona = 'overview'
+    await openTab('overview')
+    $('persona-save-msg').textContent = r.changed ? `✓ 已切到 ${id}` : `本来就是 ${id}`
+  } catch (err) {
+    msg.textContent = `失败：${err.message}`
+  }
+}
+
+// ── 人格 → 动机 ────────────────────────────────────────────────────────
+const NEED_LABELS = {
+  connect: '想陪',
+  care: '想关心',
+  curiosity: '好奇',
+  share: '想分享',
+  identity: '想被记住',
+}
+
+async function loadMotive() {
+  const d = await api('/api/motive')
+
+  const drives = $('motive-drives')
+  drives.innerHTML = ''
+  const vals = d.drives?.values ?? {}
+  for (const need of d.drives?.needs ?? []) {
+    const v = Number(vals[need] ?? 0)
+    const row = el('div', 'drive-row')
+    row.append(el('span', 'drive-name', NEED_LABELS[need] ?? need))
+    const meter = el('span', 'meter')
+    const fill = el('span', 'meter-fill')
+    fill.style.width = `${Math.round(Math.min(1, v) * 100)}%`
+    meter.append(fill)
+    row.append(meter, el('span', 'drive-val', `${Math.round(v * 100)}%`))
+    drives.append(row)
+  }
+  $('motive-drives-at').textContent = d.drives?.at
+    ? `上次刷新 ${String(d.drives.at).replace('T', ' ').slice(0, 19)}（注入时会自动强度衰减）`
+    : '还没有记录：她还没和人说过话'
+
+  $('motive-count').textContent = `挂着的 ${d.counts.open} 条 · 已放下 ${d.counts.done} · 过期 ${d.counts.dropped}`
+  $('motive-rules').textContent =
+    `一轮最多摆 ${d.rules.limit} 条；同一条 ${d.rules.recentHours} 小时内不重复；` +
+    `她说过 ${d.rules.maxHits} 次，或摆了 ${d.rules.maxOffered} 次一次都没接，就自动放下。`
+
+  const out = $('motive-out')
+  out.innerHTML = ''
+  if (!d.items.length) {
+    out.append(el('div', 'muted small', '还没有。动机是从记忆里挖出来的：有情绪、或带着"以后怎么样"的事实，放几天才会变成一条。'))
+    return
+  }
+
+  const STATUS = { open: ['', '挂着'], done: ['ok', '已放下'], dropped: ['warn', '过期'] }
+  for (const p of d.items) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const t = el('div', 't')
+    const tags = el('span')
+    const [cls, label] = STATUS[p.status] ?? ['', p.status]
+    tags.append(el('span', `tag ${cls}`.trim(), label))
+    tags.append(el('span', 'tag purple', NEED_LABELS[p.need] ?? p.need ?? '—'))
+    t.append(tags, document.createTextNode(p.text))
+    body.append(t)
+
+    const bits = [`说过 ${p.hits} 次 / 摆过 ${p.offered} 次`]
+    if (p.topic) bits.push(`主题「${p.topic}」`)
+    if (p.origin) bits.push(p.origin)
+    body.append(el('div', 's', bits.join(' · ')))
+    if (p.closeReason) body.append(el('div', 's', `放下原因：${p.closeReason}`))
+    n.append(body)
+
+    if (p.status === 'open') {
+      const acts = el('div', 'actions')
+      acts.append(
+        mkBtn('放下', 'small ghost', async () => {
+          await postApi('/api/purpose/close', { id: p.id, reason: '人为放下' })
+          await loadMotive()
+        }),
+      )
+      n.append(acts)
+    }
+    out.append(n)
+  }
+}
+
 async function loadMemory() {
+  // 一页两视图：按词搜 / 按目录翻。数据同源（spaces/），视图不同。
+  if (state.memoryView === 'entries') return loadEntries()
+
   const q = $('mem-q').value.trim()
   const all = $('mem-all').checked ? '1' : '0'
   const d = await api(`/api/memory?q=${encodeURIComponent(q)}&all=${all}&limit=20`)
@@ -866,12 +1327,14 @@ async function loadDiag() {
 }
 
 // ── 切页 ──────────────────────────────────────────────────────────────
+// 键就是菜单 id。注意 shape 用的是 loadProposals——"人格塑造"就是原来那页提案，
+// 改名是为了让人看懂，不是重写。
 const loaders = {
   status: loadStatus,
-  card: loadCard,
+  overview: loadOverview,
+  shape: loadProposals,
   memory: loadMemory,
-  entries: loadEntries,
-  proposals: loadProposals,
+  motive: loadMotive,
   people: loadPeople,
   groups: loadGroups,
   rules: loadRules,
@@ -1732,29 +2195,36 @@ async function openModule(id) {
   $('module-log-hint').textContent = `${(m.log ?? []).length} 行`
 }
 
-const titles = Object.fromEntries(NAV.map((n) => [n.id, n.label]))
+const titles = Object.fromEntries([...FRAME_NAV, ...PERSONA_NAV].map((n) => [n.id, n.label]))
+const MODE_LABELS = { frame: '框架', persona: '人格', modules: '模块' }
 
 async function openTab(name) {
-  // 从「模块」回到「核心」时不走 setMode，避免它再回调 openTab 造成二次加载
-  if (state.mode !== 'core') {
-    state.mode = 'core'
-    $('mode-core').classList.add('is-active')
-    $('mode-modules').classList.remove('is-active')
+  const mode = TAB_MODE[name]
+  if (!mode) return
+  // 从别的模式点过来：先换顶栏与左侧菜单，再走公共的显隐逻辑
+  if (state.mode !== mode) {
+    state.mode = mode
+    paintModes()
     buildNav()
   }
   state.tab = name
+  state.tabByMode[mode] = name
   for (const b of document.querySelectorAll('.nav-item')) b.classList.toggle('is-active', b.dataset.tab === name)
   for (const s of document.querySelectorAll('.main > .page')) s.hidden = s.id !== `tab-${name}`
+  $('crumb-root').textContent = `原灵 · ${MODE_LABELS[mode] ?? mode}`
   $('crumb-page').textContent = titles[name] || name
+  hidePageError()
   try {
     await loaders[name]()
   } catch (err) {
     if (String(err.message) !== 'unauthorized') console.error(err)
+    showPageError(err)
   }
 }
 
 // ── 事件绑定 ──────────────────────────────────────────────────────────
-$('mode-core').addEventListener('click', () => setMode('core'))
+$('mode-frame').addEventListener('click', () => setMode('frame'))
+$('mode-persona').addEventListener('click', () => setMode('persona'))
 $('mode-modules').addEventListener('click', () => setMode('modules'))
 
 // ── 模块页事件 ────────────────────────────────────────────────────────
@@ -2043,6 +2513,43 @@ $('global-search').addEventListener('keydown', (e) => {
   $('mem-q').value = q
   openTab('memory').then(() => loadMemory())
 })
+
+// ── 人格卡事件 ────────────────────────────────────────────────────────
+$('persona-new-open').addEventListener('click', () => openNewPersona())
+$('persona-switch-open').addEventListener('click', () => openSwitchPersona())
+$('ps-cancel').addEventListener('click', () => {
+  $('persona-switch-modal').hidden = true
+})
+$('pn-cancel').addEventListener('click', () => {
+  $('persona-new-modal').hidden = true
+})
+$('pn-ok').addEventListener('click', () => {
+  submitNewPersona().catch((err) => {
+    $('pn-msg').textContent = `失败：${err.message}`
+  })
+})
+$('persona-save').addEventListener('click', () => {
+  saveOverview().catch((err) => {
+    $('persona-save-msg').textContent = `保存失败：${err.message}`
+    $('persona-save').disabled = false
+  })
+})
+$('persona-reload').addEventListener('click', () => {
+  loadOverview().catch((err) => showPageError(err))
+})
+
+// 记忆页：两张脸之间切
+$('mem-view').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-view]')
+  if (!b) return
+  state.memoryView = b.dataset.view
+  for (const x of $('mem-view').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
+  const search = state.memoryView === 'search'
+  $('mem-view-search').hidden = !search
+  $('mem-view-entries').hidden = search
+  loadMemory().catch(() => {})
+})
+
 
 $('card-load').addEventListener('click', () => loadCard().catch(() => {}))
 $('card-channel').addEventListener('keydown', (e) => e.key === 'Enter' && loadCard().catch(() => {}))

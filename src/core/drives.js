@@ -41,9 +41,10 @@ function clamp01(n) {
 
 /**
  * 刷新需求强度。
- * @param {{now?:number, hoursSinceMaster?:number|null}} opts hoursSinceMaster = 距离上次互动的小时数
+ * @param {{now?:number, hoursSinceMaster?:number|null, persist?:boolean}} opts
+ *   hoursSinceMaster = 距离上次互动的小时数；persist=false 只算不写（管理台预览用）
  */
-export function refreshDrives(root, pid, { now = Date.now(), hoursSinceMaster = null } = {}) {
+export function refreshDrives(root, pid, { now = Date.now(), hoursSinceMaster = null, persist = true } = {}) {
   const cur = readDrives(root, pid)
   const hours = cur.at ? Math.min(72, Math.max(0, (now - Date.parse(cur.at)) / 3_600_000)) : 0
   const decay = Math.pow(0.5, hours / DRIVE_HALF_LIFE_HOURS)
@@ -64,7 +65,7 @@ export function refreshDrives(root, pid, { now = Date.now(), hoursSinceMaster = 
     maxDelta = Math.max(maxDelta, Math.abs(next[need] - cur.values[need]))
   }
 
-  if (hours > 0 || maxDelta >= WRITE_EPSILON) {
+  if (persist && (hours > 0 || maxDelta >= WRITE_EPSILON)) {
     writeJsonAtomic(
       drivesPath(root, pid),
       { version: 1, values: next, at: localIso(new Date(now)) },

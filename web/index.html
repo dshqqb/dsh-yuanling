@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>原灵 · 管理台</title>
-  <link rel="stylesheet" href="/style.css?v=20261110b" />
+  <link rel="stylesheet" href="/style.css?v=20261110d" />
   <script>
     // 首帧之前定主题，避免白闪一下
     ;(function () {
@@ -37,7 +37,8 @@
       </div>
 
       <div class="modes">
-        <button id="mode-core" class="mode is-active">核心</button>
+        <button id="mode-frame" class="mode is-active">框架</button>
+        <button id="mode-persona" class="mode">人格</button>
         <button id="mode-modules" class="mode">模块</button>
       </div>
 
@@ -87,24 +88,53 @@
       </aside>
 
       <main class="main">
+        <div id="page-error" class="page-error" hidden></div>
+
         <section id="tab-status" class="page">
           <div class="page-head">
             <h2>状态</h2>
-            <p class="muted">这台机器上，她现在记得什么。</p>
+            <p class="muted">这台机器上的框架在跑什么。个数都是<b>当前人格</b>的。</p>
           </div>
           <div id="status-cards" class="stats"></div>
           <div class="card">
-            <div class="card-head"><h3>人格</h3></div>
-            <div id="personas" class="list"></div>
+            <div class="card-head"><h3>这台机器</h3></div>
+            <div id="status-meta" class="kv"></div>
           </div>
         </section>
 
-        <section id="tab-card" class="page" hidden>
+        <!-- 人格 → 概况：一张人格卡 + 一段注入预览。菜单第一项，因为"当前是谁"决定后面所有页。 -->
+        <section id="tab-overview" class="page" hidden>
           <div class="page-head">
-            <h2>注入预览</h2>
-            <p class="muted">这一轮她真正读到的文字，一个字都不多。</p>
+            <h2>概况</h2>
+            <p class="muted">当前这个人格是谁。<b>改了不点保存不算数</b>；保存进版本历史，能回滚。</p>
           </div>
+
+          <div class="persona-bar">
+            <div class="persona-bar-title">
+              <span id="persona-active-tag">—</span>
+              <span class="muted small" id="persona-meta"></span>
+            </div>
+            <div class="persona-bar-acts">
+              <button id="persona-new-open" class="btn small">新建人格</button>
+              <button id="persona-switch-open" class="btn small ghost">切换人格</button>
+            </div>
+          </div>
+
+          <div id="persona-files"></div>
+
+          <div class="card save-bar">
+            <div class="field-row">
+              <button id="persona-save" class="btn">保存</button>
+              <button id="persona-reload" class="btn small ghost">放弃改动</button>
+              <span id="persona-save-msg" class="muted small">改了不点保存不算数</span>
+            </div>
+          </div>
+
           <div class="card">
+            <div class="card-head">
+              <h3>注入预览</h3>
+              <span class="muted small">她这一轮真正读到的整段文字（和模型同一个函数算出来）</span>
+            </div>
             <div class="field-row">
               <input id="card-channel" placeholder="频道，例如 private:10001（可留空）" />
               <button id="card-load" class="btn">生成</button>
@@ -112,35 +142,79 @@
             <pre id="card-out" class="code"></pre>
             <div id="card-meta" class="muted small"></div>
           </div>
+
+          <!-- 不进上下文的文件不占位置，但不藏起来 -->
+          <details class="card persona-extra">
+            <summary>还有一份<b>不进上下文</b>的文件：用户画像（<code>persona/user.md</code>）</summary>
+            <div id="persona-extra-body"></div>
+          </details>
         </section>
 
+        <!-- 人格 → 记忆：同一批数据两张脸，一页两视图 -->
         <section id="tab-memory" class="page" hidden>
           <div class="page-head">
             <h2>记忆</h2>
-            <p class="muted">按话题找一条事实，看看它凭什么存在。</p>
-          </div>
-          <div class="card">
-            <div class="field-row">
-              <input id="mem-q" placeholder="按话题搜，例如 备份" />
-              <button id="mem-go" class="btn">搜索</button>
-              <label class="check"><input type="checkbox" id="mem-all" /> 含已失效 / 已隔离</label>
+            <p class="muted">同一批数据的两种看法：按词搜一条（带出处），或按目录翻全部主题。</p>
+            <div class="seg" id="mem-view">
+              <button data-view="search" class="is-active">按词搜</button>
+              <button data-view="entries">按目录翻</button>
             </div>
-            <div id="mem-out" class="list"></div>
+          </div>
+
+          <div id="mem-view-search">
+            <div class="card">
+              <div class="field-row">
+                <input id="mem-q" placeholder="按话题搜，例如 备份" />
+                <button id="mem-go" class="btn">搜索</button>
+                <label class="check"><input type="checkbox" id="mem-all" /> 含已失效 / 已隔离</label>
+              </div>
+              <div id="mem-out" class="list"></div>
+            </div>
+          </div>
+
+          <div id="mem-view-entries" hidden>
+            <div class="card">
+              <div class="card-head"><h3>目录</h3><span class="muted small">一个主题一个文件，写透不拆碎</span></div>
+              <div id="entries-out" class="list"></div>
+            </div>
           </div>
         </section>
 
-        <section id="tab-entries" class="page" hidden>
+        <!-- 人格 → 动机：五股劲 + 攒着还没说的事 -->
+        <section id="tab-motive" class="page" hidden>
           <div class="page-head">
-            <h2>条目</h2>
-            <p class="muted">一个主题一个文件，写透不拆碎。</p>
+            <h2>动机</h2>
+            <p class="muted">
+              不只想实现什么目的，也含"出于兴趣想去做"。强度会自己回落，也能自己涨上去。
+            </p>
           </div>
-          <div class="card"><div id="entries-out" class="list"></div></div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>五股劲</h3>
+              <span class="muted small" id="motive-drives-at"></span>
+            </div>
+            <div id="motive-drives" class="list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>惦记着的事</h3>
+              <span class="muted small" id="motive-count"></span>
+            </div>
+            <div id="motive-out" class="list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>什么时候会被摆到面前</h3></div>
+            <div id="motive-rules" class="muted small"></div>
+          </div>
         </section>
 
-        <section id="tab-proposals" class="page" hidden>
+        <section id="tab-shape" class="page" hidden>
           <div class="page-head">
-            <h2>提案</h2>
-            <p class="muted">反复出现的主张，会在这里等她长出新习惯。</p>
+            <h2>人格塑造</h2>
+            <p class="muted">有些话你反复说，她会攒成一条"我想改"的申请单，等你点头。</p>
             <button id="proposal-scan" class="btn">扫描新提案</button>
           </div>
           <div class="card"><div id="proposals-out" class="list"></div></div>
@@ -230,7 +304,7 @@
         <section id="tab-rules" class="page" hidden>
           <div class="page-head">
             <h2>规则</h2>
-            <p class="muted">只管"能不能做"，不塑造人格。</p>
+            <p class="muted">只管"能不能做"，不塑造人格。越具体的层越优先。</p>
           </div>
           <div class="card">
             <div class="field-row">
@@ -239,6 +313,9 @@
             </div>
             <div id="rule-src" class="muted small"></div>
             <pre id="rule-out" class="code"></pre>
+            <div class="muted small">
+              这里看到的是<b>当前人格</b>的有效规则（全局 → 群 → 私聊三层合并）。根级 <code>guardrails.json</code> 的硬线不参与合并、单独硬拦；模块自己的上限在「模块」页里。
+            </div>
           </div>
         </section>
 
@@ -485,8 +562,52 @@
     </div>
   </div>
 
+  <!-- 新建人格：填的都进骨架。遮罩点一下不关——半填的表单被误关掉很烦。 -->
+  <div id="persona-new-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head"><h3>新建人格</h3></div>
+      <p class="muted small">
+        填的内容直接写进新人格的骨架；空着的项建好后在卡里补。记忆、人物、群体不会跟着走。
+      </p>
+      <div class="form-grid">
+        <label>名字 <input id="pn-name" placeholder="例如 小语" /></label>
+        <label>目录名 <input id="pn-id" placeholder="小写字母/数字/-/_，例如 xiaoyu" /></label>
+        <label>存在的原因 <input id="pn-reason" placeholder="一句话：她为什么存在" /></label>
+        <label>语气 <input id="pn-tone" placeholder="例：短句，先结论后理由" /></label>
+        <label>口癖 <input id="pn-tic" placeholder="例：偶尔「嗯」" /></label>
+        <label>不做的表达 <input id="pn-avoid" placeholder="例：不卖萌" /></label>
+      </div>
+      <label class="field-label">价值观（一行一条，按优先级）</label>
+      <textarea id="pn-values" rows="3" placeholder="不编造，记不清就说记不清&#10;不替他做决定，动手前先问"></textarea>
+      <label class="switch-row">
+        <input type="checkbox" id="pn-copy" />
+        <span class="small">照抄当前人格的骨架、硬线、表达层（不抄记忆、人物、群体）</span>
+      </label>
+      <div class="modal-foot">
+        <button id="pn-cancel" class="btn ghost small">取消</button>
+        <button id="pn-ok" class="btn small">新建</button>
+      </div>
+      <div class="muted small" id="pn-msg"></div>
+    </div>
+  </div>
+
+  <!-- 切换人格：列表式，一次点一个人格 -->
+  <div id="persona-switch-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head"><h3>切换人格</h3></div>
+      <p class="muted small">
+        换的是"她怎么理解"，不是"收到过什么"——原始记录不动，但她记得的事、认识的人、说话方式全换。
+      </p>
+      <div id="ps-list" class="list"></div>
+      <div class="modal-foot">
+        <button id="ps-cancel" class="btn ghost small">取消</button>
+      </div>
+      <div class="muted small" id="ps-msg"></div>
+    </div>
+  </div>
+
   <!-- 带版本号：浏览器对 .js 的缓存很顽固，改了脚本不换 query 就可能跑旧代码，
        排查时会一路怀疑到后端（真踩过）。后端也加了 no-cache，这里是双保险。 -->
-  <script src="/app.js?v=20261110b"></script>
+  <script src="/app.js?v=20261110d"></script>
 </body>
 </html>

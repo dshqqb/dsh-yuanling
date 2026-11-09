@@ -442,6 +442,15 @@ export function why(root, pid, factId) {
  */
 export const SKELETON_BYTES = { core: 120, speak: 200, values: 160 }
 
+/**
+ * 两份"不是记忆，但每轮都该在她眼前"的底稿：
+ *   · `lines.md`（硬线）——`guardrails.json` 是**代码**在拦，她看不见；这段是让她知道边界。
+ *   · `style.md`（表达层）——提案学会的说话习惯。不注入的话，采纳一条提案等于什么都没发生。
+ * `user.md` 故意不注入：它和"记忆 + 人物卡"是同一类东西的第三份，接进来只会三处打架。
+ */
+export const HARD_LINE_BYTES = 200
+export const EXPRESSION_BYTES = 160
+
 /** 按 `## 标题` 切段，返回 { 标题: 正文 }。 */
 function splitSections(text) {
   const out = {}
@@ -499,8 +508,62 @@ function numbered(section) {
   return out
 }
 
-/** 返回若干净的行（不含标签前缀），由 buildCard 逐行加标签。 */
-function identityLines(root, pid) {
+/**
+ * 按条目整条装，装不下就停——**不在句子中间下刀**。
+ *
+ * 之前直接用 clipBytes 截字节，真数据上出现「…不越过规」这种半句，读起来像文件坏了。
+ * 一条都装不下（单条就超预算）时才退回到截字。
+ */
+function clipItems(items, maxBytes) {
+  const out = []
+  let bytes = 0
+  for (const it of items) {
+    const add = byteLen(it) + (out.length ? 3 : 0) // 「；」是 3 字节
+    if (bytes + add > maxBytes) break
+    out.push(it)
+    bytes += add
+  }
+  if (!out.length && items.length) return clipBytes(items[0], maxBytes)
+  return out.join('；')
+}
+
+/**
+ * 把一份 Markdown 里的条目抽成一行注入文本（`- xxx` 逐条，用「；」连）。
+ *
+ * 只认条目：标题、引用、空行都不算内容。值整个是 `<占位符>` 的条目跳过——
+ * 模板里的占位符不是她说过的话。
+ */
+function bulletLine(absPath, maxBytes, tag) {
+  if (!exists(absPath)) return null
+  let text = ''
+  try {
+    text = fs.readFileSync(absPath, 'utf8')
+  } catch {
+    return null
+  }
+  const items = bullets(text).map((s) => s.replace(/[。；;、]$/, ''))
+  if (!items.length) return null
+  return `${tag} ${clipItems(items, maxBytes)}`
+}
+
+/** 硬线 + 表达层：两份不进记忆、但每轮都该在她眼前的底稿。 */
+export function personaExtraLines(root, pid) {
+  const base = path.join(root, P.personas, pid)
+  const out = []
+  const hard = bulletLine(path.join(base, 'persona', 'lines.md'), HARD_LINE_BYTES, '[硬线]')
+  if (hard) out.push(hard)
+  const habit = bulletLine(path.join(base, 'style.md'), EXPRESSION_BYTES, '[习惯]')
+  if (habit) out.push(habit)
+  return out
+}
+
+/**
+ * 返回若干干净的行（不含标签前缀），由 buildCard 逐行加标签。
+ *
+ * P12 起对外导出：管理台的「人格卡」要把"你以为她会读到"和"她真正读到的"
+ * 摆在一起——那就必须用**同一个函数**算，不能在页面里另写一份近似逻辑。
+ */
+export function identityLines(root, pid) {
   const p = path.join(root, P.personas, pid, 'persona', 'SELF.md')
   if (!exists(p)) return []
 
@@ -705,14 +768,16 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
 
   const lines = []
   lines.push(...identityLines(root, pid))
+  lines.push(...personaExtraLines(root, pid))
   if (firstPick.length) lines.push('[最初] ' + firstPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (deepPick.length) lines.push('[最深刻] ' + deepPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   if (recentPick.length) lines.push('[最新] ' + recentPick.map((f) => `〔${f.topic}〕${f.text}`).join('；'))
   lines.push(`[索引] ${active} 条事实 / ${entries.length} 个主题${shielded ? ` / ${shielded} 条已隔离` : ''}`)
 
-  // 裁：最新 → 最深刻，**永不动「最初」**
+  // 裁：最新 → 最深刻 → 表达层（学来的习惯）。**永不动「最初」和「硬线」**——
+  // 「最初」是她最早认识你的那几件事，「硬线」是她的边界；这两样被挤掉，比超几个字节糟得多。
   while (byteLen(lines.join('\n')) > budget) {
-    const order = ['[最新]', '[最深刻]']
+    const order = ['[最新]', '[最深刻]', '[习惯]']
     let removed = false
     for (const tag of order) {
       const i = lines.findIndex((l) => l.startsWith(tag))
@@ -748,14 +813,23 @@ export const PURPOSE_INJECT_LIMIT = 2
  * 动机层：刷新需求 → 从记忆里挖目的 → 取到期的 → 生成一行「惦记」。
  * 任何一步出问题都不该让注入失败，所以整体兜底。
  */
-function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMIT } = {}) {
+function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMIT, preview = false } = {}) {
   try {
     const entries = listEntries(root, pid)
     const facts = entries.flatMap((e) => (e.facts ?? []).map((f) => ({ ...f, topic: e.topic })))
 
     const last = lastActivityMs(root)
     const hoursSinceMaster = last ? Math.max(0, (now - last) / 3_600_000) : null
-    const drives = refreshDrives(root, pid, { now, hoursSinceMaster })
+    const drives = refreshDrives(root, pid, { now, hoursSinceMaster, persist: !preview })
+
+    // 预览是照镜子，不是照做：不挖新的、不过期、不记"摆过"。
+    // 否则在管理台里翻几次页面，就能把一件事翻成"摆了 5 次她都没接"从而被放下——
+    // 那是人看出来的假数据，不是她的经历。
+    if (preview) {
+      const { picked } = selectIntent(readPurposes(root, pid).items, drives, { now, limit })
+      if (!picked.length) return null
+      return `[惦记] ${picked.map((p) => p.text).join('；')}（想提就提，不想提就别提，别硬塞）`
+    }
 
     const doc = readPurposes(root, pid)
     const mined = minePurposes(doc, facts, { now })
@@ -800,6 +874,8 @@ export function contextFor(
     now = Date.now(),
     participants = null,
     maxPeople = MAX_PEOPLE_PER_CONTEXT,
+    // 预览（管理台）：算出来的是"她这一轮会读到什么"，但**不改变她的状态**
+    preview = false,
   } = {},
 ) {
   // 人物卡按"谁在场"检索：私聊只有对方，群聊是被 @ 的人和最近发言人
@@ -814,7 +890,7 @@ export function contextFor(
   const lines = [card]
 
   // 「惦记」排在群档案之后、人物卡之前：它是这一轮里最该被"想起来"的一句话
-  const remember = rememberLine(root, pid, { now })
+  const remember = rememberLine(root, pid, { now, preview })
   if (remember) lines.push(remember)
 
   if (channel) {

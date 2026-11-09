@@ -225,9 +225,13 @@ test('card：预算不够时先砍「最新」，再砍「最深刻」，「最�
   }
   for (let i = 0; i < 3; i += 1) recall(root, PID, '最初', { track: true })
 
-  const card = buildCard(root, PID, { budget: 160 })
-  assert.ok(Buffer.byteLength(card, 'utf8') <= 160, `超预算：${Buffer.byteLength(card, 'utf8')}`)
+  // 预算 600：装不下 12 条近期，但装得下骨架 + 硬线 + 最初 + 索引。
+  // 注意 P13 起「硬线」也算不可压缩的一段（它和「最初」一样，被挤掉比超几个字节糟），
+  // 所以这里不再用 160 那种"连骨架都装不下"的预算来验超限。
+  const card = buildCard(root, PID, { budget: 600 })
+  assert.ok(Buffer.byteLength(card, 'utf8') <= 600, `超预算：${Buffer.byteLength(card, 'utf8')}`)
   assert.match(card, /\[最初\]/, '「最初」不该被裁掉')
+  assert.match(card, /\[硬线\]/, '「硬线」不该被裁掉')
   assert.ok(!/\[最新\]/.test(card), '预算不够时应该先砍「最新」')
 })
 
