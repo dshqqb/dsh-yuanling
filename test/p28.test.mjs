@@ -227,10 +227,11 @@ test('host：stdout 出现非 JSON → 断开并按崩溃处理', skipIfSandboxe
   const seen = []
   const host = makeHost({ onState: (e) => seen.push(e.state), autoRestart: false })
   host.start()
-  await new Promise((r) => setTimeout(r, 250))
+  // 固定 sleep 在并行跑时不够（这条曾偶发红）：等真的起来，再等真的进 crashed
+  await waitFor(() => Boolean(host.child), 3000, '进程起来')
 
   await assert.rejects(host.request('pollute', {}, { timeoutMs: 500 }), /退出|超时/)
-  await new Promise((r) => setTimeout(r, 150))
+  await waitFor(() => seen.includes('crashed'), 5000, '进 crashed')
   assert.ok(seen.includes('crashed'), `应该进 crashed，实际 ${seen.join(',')}`)
   host.dispose()
 })

@@ -31,6 +31,7 @@ import {
   describeConfigValue,
 } from './src/core/settingsapi.js'
 import { findProfiles, installMcp } from './src/core/mcpinstall.js'
+import { startEvolution, EVOLVE_EVERY_HOURS } from './src/core/evolve.js'
 
 // ⚠️ 不能用 `import z from '@deepseek-ai/schemastery'`：
 //    这个包只发布了 lib/index.cjs，package.json 的 import 条件指向不存在的
@@ -70,6 +71,10 @@ export const Config = z.object({
   allowRemote: z.boolean().default(false).description('允许管理台监听非回环地址。打开前先想清楚：这是你的私人记忆。'),
   autoApproveDays: z.number().default(3).description('提案无人理会几天后自动批准（默认 3 天）。'),
   dailyAutoLimit: z.number().default(1).description('每天最多自动采纳几条提案（默认 1 条/天）。'),
+  evolveEveryHours: z
+    .number()
+    .default(EVOLVE_EVERY_HOURS)
+    .description('多久自动跑一次"扫描提案 + 到期采纳"（小时；默认 6，0 = 关闭，只保留手动扫描）。'),
   logLevel: z.string().default('info').description('debug | info | warn | error'),
 })
 
@@ -484,6 +489,22 @@ export function apply(ctx, config) {
       }
     })
   }
+
+  // ── 定时演化（记忆 → 提案 → 表达层）──────────────────────────────────
+  // 以前 scan/sweep 只有人工触发，于是规则页里那些 auto_adopt / auto_approve_days
+  // 其实是摆设。这里把它们接到定时器上：启动后先跑一次，之后每 evolveEveryHours 跑一次。
+  // **只动提案与表达层，绝不碰 SELF.md**（骨架只有人能改）。
+  const evolve = startEvolution(root, {
+    everyHours: config.evolveEveryHours,
+    onRun: (r) => {
+      if (r?.created || r?.approved) {
+        log('info', config, `自动演化：新提案 ${r.created} 条，自动采纳 ${r.approved} 条`)
+      }
+      const bad = (r?.personas ?? []).filter((p) => p.error)
+      for (const p of bad) log('warn', config, `自动演化（${p.pid}）出错：${p.error}`)
+    },
+  })
+  if (typeof ctx?.on === 'function') ctx.on('dispose', () => evolve.stop())
 
   // ── 模块 ───────────────────────────────────────────────────────────────
   // 只在宿主活着的时候拉起 enabled 的模块。**注册表里的 enabled 是持久意图**：
