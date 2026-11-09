@@ -134,25 +134,35 @@ export function duePurposes(items, drives = {}, { now = Date.now(), limit = 2 } 
   return open.slice(0, Math.max(0, limit))
 }
 
-/** 同一条目的冷却窗口：刚提过就别再提，否则每次对话都在追同一件事。 */
+/** 同一条目的冷却窗口：刚摆到面前就别再摆，否则每次对话都在追同一件事。 */
 export const SELECT_RECENT_MS = 6 * 3_600_000
-/** 同一条目的最大提及次数，超过就自动放下。 */
+/** 同一条目的最大**提及**次数（她说出口的），超过就自动放下。 */
 export const SELECT_MAX_HITS = 2
+/**
+ * 同一条目最大**被摆到面前**的次数（注入次数）。
+ *
+ * 为什么要单独记这个：以前把"注入"当"提过"，结果是——模型压根没提，
+ * 系统也认定"提过两次了"，于是静默把这件事放下（理由还写着"提过 2 次"）。
+ * 现在两者分开：`hits` 只有模型显式回报才算；`offered` 记被摆出去几次。
+ * 摆了这么多次她一次都没接，说明这件事其实不重要，放掉。
+ */
+export const SELECT_MAX_OFFERED = 5
 
 /**
  * 挑这一轮要说哪几条「惦记」。
  *
- * 三层过滤，对应三种真实的骚扰：
- *   ① 刚提过（6 小时内）→ 冷却
- *   ② 已经提够次数 → 放下（由调用方关掉）
- *   ③ 一轮里两条话说的是同一件事 → 只留一条
+ * 四层过滤，对应四种真实的骚扰：
+ *   ① 刚摆到面前过（6 小时内）→ 冷却
+ *   ② 已经说出口够次数 → 放下（由调用方关掉）
+ *   ③ 摆了够多次但一次都没接 → 也放下（这不是"提过了"，是"她没兴趣"）
+ *   ④ 一轮里两条话说的是同一件事 → 只留一条
  *
- * @returns {{picked:Array, exhausted:string[], cooled:number}}
+ * @returns {{picked:Array, exhausted:Array<{id:string, why:string}>, cooled:number}}
  */
 export function selectIntent(
   items,
   drives = {},
-  { now = Date.now(), limit = 2, recentMs = SELECT_RECENT_MS, maxHits = SELECT_MAX_HITS } = {},
+  { now = Date.now(), limit = 2, recentMs = SELECT_RECENT_MS, maxHits = SELECT_MAX_HITS, maxOffered = SELECT_MAX_OFFERED } = {},
 ) {
   const exhausted = []
   let cooled = 0
@@ -164,10 +174,16 @@ export function selectIntent(
 
     const hits = Number(p.hits ?? 0)
     if (hits >= maxHits) {
-      exhausted.push(p.id)
+      exhausted.push({ id: p.id, why: 'mentioned' })
       continue
     }
-    const last = p.last_hit ? Date.parse(p.last_hit) : 0
+    const offered = Number(p.offered ?? 0)
+    if (offered >= maxOffered && hits === 0) {
+      exhausted.push({ id: p.id, why: 'ignored' })
+      continue
+    }
+    // 冷却看"最近一次被摆出去或被她提起"，两者都算，否则每轮都会重新摆一遍
+    const last = Math.max(Date.parse(p.last_hit ?? '') || 0, Date.parse(p.last_offered ?? '') || 0)
     if (last && now - last < recentMs) {
       cooled += 1
       continue
@@ -214,15 +230,36 @@ export function expirePurposes(doc, { now = Date.now(), ttlDays = PURPOSE_TTL_DA
   return changed
 }
 
-export function markHit(doc, ids) {
+/** 记一次"被摆到面前"（注入）。**不代表她说出口了**。 */
+export function markOffered(doc, ids, { now = localIso() } = {}) {
+  const set = new Set(ids)
+  let changed = false
+  for (const p of doc.items ?? []) {
+    if (set.has(p.id)) {
+      p.offered = Number(p.offered ?? 0) + 1
+      p.last_offered = now
+      changed = true
+    }
+  }
+  return changed
+}
+
+/** 记一次"她真的提了"（由模型显式回报，见 MCP 的 yuanling_purpose）。 */
+export function markHit(doc, ids, { now = localIso() } = {}) {
   const set = new Set(ids)
   let changed = false
   for (const p of doc.items ?? []) {
     if (set.has(p.id)) {
       p.hits = Number(p.hits ?? 0) + 1
-      p.last_hit = localIso()
+      p.last_hit = now
+      p.last_offered = p.last_offered ?? now
       changed = true
     }
   }
   return changed
+}
+
+/** 按 id 找一条（工具的读路径）。 */
+export function findPurpose(doc, id) {
+  return (doc.items ?? []).find((p) => p.id === id) ?? null
 }

@@ -17,6 +17,8 @@ import { contextFor, recall } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel } from './src/core/groups.js'
 import { setImpression, renderImpression, IMPRESSION_MAX_BYTES } from './src/core/impressions.js'
+import { readPurposes, writePurposes, markHit, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './src/core/purposes.js'
+import { refreshDrives } from './src/core/drives.js'
 import { listSources, readConsoleRuntime, renderFetched, clipText } from './src/core/modules/sources.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
@@ -52,7 +54,8 @@ const TOOLS = [
       '【每轮必调】读取原灵的长期记忆：记忆卡 + 惦记着的事 + 当前在场人物卡 + 当前群体卡。\n' +
       '规则：每次开始新一轮对话、或对方提到过去的人/事时，**先调用本工具再开口**——不调用就等于失忆。\n' +
       '不需要对方要求，这是你的常规动作。返回纯文本，直接当作背景信息使用。\n' +
-      '读完如果对某个人/某个群有了新印象，用 yuanling_observe 写回去（整段覆盖，必须带 reason）。',
+      '读完如果对某个人/某个群有了新印象，用 yuanling_observe 写回去（整段覆盖，必须带 reason）；' +
+      '真的把 [惦记] 里某件事问出来了，用 yuanling_purpose 回报（不然系统会以为你没提，摆满几次就自己放下）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -139,6 +142,27 @@ const TOOLS = [
         limit: { type: 'number', description: '历史条数，默认 10' },
       },
       required: ['kind', 'id'],
+    },
+  },
+  {
+    name: 'yuanling_purpose',
+    description:
+      '看 / 回报"她心里惦记着的事"。这些条目由核心从记忆里自动挖出来（"你上次说 X，后来怎么样了"），' +
+      '每轮对话时最多摆 2 条在 [惦记] 里给你挑。\n' +
+      '**说没说出口只有你知道**：真的把某条问出来了，用 action:"mentioned" 回报；决定不提了，用 action:"drop"。\n' +
+      '不回报也能跑，但系统会以为你一直没提——摆够 5 次它就自己放下了。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'mentioned', 'drop'],
+          description: 'list 看账本（默认）；mentioned 回报"我问过了"；drop 回报"这条不提了"',
+        },
+        ids: { type: 'array', items: { type: 'string' }, description: '条目 id（pur_xxx）；mentioned 可一次报多条' },
+        id: { type: 'string', description: '单条 id（drop 用）' },
+        reason: { type: 'string', description: 'drop 时可选：为什么放下' },
+      },
     },
   },
   {
@@ -280,6 +304,51 @@ function formatGroupDetail(root, pid, g) {
   return lines.join('\n')
 }
 
+/**
+ * 账本渲染。**只读**：这里不刷新 drives、不挖新条目——
+ * 一个"看一眼"的动作不该顺手改盘（挖/清是 contextFor 每轮在做的事）。
+ */
+function formatPurposes(root, pid, doc) {
+  const items = Array.isArray(doc.items) ? doc.items : []
+  if (!items.length) {
+    return [
+      '（账本还是空的）',
+      '',
+      '这不是坏了：目的由核心从记忆里自动挖出来，条件比较严——',
+      '只有"带情绪（≥8）或带槽位（会变的事）"、而且发生在 6 小时~7 天前的记忆才会被惦记。',
+      '现在没有够格的素材，所以一条都没有。',
+    ].join('\n')
+  }
+
+  const open = items.filter((p) => p.status === 'open')
+  const rest = items.filter((p) => p.status !== 'open')
+  const lines = []
+
+  const tag = { care: '关心', curiosity: '好奇', share: '分享', connect: '陪' }
+  if (open.length) {
+    lines.push(`还惦记着 ${open.length} 条：`)
+    for (const p of open) {
+      const seen = Number(p.offered ?? 0)
+      const said = Number(p.hits ?? 0)
+      lines.push(`  · ${p.id}  [${tag[p.need] ?? p.need}]  ${p.text}`)
+      lines.push(`    说过 ${said} 次 / 摆到面前 ${seen} 次${seen >= 1 && said === 0 ? '（摆了没接，摆满 5 次会自己放下）' : ''}`)
+    }
+  } else {
+    lines.push('眼下没有还惦记着的事。')
+  }
+
+  if (rest.length) {
+    lines.push('', '已了结：')
+    for (const p of rest.slice(-5)) {
+      lines.push(`  · [${p.status}] ${p.text}${p.close_reason ? `（${p.close_reason}）` : ''}`)
+    }
+  }
+
+  lines.push('')
+  lines.push('真把某条问出来了：action:"mentioned" + ids。决定不提了：action:"drop" + id。')
+  return lines.join('\n')
+}
+
 async function callTool(root, name, args = {}) {
   const pid = activePersona(root)
   if (!pid) throw new Error('还没有激活的人格')
@@ -403,6 +472,36 @@ async function callTool(root, name, args = {}) {
     return { text: `${head}\n原因：${r.reason}${tail}` }
   }
 
+  if (name === 'yuanling_purpose') {
+    const action = String(args.action ?? 'list')
+    const doc = readPurposes(root, pid)
+
+    if (action === 'list') return { text: formatPurposes(root, pid, doc), count: doc.items.filter((p) => p.status === 'open').length }
+
+    const ids = (Array.isArray(args.ids) ? args.ids : args.id ? [args.id] : []).map(String).filter(Boolean)
+    if (!ids.length) throw new Error(`action:"${action}" 需要 id 或 ids（先 action:"list" 看一遍）`)
+
+    if (action === 'mentioned') {
+      if (!markHit(doc, ids)) throw new Error(`没找到这些条目：${ids.join('、')}`)
+      writePurposes(root, pid, doc)
+      return { text: `✓ 记下 ${ids.length} 条"已经问过了"（每条真提满 ${SELECT_MAX_HITS} 次就自动放下）` }
+    }
+
+    if (action === 'drop') {
+      const why = String(args.reason ?? '模型判断不值得再提')
+      let n = 0
+      for (const id of ids) {
+        const r = closePurpose(doc, id, { reason: `模型放下：${why}` })
+        if (r.changed) n += 1
+      }
+      if (!n) throw new Error(`没找到这些条目：${ids.join('、')}`)
+      writePurposes(root, pid, doc)
+      return { text: `✓ 放下 ${n} 条（${why}）` }
+    }
+
+    throw new Error(`未知 action：${action}（只能是 list / mentioned / drop）`)
+  }
+
   if (name === 'yuanling_sources') {
     const list = listSources(root)
     return { text: formatSources(list), count: list.length }
@@ -472,7 +571,8 @@ async function handle(req) {
         instructions:
           '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；' +
           '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_identity 写回档案；' +
-          '对某个人或某个群有了新印象，用 yuanling_observe 整段写回去（必须带 reason，旧版能回滚）。',
+          '对某个人或某个群有了新印象，用 yuanling_observe 整段写回去（必须带 reason，旧版能回滚）。\n' +
+          '把 [惦记] 里的事真的问出来了，用 yuanling_purpose {action:"mentioned"} 回报——不回报系统会以为你没提。',
       })
       return
     }

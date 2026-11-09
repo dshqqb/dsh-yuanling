@@ -116,6 +116,7 @@ test('tools/list：七个工具，schema 都是 object', async () => {
     'yuanling_group',
     'yuanling_observe',
     'yuanling_person_identity',
+    'yuanling_purpose',
     'yuanling_recall',
     'yuanling_sources',
   ])

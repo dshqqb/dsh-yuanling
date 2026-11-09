@@ -89,6 +89,7 @@ test('tools/list：七个工具都在（v1.1 sources/fetch，v1.2 group，v1.3 o
     'yuanling_group',
     'yuanling_observe',
     'yuanling_person_identity',
+    'yuanling_purpose',
     'yuanling_recall',
     'yuanling_sources',
   ])

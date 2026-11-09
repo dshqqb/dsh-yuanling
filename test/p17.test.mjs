@@ -9,7 +9,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso, ulid } from '../src/core/fsx.js'
 import { addFact, contextFor } from '../src/core/memory.js'
-import { readPurposes, selectIntent, SELECT_MAX_HITS, SELECT_RECENT_MS } from '../src/core/purposes.js'
+import { readPurposes, selectIntent, SELECT_MAX_HITS, SELECT_MAX_OFFERED, SELECT_RECENT_MS } from '../src/core/purposes.js'
 
 const PID = 'yuanling'
 const HOUR = 3_600_000
@@ -69,11 +69,32 @@ test('select：冷却窗口过去后可以再提', () => {
   assert.equal(r.cooled, 0)
 })
 
-test('select：提够次数就不再出现，并报告出来', () => {
+test('select：说出口够次数就不再出现，并报告出来', () => {
   const items = [open('a', '面试的事', { hits: SELECT_MAX_HITS })]
   const r = selectIntent(items, { care: 0.9 })
   assert.equal(r.picked.length, 0)
-  assert.deepEqual(r.exhausted, ['a'])
+  // why 要分开：`mentioned` 是"她说过了"，`ignored` 是"摆了多次没接"
+  assert.deepEqual(r.exhausted, [{ id: 'a', why: 'mentioned' }])
+})
+
+test('select：摆了够多次但一次都没接 → 也放下，但理由不同', () => {
+  const items = [open('a', '面试的事', { offered: SELECT_MAX_OFFERED, hits: 0 })]
+  const r = selectIntent(items, { care: 0.9 })
+  assert.equal(r.picked.length, 0)
+  assert.deepEqual(r.exhausted, [{ id: 'a', why: 'ignored' }])
+})
+
+test('select：被摆到面前过也在冷却窗内（否则每轮都会重新摆一遍）', () => {
+  const items = [open('a', '面试的事', { offered: 1, last_offered: iso(Date.now() - HOUR) })]
+  const r = selectIntent(items, { care: 0.9 })
+  assert.equal(r.picked.length, 0)
+  assert.equal(r.cooled, 1)
+})
+
+test('select：注入了但没提（offered 涨、hits 为 0）不算"提过"', () => {
+  const items = [open('a', '面试的事', { offered: SELECT_MAX_HITS, hits: 0 })]
+  const r = selectIntent(items, { care: 0.9 })
+  assert.equal(r.picked.length, 1, '被摆两次不等于她说过了两次')
 })
 
 test('select：一轮里说的是同一件事，只留一条', () => {
@@ -119,7 +140,7 @@ test('contextFor：同一件事不会在两轮里连着被惦记', () => {
   assert.ok(!second.includes('[惦记]'), '刚提过的，下一轮不该再提')
 })
 
-test('contextFor：提够次数的目的会被自动放下（记为 done）', () => {
+test('contextFor：她真的说出口够次数的目的会被自动放下（记为 done）', () => {
   const root = tmpRoot()
   const src = seedRaw(root, '面试')
   addFact(root, PID, { topic: '生活', text: '面试没过，很难过', src, now: localIso(new Date(Date.now() - 30 * HOUR)) })
@@ -134,10 +155,24 @@ test('contextFor：提够次数的目的会被自动放下（记为 done）', ()
   writeDoc(root, items)
 
   const ctx = contextFor(root, PID, { channel: 'private:10001' })
-  assert.ok(!ctx.includes('[惦记]'), '提够了就不该再提')
+  assert.ok(!ctx.includes('[惦记]'), '说出口够次数了就不该再提')
 
   const after = readPurposes(root, PID)
   const closed = after.items.filter((p) => p.status === 'done')
   assert.ok(closed.length >= 1, '应该被标成 done')
-  assert.match(closed[0].close_reason ?? '', /提过/)
+  assert.match(closed[0].close_reason ?? '', /说出口/)
+})
+
+test('contextFor：只被摆到面前（offered）不等于说出口，不会被放下', () => {
+  const root = tmpRoot()
+  const src = seedRaw(root, '面试')
+  addFact(root, PID, { topic: '生活', text: '面试没过，很难过', src, now: localIso(new Date(Date.now() - 30 * HOUR)) })
+
+  // 跑一轮：这条会被摆出来一次
+  contextFor(root, PID, { channel: 'private:10001' })
+  const doc = readPurposes(root, PID)
+  const p = doc.items[0]
+  assert.equal(Number(p.offered), 1, '注入应该记 offered')
+  assert.equal(Number(p.hits ?? 0), 0, '注入不能替她说"提过了"——这是这次要修的缺陷')
+  assert.equal(p.status, 'open', '没真正说过，不能放下')
 })

@@ -419,8 +419,8 @@ yuanling module install --url https://gitee.com/dshqqb/dsh-yuanling-bili --root 
 | 文件 | 存什么 |
 |---|---|
 | `personas/<p>/self/drives.json` | 5 个需求的强度（当前值 + 最近刷新时间） |
-| `personas/<p>/self/purposes.json` | 目的账本：`{id, need, text, origin, due, status, hits}` |
-| 卡片里的 `[惦记]` | 这一轮真正说出口的 1~2 条 |
+| `personas/<p>/self/purposes.json` | 目的账本：`{id, need, text, origin, due, status, offered, hits}` |
+| 卡片里的 `[惦记]` | 这一轮摆到她面前的 1~2 条（**不代表她说出口了**） |
 
 ### 需求：会涨，也会落
 
@@ -447,11 +447,18 @@ yuanling module install --url https://gitee.com/dshqqb/dsh-yuanling-bili --root 
 
 | 过滤 | 拦的是什么 |
 |---|---|
-| 6 小时冷却 | 刚提过又提 |
-| 提够 2 次自动放下 | 一件事翻来覆去说 |
+| 6 小时冷却（摆过或说过都算） | 刚出现又出现 |
+| **真说出口 2 次** → 自动放下 | 一件事翻来覆去说 |
+| **摆了 5 次一次都没接** → 也放下 | 这件事其实不重要，别再占位 |
 | 一轮内相似 ≥ 0.55 只留一条 | 一次注入两条说的是同一件事 |
 
-提够了不会静默消失，而是 `status: done` + `close_reason: 提过 2 次，先放下`——`yuanling purpose list` 里能看见她惦记过什么、说了几次。
+**「摆过」和「说过」是两个计数器**，这条是刚修的一个真缺陷：
+
+> 以前注入时就把 `hits + 1`，于是模型压根没提，系统也认定"提过两次了"并自动放下（理由还写着"提过 2 次"）。她心里存着的事会**无声消失**，人还以为问过了。
+
+现在：注入只记 `offered`；`hits` 只有模型显式回报才算——`yuanling_purpose {action:"mentioned", ids:[...]}`。放下时理由也分开写：`她说出口 2 次，可以放下了` / `摆了 5 次她都没接，说明不重要`。
+
+所以一条惦记的生命线是有据可查的：**挖出来（open）→ 摆到面前（offered+1）→ 她真说出口并回报（hits+1）→ 真提满或是被判定不重要 → done/dropped**。`yuanling purpose list` 里同一个条目会显示"说过几次 / 摆过几次"，两个数字不一样才是正常的。
 
 ### 注入格式
 
@@ -571,6 +578,7 @@ DSH 设置里只暴露最关键的三个，其余在 profile 的 `cordis.patch.y
 | `yuanling_recall` | 按词检索记忆，返回事实与证据指针 |
 | `yuanling_person_identity` | **写**：把学到的账号归属写回档案（原文正本，解析派生；已属别人的号只报冲突） |
 | `yuanling_observe` | **写 / 读印象**：人物素描和群体描述共用一套（整段覆盖 + 必填 reason + 600 字节上限 + 版本历史）；`withHistory` 能看这份印象一路怎么变的 |
+| `yuanling_purpose` | 看 / 回报**惦记**：`list` 读账本；`mentioned` 回报"我问过了"（不回报系统会以为你没提）；`drop` 回报"这条不提了" |
 | `yuanling_group` | 看 / 改某个群的名字、别名、在聊什么；只给 `channel` 就能定位是哪个群，只读时不建档 |
 | `yuanling_sources` | 看已装模块里有哪些数据能被她**主动要**（v1.1：模块声明 `sources` 才有） |
 | `yuanling_fetch` | **取一次数**：向某个模块要数据，**先落原始层再给她看**，所以查过就记得；一次最多 20 条 |

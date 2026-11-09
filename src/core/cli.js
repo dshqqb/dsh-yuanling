@@ -986,8 +986,14 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       const open = doc.items.filter((p) => p.status === 'open')
       const done = doc.items.filter((p) => p.status !== 'open')
       if (!doc.items.length) out('（还没有目的。先跑 yuanling purpose mine）')
-      for (const p of open) out(`○ ${p.id}  [${p.need}] ${p.text}${p.hits ? `  (提过 ${p.hits} 次)` : ''}`)
-      for (const p of done) out(`× ${p.id}  [${p.status}] ${p.text}`)
+      for (const p of open) {
+        // 「说过」和「摆过」必须分开显示：前者是她真开口了，后者只是被放进了上下文
+        const bits = []
+        if (p.hits) bits.push(`说过 ${p.hits} 次`)
+        if (p.offered) bits.push(`摆过 ${p.offered} 次`)
+        out(`○ ${p.id}  [${p.need}] ${p.text}${bits.length ? `  (${bits.join(' / ')})` : ''}`)
+      }
+      for (const p of done) out(`× ${p.id}  [${p.status}] ${p.text}${p.close_reason ? `（${p.close_reason}）` : ''}`)
       if (flags.due) {
         const drives = refreshDrives(root, pid)
         for (const p of duePurposes(doc.items, drives, { limit: 2 })) out(`→ ${p.text}`)

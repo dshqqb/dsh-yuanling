@@ -12,7 +12,7 @@ import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
 import { refreshDrives } from './drives.js'
-import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markHit, closePurpose, SELECT_MAX_HITS } from './purposes.js'
+import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
 import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile } from './entities.js'
 import { groupsForContext, groupCardLine } from './groups.js'
 import {
@@ -765,12 +765,19 @@ function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMI
     const { picked, exhausted } = selectIntent(mined.items, drives, { now, limit })
 
     let dirty = false
-    // 提够次数的自动放下：留着只会变成"每次都在追同一件事"
-    for (const id of exhausted) {
-      const r = closePurpose(mined, id, { now, reason: `提过 ${SELECT_MAX_HITS} 次，先放下` })
+    // 放下的两种原因，措辞分开：这不是文案洁癖——"提过 2 次"和"摆了 5 次她都没接"
+    // 是两件完全不同的事，混成一句以后，翻账本时就看不出她到底有没有说过。
+    const CLOSE_REASON = {
+      mentioned: `她说出口 ${SELECT_MAX_HITS} 次，可以放下了`,
+      ignored: `摆了 ${SELECT_MAX_OFFERED} 次她都没接，说明不重要`,
+    }
+    for (const { id, why } of exhausted) {
+      const r = closePurpose(mined, id, { now, reason: CLOSE_REASON[why] ?? '放下了' })
       if (r.changed) dirty = true
     }
-    if (picked.length && markHit(mined, picked.map((p) => p.id))) dirty = true
+    // 注入只记"被摆到面前"，**不记"说出口"**——说没说出口只有模型知道，
+    // 由它调 yuanling_purpose 回报；这里替它记就等于编造。
+    if (picked.length && markOffered(mined, picked.map((p) => p.id), { now: localIso(new Date(now)) })) dirty = true
     if (dirty) writePurposes(root, pid, mined)
 
     if (!picked.length) return null
