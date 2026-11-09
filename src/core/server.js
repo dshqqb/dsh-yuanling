@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { exists, ensureDir, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { ingest, healthReport } from './inbox.js'
+import { readMarker } from './persona.js'
+import { backfillGroups } from './groups.js'
 import { handleApi, handleApiWrite, handleModuleInstallFromUrl, handleModuleUi, handleModuleCheckUpdate } from './api.js'
 const BODY_LIMIT = 4 * 1024 * 1024
 const WEB_ROOT = fileURLToPath(new URL('../../web/', import.meta.url))
@@ -317,6 +319,22 @@ export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, to
         /* 写不进去也要把服务起起来：取数找不到地址是可降级的，控制台起不来是硬故障 */
       }
       server.once('close', () => clearConsoleRuntime(root))
+
+      // 开机回填一次：把 raw 里已经出现过的群频道补成群体档案。
+      // 装在已有数据上的人不用等"下次有人在那个群说话"才看得见列表。
+      // 幂等，且只读频道/时间；失败不该拦住控制台启动。
+      try {
+        const pid = readMarker(root)?.active
+        if (pid) {
+          const r = backfillGroups(root, pid)
+          if (r.created.length) {
+            console.error(`[yuanling] 群体回填：新建 ${r.created.length} 个（${r.created.join('、')}）`)
+          }
+        }
+      } catch (err) {
+        console.error(`[yuanling] 群体回填失败：${err?.message ?? err}`)
+      }
+
       resolve({ server, port: p, url })
     })
   })

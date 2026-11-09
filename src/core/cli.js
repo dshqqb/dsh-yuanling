@@ -26,7 +26,7 @@ import {
   readProfile,
   writeProfile,
 } from './entities.js'
-import { listGroups, readGroup, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight } from './groups.js'
+import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight, backfillGroups } from './groups.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
@@ -257,6 +257,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling group show <群>             看一个群体的档案
   yuanling group set <群> [--name --feature --topics --alias]
   yuanling group members <群>          从原始层重新归集成员
+  yuanling group backfill              扫 raw 里出现过的群频道，补建档案
   yuanling group promote|demote <群>   置顶 / 取消置顶
   yuanling group weight <群> <0-100|auto>
   yuanling catchup [--limit 200]     切入补跑（把游标追平）
@@ -1361,10 +1362,17 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.OK
       }
 
+      if (sub === 'backfill') {
+        const r = backfillGroups(root, pid)
+        out(`✓ 扫了 ${r.scannedDays} 天原始层：新建 ${r.created.length} 个群体，更新 ${r.touched.length} 个`)
+        if (r.created.length) out(`  新建：${r.created.join('、')}`)
+        return EXIT.OK
+      }
+
       if (sub === 'show') {
         const gid = needGid()
         if (!gid) return EXIT.CONFIG
-        const g = readGroup(root, pid, gid)
+        const g = readGroupLive(root, pid, gid)
         if (!g) {
           out(`（${gid} 还没有档案）`)
           return EXIT.OK

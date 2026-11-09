@@ -14,7 +14,7 @@ import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGr
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
 import { listSources, fetchStats } from './modules/sources.js'
-import { listGroups, readGroup, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, ensureGroup, refreshGroupWeight } from './groups.js'
+import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, ensureGroup, refreshGroupWeight } from './groups.js'
 import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
 
@@ -272,7 +272,7 @@ export function handleApi(root, url) {
   if (pathname === '/api/group') {
     const gid = searchParams.get('gid') ?? ''
     if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
-    const g = readGroup(root, pid, gid)
+    const g = readGroupLive(root, pid, gid)
     if (!g) return { status: 404, body: { ok: false, error: '没有这个群体' } }
     const members = g.members.map((uid) => {
       const person = loadIdentities(root).people?.[uid]
@@ -403,10 +403,10 @@ export function handleApiWrite(root, url, body) {
       if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
       // 成员是"事实"（谁在这个群说过话），从原始层归集，不让模型编
       const r = collectMembers(root, pid, gid)
-      const g = ensureGroup(root, pid, gid, {})
-      const next = writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount })
+      ensureGroup(root, pid, gid, {})
+      writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount })
       refreshGroupWeight(root, pid, gid)
-      return { status: 200, body: { ok: true, group: next, members: r.members, scannedDays: r.scannedDays } }
+      return { status: 200, body: { ok: true, group: readGroupLive(root, pid, gid), members: r.members, scannedDays: r.scannedDays } }
     }
 
     if (pathname === '/api/person/identity') {

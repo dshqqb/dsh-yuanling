@@ -15,7 +15,7 @@ import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
-import { readGroup, writeGroup, ensureGroup, gidForChannel } from './src/core/groups.js'
+import { readGroupLive, writeGroup, ensureGroup, gidForChannel } from './src/core/groups.js'
 import { listSources, readConsoleRuntime, renderFetched, clipText } from './src/core/modules/sources.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
@@ -317,7 +317,7 @@ async function callTool(root, name, args = {}) {
     const writing = Object.keys(patch).length > 0
 
     if (!writing) {
-      const g = readGroup(root, pid, gid)
+      const g = readGroupLive(root, pid, gid)
       if (!g) {
         return {
           text: `（${gid} 还没有档案。在这个群说过话、或有人提到它之后才会有；第一次写描述时，传 feature / topics 就会顺手建。）`,
@@ -327,7 +327,8 @@ async function callTool(root, name, args = {}) {
     }
 
     ensureGroup(root, pid, gid, {})
-    const g = writeGroup(root, pid, gid, patch, { actor: 'model:group', reason: '模型补写群体理解' })
+    writeGroup(root, pid, gid, patch, { actor: 'model:group', reason: '模型补写群体理解' })
+    const g = readGroupLive(root, pid, gid)
     return { text: `✓ 已写入群体 ${g.gid}\n\n${formatGroupDetail(root, pid, g)}` }
   }
 

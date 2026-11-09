@@ -128,6 +128,8 @@ inbox  →  ② 硬线检查（guardrails.never_record 命中就丢弃，只计�
    →  ③ 脱敏（密钥无条件打码；软黑名单入库但标 hidden；显式 skip 不落盘）
    →  ④ 追加 raw（补齐 v / id / h，32MB 自动分片，单行 256KB 截断）
    →  ⑤ 封存（day.json：行数 / 字节 / sha256 / 前一日哈希）
+   →  ⑥ 群频道（`group:` / `tieba:` …）顺手记一笔群体：第一次见到就建卡，
+         之后只在隔了 30 分钟以上时推「最后一次见到」——不为每句话造一条版本
 ```
 
 ### 记成事实（由模型或人显式调用）
@@ -218,7 +220,7 @@ D:\yuanling\
 │     ├─ style.md                表达层（演化提案只落这里）
 │     ├─ entities\
 │     │  ├─ people\person_x.json 她对这个人的认识：素描、weight、first_met、身份描述原文
-│     │  └─ groups\123456.json   她对这个群的印象（名称、氛围、语气）
+│     │  └─ groups\qq_123456.json 她对这个地方的印象：平台/id、name、feature、topics、members
 │     ├─ spaces\
 │     │  └─ 日常\
 │     │     └─ entries\备份.json   一个主题一个文件：facts[] + summary（space 与 entries 都是目录层）
@@ -378,15 +380,19 @@ yuanling module install --url https://gitee.com/dshqqb/dsh-yuanling-bili --root 
 | 平台 + 标识（`qq:123456`） | 从频道推出来，客观 |
 | **它是什么地方**（`feature`）、**在聊什么**（`topics`） | 自然语言，谁来写都行——她总结，你也可以改 |
 | 常出现的人（`members`） | 从原始层归集，**只收能对上人物档案的人** |
-| 权重、重要群体 | 和人物一样：自动计分，手改优先 |
+| 权重、重要群体 | 和人物一样：自动计分（**读时现算**），手改优先 |
 
 **群体不跨平台合并**，这是和人物相反的地方：同一个人的 QQ 和 B站 号可以合并成一个人，但一个 QQ 群永远不可能和同一个贴吧是一个地方。所以 id 直接是 `平台:标识`，没有合并操作——只出于扩展性（将来别的 app）才用这个形式。
+
+**群体什么时候出现**：第一条群消息投进来就建卡（`lastSeen` 记这条的时间）；之后的只往前推 `lastSeen`，而且**隔满 30 分钟才写一次盘**——那是给人看的粗粒度信息，不值得为每句话造一条版本记录。去重的那条完全不动它。控制台启动时还会**回填**一次——扫一遍 `raw/` 里出现过的群频道，把装上插件之前就有的历史群补出来（幂等，只读频道与时间，不碰正文）。所以"装好就能看到列表"，不用等下次有人在那个群说话。
+
+反过来，**认不出的频道一律不建**：`private:10001` 是一对一、`module:bili.search_video` 是一次调用、`bili:video:BV1xx` 是一个视频，它们都不是"一个地方"。白名单写在 `GROUP_KINDS` 里，将来接新平台要显式加一行——宁可少一个群，也不让一次调用变成一个地方。
 
 注入的规则是"**只查当前在场的那个群体**"：在哪个群说话，就带那个群的卡；私聊不带。只有一种例外——群聊里有人提到了**另一个**群的名字，这时两个一起查（最多 3 张）。所以上下文里不会平白多出一堆她待过的群。
 
 成员是**事实，不是印象**：她不能编"这个群有 200 人"，只能报告"归集到几个我认识的人"。没归集到就留空，界面上也不编数字。
 
-> 权重口径和人物一样，只算**这个群里的消息**：`消息数×0.5 + 活跃天数×1.0 + 近30天消息数×0.3`，封顶 100。群再多，进上下文的也永远只有当前这一个（加被提到的）。
+> 权重口径和人物一样，只算**这个群里的消息**：`消息数×0.5 + 活跃天数×1.0 + 近30天消息数×0.3`，封顶 100。但它**读的时候现算、不写盘**——权重只用来排序和显示，没有地方拿它做取舍，所以宁可在列表时数一遍 `raw/`，也不为了"看得见"造一条后台写路径（更不会让页面显示"0 分但聊了几百条"的旧数）。手改过的照旧优先，改完不再被自动分覆盖；`yuanling group members` 这类命令会把当时的值冻结进文件。群再多，进上下文的也永远只有当前这一个（加被提到的）。
 
 ---
 
@@ -629,6 +635,12 @@ yuanling proposal scan|list|approve|reject|rollback|sweep
 yuanling person new 张三 --platform qq --id 12345
 yuanling person identity <uid> --text "QQ 号是 12345，b站叫老张"
 yuanling person weight [refresh] | set <uid> 80 | auto <uid>
+yuanling group list|show <qq:123456>              # 群体：一个群 / 一个吧就是一个地方
+yuanling group set <群> --name 摸鱼群 --feature "晚上最热闹"
+yuanling group members <群>                       # 从 raw 重新归集"谁在这里说过话"
+yuanling group backfill                           # 扫 raw 里出现过的群频道，补建档案
+yuanling group promote|demote <群>                # 置顶为重要群体 / 取消
+yuanling group weight <群> 80 | auto              # 手改权重 / 恢复自动
 yuanling purpose list|mine|drives|close <id>     # 目的账本（惦记）
 yuanling identity claim --platform bili --id abc123 --src-last 1 --channel private:10001
 yuanling mcp status|install|uninstall             # 把记忆登记成 DSH 的 MCP 工具

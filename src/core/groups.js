@@ -28,6 +28,15 @@ export const CHANNEL_PLATFORM = {
   telegram: 'telegram',
 }
 
+/**
+ * **哪些频道 kind 才算"一个地方"**。
+ *
+ * 只有这里面的 kind 才会变成群体。白名单而不是黑名单：`module:bili.search_video`
+ * 这种频道说的是"一次调用"，`bili:video:BV1` 说的是"一个视频"，它们都不是"一群人"。
+ * 黑名单会把将来新出现的 kind 默认为群体，那正是假群体的来源。
+ */
+export const GROUP_KINDS = new Set(['group', 'tieba', 'wechat', 'wx', 'discord', 'telegram'])
+
 /** 一个群体最多记多少人（成员是"素材"，不是通讯录）。 */
 export const MAX_MEMBERS = 60
 /** 成员扫描看最近几天。 */
@@ -51,10 +60,17 @@ export function gidForChannel(channel) {
   const kind = s.slice(0, i)
   const id = s.slice(i + 1)
   if (!id) return null
-  if (kind === 'private' || kind === 'dsh') return null
+  // 私聊是一对一，不是群体；module:/dsh:/bili:video: 这些也不是"一个地方"
+  if (!GROUP_KINDS.has(kind)) return null
   const platform = CHANNEL_PLATFORM[kind] ?? kind
-  // 贴吧/B站这类，频道本身就是 `平台:对象`，「吧名」或「uid」直接当 id
+  // 贴吧这类，频道本身就是 `平台:对象`，「吧名」直接当 id
   return `${platform}:${id}`
+}
+
+/** gid → 原始层里的频道名（QQ 群是 `group:id`，其余平台就是 `平台:id`）。 */
+export function channelOfGid(gid) {
+  const { platform, id } = parseGid(gid)
+  return platform === 'qq' ? `group:${id}` : `${platform}:${id}`
 }
 
 /** gid → { platform, id }。 */
@@ -130,7 +146,7 @@ export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group',
     weight_source:
       patch.weightSource === undefined ? (cur.weightSource === 'manual' ? 'manual' : 'auto') : patch.weightSource === 'manual' ? 'manual' : 'auto',
     tier: patch.tier === undefined ? cur.tier : patch.tier === 'important' ? 'important' : null,
-    first_seen: cur.firstSeen ?? localIso(),
+    first_seen: patch.firstSeen ?? cur.firstSeen ?? localIso(),
     last_seen: patch.lastSeen ?? cur.lastSeen,
     updated_at: localIso(),
   }
@@ -141,8 +157,15 @@ export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group',
   return normalizeGroup(next, gid)
 }
 
-/** 列出人格下的所有群体。 */
-export function listGroups(root, pid) {
+/**
+ * 列出人格下的所有群体。
+ *
+ * 列表里的 `weight` 是**读的时候现算的**（手改过的除外）：权重只用来排序和显示，
+ * 没有任何地方拿它做取舍，所以没必要为了"看得见"造一条后台写路径，也不该让页面
+ * 显示"0 分但其实聊了几百条"的旧数。落盘的 `weight` 仍然保留，作为冻结值给
+ * `refreshGroupWeight` 用。
+ */
+export function listGroups(root, pid, { now = Date.now() } = {}) {
   const dir = path.join(root, P.personas, pid, 'entities', 'groups')
   if (!isDir(dir)) return []
   const out = []
@@ -151,19 +174,48 @@ export function listGroups(root, pid) {
     const g = readJson(path.join(dir, name), null)
     if (!g) continue
     const gid = String(g.gid ?? name.replace(/\.json$/, ''))
-    out.push({
-      ...normalizeGroup(g, gid),
-      sealedNotes: undefined,
-    })
+    const cur = normalizeGroup(g, gid)
+    out.push({ ...cur, sealedNotes: undefined, weight: liveGroupWeight(root, pid, cur, { now }) })
   }
   return out.sort((a, b) => b.weight - a.weight || String(b.lastSeen ?? '').localeCompare(String(a.lastSeen ?? '')))
 }
 
+/** 读一个群体，返回值里带上**实时**权重（详情页 / CLI / MCP 用）。 */
+export function readGroupLive(root, pid, gid, { now = Date.now() } = {}) {
+  const g = readGroup(root, pid, gid)
+  return g ? { ...g, weight: liveGroupWeight(root, pid, g, { now }) } : null
+}
+
+/** 实时权重：手改过的用手改值，其余按原始层里的互动现算（不写盘）。 */
+export function liveGroupWeight(root, pid, g, { now = Date.now() } = {}) {
+  if (!g) return 0
+  if (g.weightSource === 'manual') return Number(g.weight ?? 0)
+  return computeGroupWeight(channelStats(root, channelOfGid(g.gid), now))
+}
+
+/**
+ * 两条消息之间至少隔这么久，才值得为"最后一次见到"再写一次盘。
+ *
+ * `lastSeen` 是给人看的**粗粒度**信息（"今天下午还在聊"），不是精确到秒的审计。
+ * 而每次写都进版本历史——一条消息一个版本，几周就能把 versions 目录撑爆。
+ * 所以按 30 分钟取整：够新，又不会为每句话造一条记录。
+ */
+export const LAST_SEEN_MIN_GAP_MS = 30 * 60 * 1000
+
+/** 这次的"见到"值不值得写盘：第一次见到、或者比上次晚了足够久。 */
+function shouldAdvance(prev, next) {
+  if (!next) return false
+  const a = Date.parse(prev ?? '')
+  const b = Date.parse(next)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return !prev || String(next) > String(prev)
+  return b - a >= LAST_SEEN_MIN_GAP_MS
+}
+
 /** 确保群体存在（**只在确实见过东西时才调**，比如这个频道有消息了）。 */
-export function ensureGroup(root, pid, gid, { name = '', seenAt = null } = {}) {
+export function ensureGroup(root, pid, gid, { name = '', seenAt = null, firstSeen = null } = {}) {
   const cur = readGroup(root, pid, gid)
   if (cur) {
-    if (seenAt && (!cur.lastSeen || String(seenAt) > String(cur.lastSeen))) {
+    if (seenAt && shouldAdvance(cur.lastSeen, String(seenAt))) {
       return writeGroup(root, pid, gid, { lastSeen: String(seenAt) }, { reason: '见到这个群体有新动静' })
     }
     return cur
@@ -172,7 +224,7 @@ export function ensureGroup(root, pid, gid, { name = '', seenAt = null } = {}) {
     root,
     pid,
     gid,
-    { name: name || '', lastSeen: seenAt, first_seen: localIso() },
+    { name: name || '', lastSeen: seenAt, firstSeen: firstSeen ?? localIso() },
     { reason: '第一次见到这个群体' },
   )
 }
@@ -282,16 +334,71 @@ export function computeGroupWeight({ msgs = 0, days = 0, recent = 0 } = {}) {
   return Math.min(100, Math.round(msgs * 0.5 + days * 1 + recent * 0.3))
 }
 
-/** 刷新一个群体的权重（手改过的不动）。 */
+/** 刷新一个群体的权重（手改过的不动）。落盘值，给"冻结一份"的场合用。 */
 export function refreshGroupWeight(root, pid, gid, { now = Date.now() } = {}) {
   const g = readGroup(root, pid, gid)
   if (!g) return null
   if (g.weightSource === 'manual') return g
-  const { platform, id } = parseGid(gid)
-  const channel = platform === 'qq' ? `group:${id}` : `${platform}:${id}`
-  const stats = channelStats(root, channel, now)
-  const weight = computeGroupWeight(stats)
+  const weight = computeGroupWeight(channelStats(root, channelOfGid(gid), now))
   return writeGroup(root, pid, gid, { weight }, { reason: '按互动自动算权重' })
+}
+
+// ── 启动回填 ────────────────────────────────────────────────────────────
+
+/**
+ * 扫原始层里出现过的**群频道**（只看 channel/ts，不读正文），把还没建卡的群补上。
+ *
+ * 幂等：已有的群只把 `lastSeen` 往前推，`firstSeen` 只在第一次建卡时写。
+ * 认不出的频道（`module:...`、`bili:video:...`、私聊）一律不建——宁可少一个群，
+ * 也不让"一次调用"变成一个"地方"。
+ */
+export function backfillGroups(root, pid) {
+  const seen = scanGroupChannels(root)
+  const created = []
+  const touched = []
+  for (const [gid, s] of seen) {
+    const before = readGroup(root, pid, gid)
+    if (!before) {
+      ensureGroup(root, pid, gid, { seenAt: s.last, firstSeen: s.first })
+      created.push(gid)
+    } else if (s.last && (!before.lastSeen || String(s.last) > String(before.lastSeen))) {
+      writeGroup(root, pid, gid, { lastSeen: s.last }, { reason: '回填历史时见到这个群体有动静' })
+      touched.push(gid)
+    }
+  }
+  return { created, touched, scannedDays: listRawDays(root).length }
+}
+
+/** 扫一遍原始层，得到 `gid → {first,last}`。只读频道与时间，不碰正文。 */
+export function scanGroupChannels(root) {
+  const out = new Map()
+  for (const day of listRawDays(root)) {
+    const dir = path.join(root, P.raw, day.slice(0, 7), day.slice(8, 10))
+    if (!isDir(dir)) continue
+    for (const name of fs.readdirSync(dir).filter((x) => x.endsWith('.ndjson'))) {
+      let text = ''
+      try {
+        text = fs.readFileSync(path.join(dir, name), 'utf8')
+      } catch {
+        continue
+      }
+      for (const line of text.split('\n')) {
+        const m = /"channel":"([^"]+)"/.exec(line)
+        if (!m) continue
+        const gid = gidForChannel(m[1])
+        if (!gid) continue
+        const tm = /"ts":"([^"]+)"/.exec(line)
+        const ts = tm ? tm[1] : `${day}T00:00:00+08:00`
+        const cur = out.get(gid)
+        if (!cur) out.set(gid, { first: ts, last: ts })
+        else {
+          if (ts < cur.first) cur.first = ts
+          if (ts > cur.last) cur.last = ts
+        }
+      }
+    }
+  }
+  return out
 }
 
 function channelStats(root, channel, now) {

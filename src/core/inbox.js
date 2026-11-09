@@ -10,6 +10,8 @@ import { P } from './paths.js'
 import { appendRecord } from './raw.js'
 import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
+import { readMarker } from './persona.js'
+import { ensureGroup, gidForChannel } from './groups.js'
 
 export const INBOX_VERSION = 1
 
@@ -81,6 +83,10 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       )
       if (r.deduped) out.deduped += 1
       else out.accepted += 1
+
+      // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
+      // 只记"谁在这个群说过话"这件事本身，正文照旧只走 raw。
+      if (!r.deduped) touchGroup(root, channel, item.ts ? String(item.ts) : null)
       if (withRecords) {
         out.records.push({
           id: r.id,
@@ -98,6 +104,23 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
   }
   if (out.errors.length === 0 && out.accepted > 0) beat(root, source, { ok: true })
   return out
+}
+
+/**
+ * 群消息 → 群体档案的一笔。这里只做"记账"，不判断内容：
+ * 是不是群频道由 `gidForChannel` 说了算（私聊、module:、bili:video: 都不算）。
+ * 记失败也不该挡住摄入——所以整个吞掉异常。
+ */
+function touchGroup(root, channel, seenAt) {
+  try {
+    const pid = readMarker(root)?.active
+    if (!pid) return
+    const gid = gidForChannel(channel)
+    if (!gid) return
+    ensureGroup(root, pid, gid, { seenAt: seenAt ?? localIso() })
+  } catch {
+    /* 群体记账失败不该让一条消息丢掉 */
+  }
 }
 
 function skipLedgerPath(root) {
