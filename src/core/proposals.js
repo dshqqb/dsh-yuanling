@@ -13,7 +13,7 @@ import path from 'node:path'
 import { exists, readJson, writeJsonAtomic, localIso, ulid, sha256 } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked, history, snapshotCurrent, revertTo } from './version.js'
-import { listEntries, entryRel } from './memory.js'
+import { listEntries, entryRel, EXPRESSION_BYTES } from './memory.js'
 import { loadEffectiveRules } from './rules.js'
 
 export const DEFAULT_MIN_REPEAT = 5
@@ -165,6 +165,28 @@ export function approve(root, pid, id, { now = localIso(), by = 'human' } = {}) 
   const rel = styleRel(pid)
   const abs = path.join(root, rel)
   const cur = exists(abs) ? fs.readFileSync(abs, 'utf8') : '# 表达层\n'
+
+  // 和 `yuanling_style` 同一条不变量：写进表达层的每一条都必须进上下文。
+  // 注入 `[习惯]` 有字节预算，超了会被按整条截掉——那等于"批准了却没生效"。
+  // 所以在这里就挡住，并说清还差多少。
+  {
+    const items = []
+    for (const line of cur.split('\n')) {
+      const m = /^\s*-\s+(.+?)\s*$/.exec(line)
+      if (m && !/^<.*>$/.test(m[1].trim())) items.push(m[1].trim())
+    }
+    const add = String(p.line ?? '').replace(/^\s*-\s*/, '').trim()
+    if (add && !items.includes(add)) {
+      const bytes = Buffer.byteLength([...items, add].join('；'), 'utf8')
+      if (bytes > EXPRESSION_BYTES) {
+        throw new Error(
+          `采纳会让表达层超出预算（${bytes} > ${EXPRESSION_BYTES} 字节），注入时会被截掉。` +
+            `先在表达层删一条，或把这条写短一点，再回来批准`,
+        )
+      }
+    }
+  }
+
   // 先把"改动前"记进历史，回滚才有东西可回
   snapshotCurrent(root, rel, { actor: 'system:proposal', reason: '提案应用前快照' })
   const before = history(root, rel).slice(-1)[0]?.hash ?? null

@@ -226,12 +226,14 @@ test('contextFor：群里带群体档案', () => {
   const root = tmpRoot()
   const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
   writeGroup(root, PID, gid, { name: '摸鱼群', feature: '晚上活跃，正经事白天说' })
-  // 新场景（内部编号）和老场景（group:555）都应该带出同一张卡
-  for (const scene of [`group:${gid}`, 'group:555']) {
-    const ctx = contextFor(root, PID, { channel: scene })
-    assert.match(ctx, /\[群体\] 摸鱼群/, scene)
-    assert.match(ctx, /晚上活跃/, scene)
-  }
+
+  const ctx = contextFor(root, PID, { channel: `group:${gid}` })
+  assert.match(ctx, /\[群体\] 摸鱼群/)
+  assert.match(ctx, /晚上活跃/)
+
+  // 旧格式场景不是编号：不猜是哪个群，所以不带
+  const legacy = contextFor(root, PID, { channel: 'group:555' })
+  assert.ok(!legacy.includes('[群体]'))
 })
 
 test('contextFor：认不出对象时只有卡片，不硬编', () => {

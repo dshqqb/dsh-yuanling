@@ -14,9 +14,10 @@ import { scaffold } from '../src/core/scaffold.js'
 import { personaPaths } from '../src/core/paths.js'
 import { ingest } from '../src/core/inbox.js'
 import { appendRecord, readDay, listDays } from '../src/core/raw.js'
-import { canonicalChannelForIngest, resolveChannel, platformFromSource, nativeChannelsFor, ensureSenderPerson, promoteShadow, isShadow } from '../src/core/channels.js'
+import { canonicalChannelForIngest, resolveChannel, platformFromSource, sceneRecordKeys, ensureSenderPerson, promoteShadow, isShadow } from '../src/core/channels.js'
 import { loadIdentities, linkIdentity, createPerson, personForChannel, listPeopleForUi, readProfile } from '../src/core/entities.js'
 import { gidForChannel, channelOfGid, ensureGroupScene, readGroupIdentity } from '../src/core/groups.js'
+import { legacySceneIdentity } from '../src/core/channels.js'
 import { loadEffectiveRules, ruleChain } from '../src/core/rules.js'
 import { contextFor } from '../src/core/memory.js'
 import { localIso } from '../src/core/fsx.js'
@@ -44,19 +45,23 @@ test('platformFromSource：从模块名推平台（qq / qq-p1 / dsh-yuanling-qq�
   assert.equal(platformFromSource('mystery'), null)
 })
 
-test('resolveChannel：老私聊频道 private:10001 → 认到人（唯一命中才算）', () => {
+test('resolveChannel：旧格式 private:10001 **不反查人物**（编号不是外部账号）', () => {
   const p = createPerson(root, { display: '老张' })
   linkIdentity(root, p.uid, { platform: 'qq', id: '10001' })
 
-  const c = resolveChannel(root, 'private:10001')
-  assert.equal(c.personUid, p.uid)
-  assert.equal(c.canonical, `private:${p.uid}`)
-  assert.equal(c.legacy, true)
-  assert.equal(c.resolved, true)
-  assert.equal(c.nativeId, 'qq:10001')
+  // 就算有人挂着 QQ 10001，`private:10001` 也不是"那个人"——它是旧格式，认不了
+  const old = resolveChannel(root, 'private:10001')
+  assert.equal(old.resolved, false)
+  assert.equal(old.personUid, null)
+  assert.equal(old.unresolvedReason, 'not-internal-id')
+
+  // 只有内部编号才是那个人的场景
+  const now = resolveChannel(root, `private:${p.uid}`)
+  assert.equal(now.resolved, true)
+  assert.equal(now.personUid, p.uid)
 })
 
-test('resolveChannel：老私聊频道认不出人时标 unresolved，不猜', () => {
+test('resolveChannel：旧格式 private:99999 同样 unresolved（不猜）', () => {
   const c = resolveChannel(root, 'private:99999')
   assert.equal(c.resolved, false)
   assert.equal(c.personUid, null)
@@ -72,27 +77,33 @@ test('resolveChannel：同一个号出现在两个平台 → 不猜是谁', () =
   assert.equal(c.resolved, false, '两个平台都有 777 时不能认定是谁')
 })
 
-test('resolveChannel：老群场景 group:123555 → 去登记表查，查不到就 unresolved', () => {
-  // 没登记过：不能猜成"qq:123555"
-  const miss = resolveChannel(root, 'group:123555')
-  assert.equal(miss.gid, null)
-  assert.equal(miss.resolved, false)
-
-  // 登记之后：老写法指向同一个内部编号
-  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '123555' })
-  const hit = resolveChannel(root, 'group:123555')
-  assert.equal(hit.gid, gid)
-  assert.equal(hit.canonical, `group:${gid}`)
-  assert.equal(hit.legacy, true)
-  assert.equal(hit.resolved, true)
+test('resolveChannel：旧格式群场景 group:123555 一律 unresolved（登记表里有也不算）', () => {
+  // 就算这个群登记过，`group:123555` 也不是"那个群体"——它是旧格式，编号不是群号
+  ensureGroupScene(root, { platform: 'qq', nativeId: '123555' })
+  const c = resolveChannel(root, 'group:123555')
+  assert.equal(c.gid, null)
+  assert.equal(c.resolved, false)
+  assert.equal(c.unresolvedReason, 'not-internal-id')
 })
 
-test('resolveChannel：老形状（带平台）也去登记表查', () => {
-  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '123555' })
-  const c = resolveChannel(root, 'group:qq:123555')
+test('resolveChannel：新群场景 group:grp_x 直接认', () => {
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '123456' })
+  const c = resolveChannel(root, `group:${gid}`)
   assert.equal(c.gid, gid)
   assert.equal(c.canonical, `group:${gid}`)
-  assert.equal(c.legacy, true)
+  assert.equal(c.resolved, true)
+  assert.equal(c.legacy, false)
+})
+
+test('legacySceneIdentity：旧格式 → 身份，只给迁移用（私聊不猜）', () => {
+  // 群：能从旧格式推出 (平台, 号)
+  assert.deepEqual(legacySceneIdentity(root, 'group:123555'), { kind: 'group', platform: 'qq', nativeId: '123555' })
+  assert.deepEqual(legacySceneIdentity(root, 'group:qq:123555'), { kind: 'group', platform: 'qq', nativeId: '123555' })
+  assert.deepEqual(legacySceneIdentity(root, 'tieba:原神吧'), { kind: 'group', platform: 'tieba', nativeId: '原神吧' })
+  // 私聊：旧格式里没有平台，无从归属
+  assert.equal(legacySceneIdentity(root, 'private:10001'), null)
+  // 不是地方
+  assert.equal(legacySceneIdentity(root, 'bili:video:BV1'), null)
 })
 
 test('resolveChannel：不是人也不是地方的频道原样保留', () => {
@@ -111,14 +122,9 @@ test('gidForChannel 与 channelOfGid 互逆（群体编号是纯内部编号）'
   assert.equal(channelOfGid(gid), `group:${gid}`)
   assert.equal(gidForChannel(root, channelOfGid(gid)), gid)
 
-  // 老写法仍然指向同一个群体
-  assert.equal(gidForChannel(root, 'group:123456'), gid)
-  assert.equal(gidForChannel(root, 'group:qq:123456'), gid)
-
-  // 贴吧这类：老场景就是 平台:对象
-  const tieba = ensureGroupScene(root, { platform: 'tieba', nativeId: '原神吧' })
-  assert.equal(gidForChannel(root, 'tieba:原神吧'), tieba)
-  assert.equal(channelOfGid(tieba), `group:${tieba}`)
+  // 旧格式不再被解释成某个群体（哪怕它登记过）
+  assert.equal(gidForChannel(root, 'group:123456'), null)
+  assert.equal(gidForChannel(root, 'group:qq:123456'), null)
 
   // 查不到就是 null，不猜
   assert.equal(gidForChannel(root, 'group:999999'), null)
@@ -213,20 +219,27 @@ test('影子卡：写了档案就转正，之后人物页看得到', () => {
   assert.equal(isShadow(root, uid), false)
 })
 
-// ── 兼容：老频道还能匹配 ───────────────────────────────────────────────
+// ── 兼容：读历史记录时能把新老写法统一起来 ─────────────────────────────
+//
+// 注意方向：**已知人物/群体 → 列出它在老记录里可能叫什么**。
+// 反过来（拿一个旧格式场景去猜是谁）是禁止的。
 
-test('nativeChannelsFor：新场景的记录能连老写法一起找回来', () => {
+test('sceneRecordKeys：给定人物/群体，能列出它在老记录里的写法', () => {
   const p = createPerson(root, { display: '小李' })
   linkIdentity(root, p.uid, { platform: 'qq', id: '321' })
-  const set = nativeChannelsFor(root, `private:${p.uid}`)
+  const set = sceneRecordKeys(root, `private:${p.uid}`)
   assert.ok(set.includes(`private:${p.uid}`))
-  assert.ok(set.includes('private:321'), '老记录用的是外部号，必须也能找到')
+  assert.ok(set.includes('private:321'), '老记录用的是外部号，得能匹配上')
 
-  // 群体：登记过之后，老场景（group:123555 / group:qq:123555）也要一并找回来
-  ensureGroupScene(root, { platform: 'qq', nativeId: '123555' })
-  const gset = nativeChannelsFor(root, 'group:qq:123555')
+  // 群体：从内部编号出发，能列出老的群号写法
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '123555' })
+  const gset = sceneRecordKeys(root, `group:${gid}`)
+  assert.ok(gset.includes(`group:${gid}`))
   assert.ok(gset.includes('group:qq:123555'))
   assert.ok(gset.includes('group:123555'), '老群记录是 group:123555')
+
+  // 反过来不成立：旧格式场景本身解析不出编号（那是猜）
+  assert.equal(resolveChannel(root, 'group:qq:123555').gid, null)
 })
 
 test('规则链：群覆盖文件名用内部编号；老文件名仍然要读', () => {
@@ -244,16 +257,17 @@ test('规则链：群覆盖文件名用内部编号；老文件名仍然要读',
   assert.ok(pchain.some((p) => p.endsWith('private-person_abc.json')))
 })
 
-test('规则链：老私聊频道也能叠到同一层（private:10001 → private-person_x）', () => {
+test('规则链：旧格式私聊不再被归到人物层（编号不是外部号）', () => {
   const p = createPerson(root, { display: '小王' })
   linkIdentity(root, p.uid, { platform: 'qq', id: '654' })
-  const old = ruleChain(root, PID, { channel: 'private:654' })
-  const now = ruleChain(root, PID, { channel: `private:${p.uid}` })
 
-  // 两边都必须有"按人物"的那一层；老这边还会多一条 private-654.json（老文件名，留着兼容）
-  assert.ok(old.some((x) => x.endsWith(`private-${p.uid}.json`)), '老频道也要能叠到人物层')
+  const now = ruleChain(root, PID, { channel: `private:${p.uid}` })
   assert.ok(now.some((x) => x.endsWith(`private-${p.uid}.json`)))
-  assert.ok(old.some((x) => x.endsWith('private-654.json')), '老文件名仍要读')
+
+  // 旧格式：不知道是谁，只能按它自己的字面做一份覆盖文件——不假装是那个人
+  const old = ruleChain(root, PID, { channel: 'private:654' })
+  assert.ok(!old.some((x) => x.endsWith(`private-${p.uid}.json`)), '旧格式不该被解释成某个人')
+  assert.ok(old.some((x) => x.endsWith('private-654.json')), '按字面留一份，方便老数据排障')
 })
 
 test('ingest.json 的 skip_channels 写老形状也仍然生效', () => {

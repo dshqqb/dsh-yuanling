@@ -17,6 +17,7 @@ import { contextFor, recall } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
 import { resolveChannel } from './src/core/channels.js'
+import { readStyle, addStyleLine, removeStyleLine } from './src/core/style.js'
 import { setImpression, renderImpression, IMPRESSION_MAX_BYTES } from './src/core/impressions.js'
 import { readPurposes, writePurposes, markHit, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './src/core/purposes.js'
 import { refreshDrives } from './src/core/drives.js'
@@ -121,6 +122,29 @@ const TOOLS = [
         feature: { type: 'string', description: '这个群是什么地方、什么氛围——自然语言，≤2000 字' },
         topics: { type: 'string', description: '这里主要在聊什么——自然语言，≤2000 字' },
         aliases: { type: 'array', items: { type: 'string' }, description: '别名/简称，最多 10 个' },
+      },
+    },
+  },
+  {
+    name: 'yuanling_style',
+    description:
+      '改 / 看"表达层"——她**可以自己改**的那一层：最近养成的说话习惯、口癖、口味。\n' +
+      '和骨架的区别：骨架（SELF.md 的核心身份/说话方式/价值观）只有人能改，永远不在这里；' +
+      '表达层是人、提案、和你三方都能改的演化区。\n' +
+      '**写进去的每一条都会进上下文**（[习惯]，预算 240 字节、最多 8 条），所以写入时就按预算卡住：\n' +
+      '超了会被拒绝，并告诉你现在还剩多少——不会让你写一堆却在注入时被悄悄截掉。\n' +
+      '每次改动都要写 reason（为什么养成/去掉这个习惯），进版本历史、可回滚。\n' +
+      '注意：人批准某条提案时是**整文件退回**语义，回滚那条提案会把中间的直改一起覆盖。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'add', 'remove'],
+          description: 'list 看现在有哪些（默认）；add 加一条；remove 删一条',
+        },
+        line: { type: 'string', description: '要加/删的那一条（不用写前导 "- "）' },
+        reason: { type: 'string', description: 'add/remove 必填：为什么' },
       },
     },
   },
@@ -332,6 +356,25 @@ function formatGroupDetail(root, pid, g) {
 }
 
 /**
+ * 表达层的渲染。故意把"预算用了多少"摆在最前面：她要知道还剩多少空间，
+ * 才能决定是加一条还是先删一条。
+ */
+function formatStyle(s) {
+  const lines = [`表达层（她可以自己改的那一层）：${s.bytes}/${s.budget} 字节 · ${s.items.length}/${s.maxItems} 条`]
+  if (s.items.length) {
+    for (const it of s.items) lines.push(`  - ${it}`)
+  } else {
+    lines.push('（还空着：她还没养成什么固定的说话习惯。可以加一条，比如"拿不准的时候说「我猜」"）')
+  }
+  lines.push('')
+  lines.push('写进来的每一条都会进上下文（[习惯]）。骨架不在这层——那是"她是谁"，只有人能改。')
+  if (s.items.length && s.bytes >= s.budget * 0.9) {
+    lines.push('⚠ 快到预算上限了：再加一条之前先删一条，或把话写短。')
+  }
+  return lines.join('\n')
+}
+
+/**
  * 账本渲染。**只读**：这里不刷新 drives、不挖新条目——
  * 一个"看一眼"的动作不该顺手改盘（挖/清是 contextFor 每轮在做的事）。
  */
@@ -470,6 +513,24 @@ async function callTool(root, name, args = {}) {
 
     const g = readGroupLive(root, pid, gid)
     return { text: `✓ 已写入群体 ${g.gid}\n\n${formatGroupDetail(root, pid, g)}` }
+  }
+
+  if (name === 'yuanling_style') {
+    const action = String(args.action ?? 'list').trim() || 'list'
+
+    if (action === 'list') {
+      return { text: formatStyle(readStyle(root, pid)) }
+    }
+    if (action === 'add') {
+      const r = addStyleLine(root, pid, { line: args.line, reason: args.reason })
+      const head = r.changed ? '✓ 已加进表达层（会进上下文）' : '· 这一条已经在表达层里了，没有重复写'
+      return { text: `${head}\n\n${formatStyle(readStyle(root, pid))}` }
+    }
+    if (action === 'remove') {
+      const r = removeStyleLine(root, pid, { line: args.line, reason: args.reason })
+      return { text: `✓ 已去掉「${r.removed}」\n\n${formatStyle(readStyle(root, pid))}` }
+    }
+    throw new Error(`不认识的 action：${action}（list / add / remove）`)
   }
 
   if (name === 'yuanling_observe') {

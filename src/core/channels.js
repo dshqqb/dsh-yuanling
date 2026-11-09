@@ -50,7 +50,13 @@ export function isPersonUid(id) {
   return /^person_/.test(String(id ?? ''))
 }
 
-/** 任意平台上按账号 id 找人（老频道没写平台，只能这样反查）。唯一命中才算数。 */
+/**
+ * 任意平台上按账号 id 找人（**唯一命中才算**）。
+ *
+ * 只在"给人物找它可能在老记录里的写法"时用（`sceneRecordKeys`），
+ * **不用于解析场景**——场景编号不是外部号，那一步反查会把 `private:10001`
+ * 误解成"QQ 号 10001 的人"（用户明确否掉的语义）。
+ */
 function findAnyIdentity(root, id) {
   const data = loadIdentities(root)
   const i = String(id)
@@ -64,10 +70,15 @@ function findAnyIdentity(root, id) {
 }
 
 /**
- * 把一个频道解析成**结构化语义**。
+ * 把一个场景解析成**结构化语义**。
  *
- * `legacy:true` 表示这是老形状（外部 id 直接写在频道里），`resolved:false`
- * 表示连反查都没命中——这种频道不该被当成有效频道。
+ * **场景编号一定是内部编号**：`private:<人物编号>` / `group:<群体编号>`。
+ * 这里**绝不做"按账号反查人物"**——那等于把 `private:10001` 理解成"QQ 号是 10001 的人"，
+ * 而 10001 应该只是"第 10001 号人物卡"，他挂哪个 QQ 号是卡里的事，和场景无关。
+ *
+ * 老记录里的 `private:10001` / `group:123555` 是**旧格式**（外部号直接当编号用），
+ * 现在一律 `resolved:false`。它们仍然能被读到、被统计——走的是
+ * `sceneRecordKeys()`（已知人物/群体 → 列出它可能在老记录里的写法），方向是反的。
  */
 export function resolveChannel(root, channel) {
   const raw = String(channel ?? '')
@@ -77,21 +88,19 @@ export function resolveChannel(root, channel) {
     if (isPersonUid(id)) {
       return { raw, kind, id, canonical: raw, personUid: id, gid: null, nativeId: null, resolved: true, legacy: false }
     }
-    const hit = findAnyIdentity(root, id)
-    if (hit) {
-      return {
-        raw,
-        kind,
-        id,
-        canonical: `private:${hit.uid}`,
-        personUid: hit.uid,
-        gid: null,
-        nativeId: `${hit.identity.platform}:${hit.identity.id}`,
-        resolved: true,
-        legacy: true,
-      }
+    // 旧格式：外部号当编号。**不反查**——反查就是"按 QQ 号找人"，语义错了。
+    return {
+      raw,
+      kind,
+      id,
+      canonical: raw,
+      personUid: null,
+      gid: null,
+      nativeId: null,
+      resolved: false,
+      legacy: true,
+      unresolvedReason: 'not-internal-id',
     }
-    return { raw, kind, id, canonical: raw, personUid: null, gid: null, nativeId: null, resolved: false, legacy: true }
   }
 
   if (GROUP_KINDS.has(kind)) {
@@ -99,28 +108,42 @@ export function resolveChannel(root, channel) {
     if (/^grp_/.test(id)) {
       return { raw, kind, id, canonical: raw, personUid: null, gid: id, nativeId: null, resolved: true, legacy: false }
     }
-    // 老形状：`group:123555` 或 `group:qq:123555` —— 按 (平台, 号) 去登记表查
-    const platform = id.includes(':') ? id.split(':')[0] : platformOfKind(kind)
-    const nativeId = id.includes(':') ? id.split(':').slice(1).join(':') : id
-    const gid = findGidByNative(root, platform, nativeId)
-    if (gid) {
-      return {
-        raw,
-        kind,
-        id,
-        canonical: `group:${gid}`,
-        personUid: null,
-        gid,
-        nativeId: `${platform}:${nativeId}`,
-        resolved: true,
-        legacy: true,
-      }
+    // 旧格式：`group:123555` / `group:qq:123555`。同样不猜。
+    return {
+      raw,
+      kind,
+      id,
+      canonical: raw,
+      personUid: null,
+      gid: null,
+      nativeId: null,
+      resolved: false,
+      legacy: true,
+      unresolvedReason: 'not-internal-id',
     }
-    return { raw, kind, id, canonical: raw, personUid: null, gid: null, nativeId: null, resolved: false, legacy: true }
   }
 
   // 不是人也不是地方：bili:video:BV1 / dsh:xxx / module:xxx —— 原样
   return { raw, kind, id, canonical: raw, personUid: null, gid: null, nativeId: null, resolved: true, legacy: false }
+}
+
+/**
+ * 旧格式场景 → 编号。**只给迁移/统计用**（scan、backfill、CLI 参数归一），
+ * 不参与"这个场景是谁"的解析。要新注册一个群体时用它。
+ *
+ * @returns {{kind:'private'|'group', platform:string|null, nativeId:string}|null}
+ */
+export function legacySceneIdentity(root, scene) {
+  void root
+  const { kind, id } = parseChannel(scene)
+  if (kind === 'private') {
+    // 私聊的旧格式里没有平台信息，无从归属——返回 null，不猜
+    return null
+  }
+  if (!GROUP_KINDS.has(kind) || !id) return null
+  const platform = id.includes(':') ? id.split(':')[0] : platformOfKind(kind)
+  const nativeId = id.includes(':') ? id.split(':').slice(1).join(':') : id
+  return { kind: 'group', platform, nativeId }
 }
 
 /**

@@ -13,6 +13,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord, today } from '../src/core/raw.js'
 import { createPerson, linkIdentity } from '../src/core/entities.js'
 import { contextFor } from '../src/core/memory.js'
+import { legacySceneIdentity, sceneRecordKeys } from '../src/core/channels.js'
 import {
   gidForChannel,
   channelOfGid,
@@ -82,25 +83,28 @@ test('群体身份：两个平台的同一个号是**两个**群体（绝不合�
   assert.equal(readGroupIdentity(root, tieba).platform, 'tieba')
 })
 
-test('场景 → 编号：新写法直接认，老写法去登记表查，查不到就是 null', () => {
+test('场景 → 编号：只有内部编号能解析；旧格式一律 null（编号不是外部号）', () => {
   const root = tmpRoot()
   const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '123456' })
 
   assert.equal(gidForChannel(root, `group:${gid}`), gid, '新写法')
-  assert.equal(gidForChannel(root, 'group:123456'), gid, '老写法（只有号）')
-  assert.equal(gidForChannel(root, 'group:qq:123456'), gid, '老写法（带平台）')
+  // 旧格式：把群号直接当编号用。就算登记过也不认——那是"按群号找群"，语义错了
+  assert.equal(gidForChannel(root, 'group:123456'), null)
+  assert.equal(gidForChannel(root, 'group:qq:123456'), null)
 
-  assert.equal(gidForChannel(root, 'group:999999'), null, '查不到就 null，不猜')
   assert.equal(gidForChannel(root, 'private:person_x'), null, '私聊不是群体')
   assert.equal(gidForChannel(root, 'dsh:main'), null)
   assert.equal(gidForChannel(root, ''), null)
 })
 
-test('贴吧这类：原生号是「吧名」', () => {
+test('旧格式 → 身份（只给迁移用）：贴吧的原生号是「吧名」', () => {
   const root = tmpRoot()
-  const gid = ensureGroupScene(root, { platform: 'tieba', nativeId: '原神吧' })
+  const idn = legacySceneIdentity(root, 'tieba:原神吧')
+  assert.deepEqual(idn, { kind: 'group', platform: 'tieba', nativeId: '原神吧' })
+  const gid = ensureGroupScene(root, { platform: idn.platform, nativeId: idn.nativeId })
   assert.equal(readGroupIdentity(root, gid).nativeId, '原神吧')
-  assert.equal(gidForChannel(root, 'tieba:原神吧'), gid, '老场景就是 平台:对象')
+  // 场景本身仍然是内部编号
+  assert.equal(channelOfGid(gid), `group:${gid}`)
 })
 
 // ── 存储 ────────────────────────────────────────────────────────────────
@@ -170,8 +174,10 @@ test('迁移：老的 qq_123456.json 换成 grp_xxx.json，内容不丢', () => 
   assert.match(g.feature, /爱嘲讽/)
   assert.deepEqual(g.members, ['person_a'])
   assert.equal(g.nativeId, '123456')
-  // 老场景现在能解析到新编号
-  assert.equal(gidForChannel(root, 'group:123456'), to)
+  // 场景仍是内部编号；老写法不再被解析成"这个群"，但读历史时能匹配上
+  assert.equal(channelOfGid(to), `group:${to}`)
+  assert.equal(gidForChannel(root, 'group:123456'), null)
+  assert.ok(sceneRecordKeys(root, `group:${to}`).includes('group:123456'))
 })
 
 test('迁移：规则覆盖文件跟着改名，内容不动', () => {
@@ -308,9 +314,10 @@ test('回填：raw 里的老场景也能补成档案，并落到同一个内部�
   assert.equal(r.created.length, 1)
   const g = readGroup(root, PID, gid)
   assert.ok(g, '回填后应该有档案')
-  // 老场景与新场景指向同一个群
-  assert.equal(gidForChannel(root, 'group:123456'), gid)
+  // 回填会把老场景登记成身份；之后**新场景**指向它，老写法本身仍然不是编号
   assert.equal(gidForChannel(root, channelOfGid(gid)), gid)
+  assert.equal(gidForChannel(root, 'group:123456'), null)
+  assert.ok(sceneRecordKeys(root, channelOfGid(gid)).includes('group:123456'))
 })
 
 test('回填：幂等（第二遍不新建）', () => {
@@ -342,10 +349,13 @@ test('注入：当前场景对应的群体一定带', () => {
   assert.equal(picked[0].name, '游戏群')
 })
 
-test('注入：老场景也能带出同一个群体', () => {
+test('注入：旧格式场景不被解释成某个群体（只认内部编号）', () => {
   const root = tmpRoot()
-  mkGroup(root, 'qq', '123456', { name: '游戏群' })
-  const picked = groupsForContext(root, PID, { channel: 'group:123456' })
+  const gid = mkGroup(root, 'qq', '123456', { name: '游戏群' })
+  // 旧格式：不知道是哪个群，宁可不带，也不猜
+  assert.deepEqual(groupsForContext(root, PID, { channel: 'group:123456' }), [])
+  // 内部编号：正常带
+  const picked = groupsForContext(root, PID, { channel: channelOfGid(gid) })
   assert.equal(picked.length, 1)
   assert.equal(picked[0].name, '游戏群')
 })

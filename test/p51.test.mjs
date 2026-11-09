@@ -17,6 +17,7 @@ import { parseMd, applySectionEdits, replaceTitle } from '../src/core/mdtext.js'
 import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from '../src/core/personacard.js'
 import { contextFor } from '../src/core/memory.js'
 import { createPersona } from '../src/core/persona.js'
+import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
 import { readPurposes, writePurposes } from '../src/core/purposes.js'
 import { appendRecord, listScenes } from '../src/core/raw.js'
 import { localIso } from '../src/core/fsx.js'
@@ -396,6 +397,59 @@ test('GET /api/card：连着看两次预览，账本一个字节都不动', asyn
   assert.equal(after.items[0].status, 'open')
 })
 
+// 选了场景却和通用预览一模一样时，接口必须能说清为什么——
+// 否则人会以为"选了没用"，或者以为功能坏了。
+test('GET /api/card：旧格式场景（private:10001）不算人物编号，明确说明原因', async () => {
+  const d = await get(`/api/card?scene=${encodeURIComponent('private:10001')}`)
+  assert.equal(d.ok, true)
+  assert.equal(d.sceneInfo.resolved, false)
+  assert.match(d.sceneInfo.reason, /编号必须是人物编号/)
+  // 通用预览（不带场景）也要有说明
+  const generic = await get('/api/card')
+  assert.equal(generic.sceneInfo.resolved, false)
+  assert.match(generic.sceneInfo.reason, /通用预览/)
+})
+
+test('GET /api/card：场景解析到人物、但这个人还没档案时，如实说', async () => {
+  const p = createPerson(root, { display: '没写过素描的人' })
+  linkIdentity(root, p.uid, { platform: 'qq', id: '10002' })
+
+  // 场景里用的是**人物编号**，不是他的 QQ 号
+  const d = await get(`/api/card?scene=${encodeURIComponent(`private:${p.uid}`)}`)
+  assert.equal(d.ok, true)
+  assert.equal(d.sceneInfo.resolved, true)
+  assert.equal(d.sceneInfo.personUid, p.uid)
+  assert.match(d.sceneInfo.reason, /没有档案/)
+})
+
+test('GET /api/card：场景编号不是 QQ 号——挂不同 QQ 也指向同一个人', async () => {
+  const p = createPerson(root, { display: '两个号的人' })
+  linkIdentity(root, p.uid, { platform: 'qq', id: '11111' })
+  linkIdentity(root, p.uid, { platform: 'qq', id: '22222' })
+  writeProfile(root, PID, p.uid, { sketch: '爱用短句' })
+
+  // 用编号 → 带上他的画像
+  const byId = await get(`/api/card?scene=${encodeURIComponent(`private:${p.uid}`)}`)
+  assert.equal(byId.sceneInfo.personUid, p.uid)
+  assert.match(byId.text, /爱用短句/)
+
+  // 用他的 QQ 号当场景 → 不是编号，不认（这就是这次纠正的语义）
+  const byAccount = await get(`/api/card?scene=${encodeURIComponent('private:11111')}`)
+  assert.equal(byAccount.sceneInfo.resolved, false)
+})
+
+test('GET /api/card：场景解析到人物且有档案 → 注入里出现人物卡', async () => {
+  const p = createPerson(root, { display: '有素描的人' })
+  linkIdentity(root, p.uid, { platform: 'qq', id: '10003' })
+  writeProfile(root, PID, p.uid, { sketch: '说话很快，爱用短句' })
+
+  const d = await get(`/api/card?scene=${encodeURIComponent(`private:${p.uid}`)}`)
+  assert.equal(d.sceneInfo.resolved, true)
+  assert.match(d.sceneInfo.reason, /画像/)
+  assert.match(d.text, /\[人物\].*有素描的人/)
+  assert.match(d.text, /说话很快/)
+})
+
 // ── 注入预览的频道 ────────────────────────────────────────────────────
 
 test('listScenes：从原始层数出真实场景（注入预览只让人挑存在的）', () => {
@@ -414,6 +468,8 @@ test('listScenes：从原始层数出真实场景（注入预览只让人挑存�
   const g = list.find((sc) => sc.scene === 'group:qq:123555')
   assert.ok(g, '刚写进去的群体场景应该被数出来')
   assert.ok(g.messages >= 1)
+  // 这是旧格式（群号当编号用）：列表里要标出来，它没有对应卡片
+  assert.ok(g.legacy >= 1, '旧格式场景应标记 legacy')
   // 排序：最近活动的在前
   for (let i = 1; i < list.length; i += 1) {
     assert.ok(String(list[i - 1].lastAt) >= String(list[i].lastAt))

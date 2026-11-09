@@ -454,7 +454,13 @@ export const SKELETON_BYTES = { core: 120, speak: 200, values: 160 }
  * "关于你"那类东西不在这里：它由记忆事实 + 人物卡提供，不再有第三份 markdown。
  */
 export const HARD_LINE_BYTES = 200
-export const EXPRESSION_BYTES = 160
+/**
+ * 表达层注入预算。
+ *
+ * 这个数字和 `style.js` 的写入上限是**同一个**：写进 style.md 的每一条都必须进上下文，
+ * 所以写入时按这个预算卡住。调大它，她会能记住更多习惯；调小，写入会先被拒。
+ */
+export const EXPRESSION_BYTES = 240
 
 /** 按 `## 标题` 切段，返回 { 标题: 正文 }。 */
 function splitSections(text) {

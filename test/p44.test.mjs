@@ -23,9 +23,11 @@ import {
   ensureGroup,
   ensureGroupScene,
   readGroupIdentity,
+  findGidByNative,
   computeGroupWeight,
   setGroupWeight,
 } from '../src/core/groups.js'
+import { legacySceneIdentity } from '../src/core/channels.js'
 
 const PID = 'yuanling'
 
@@ -52,10 +54,15 @@ const msg = (channel, text = '在吗', extra = {}) => ({
 
 /**
  * 场景 → 群体编号。
- * 群体编号是纯内部编号（`grp_xxx`），所以测试里不再写 `qq:555` 这种外部形状：
- * 想拿某个群的卡，就按它的场景（老写法也行）换出编号。
+ * 场景编号是内部编号（`grp_xxx`），所以旧格式（`group:555`）本身不是编号；
+ * 测试里要拿某个群的卡，就先按它的身份去登记表查编号。
  */
-const gidOf = (root, scene) => gidForChannel(root, scene)
+const gidOf = (root, scene) => {
+  const direct = gidForChannel(root, scene)
+  if (direct) return direct
+  const idn = legacySceneIdentity(root, scene)
+  return idn ? findGidByNative(root, idn.platform, idn.nativeId) : null
+}
 
 // ── 收到消息就建卡（Q1 = A）─────────────────────────────────────────────
 

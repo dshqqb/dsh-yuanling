@@ -99,12 +99,33 @@ export function setImpression(root, pid, kind, id, { text, reason, evidence = nu
 
   const fullReason = evOk ? `${why}（证据：${evOk}）` : why
   const before = String(cur[side.field] ?? '')
+
+  // 内容没变就**真的不写**。
+  //
+  // 以前这里是无条件 side.write：`writeProfile` 每次都会把 `updated_at` 改成当前时间，
+  // 于是"同样的文本"也能拼出一个内容不同的文件 → 写盘 → 版本历史里多一条假记录。
+  // 它之所以多数时候没暴露，是因为时间戳只到秒：同一秒内两次写出来的 JSON 一模一样，
+  // hash 相同才被 writeTracked 的幂等挡掉。一旦跨过秒边界（机器忙的时候特别容易），
+  // 就会凭空长出一条"内容没变"的版本。这就是那个偶发失败的根因。
+  if (before === body) {
+    return {
+      kind: String(kind),
+      id: String(id),
+      changed: false,
+      before,
+      after: body,
+      reason: fullReason,
+      actor,
+      impression: readImpression(root, pid, kind, id),
+    }
+  }
+
   side.write(root, pid, id, { [side.field]: body, __reason: fullReason }, { actor, reason: fullReason })
 
   return {
     kind: String(kind),
     id: String(id),
-    changed: before !== body,
+    changed: true,
     before,
     after: body,
     reason: fullReason,

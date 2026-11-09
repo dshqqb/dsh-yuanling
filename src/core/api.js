@@ -11,6 +11,7 @@ import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
 import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
 import { listDays, readDay, today, listScenes } from './raw.js'
+import { resolveChannel } from './channels.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -50,6 +51,53 @@ export function buildStatus(root) {
 
 function need(result) {
   return result ?? null
+}
+
+/**
+ * 一个场景在注入时会带进什么。
+ *
+ * 用来回答"我明明选了人物场景，为什么预览和通用一模一样"：只有解析到人物/群体，
+ * 才会有额外那几行。没解析到就必须说清是哪一步没成，而不是让页面静悄悄给同一份文本。
+ */
+function sceneReport(root, scene) {
+  if (!scene) return { sceneInfo: { resolved: false, reason: '没选场景：这是通用预览，不含群体卡与人物卡' } }
+  const c = resolveChannel(root, scene)
+  if (c.kind === 'private') {
+    if (c.personUid) {
+      const prof = readProfile(root, readMarker(root)?.active, c.personUid)
+      if (!prof?.sketch) {
+        return {
+          sceneInfo: {
+            resolved: true,
+            kind: 'private',
+            personUid: c.personUid,
+            reason: '解析到了人物，但这个人还没有档案（她还没认识他），所以注入里没有人物卡',
+          },
+        }
+      }
+      return { sceneInfo: { resolved: true, kind: 'private', personUid: c.personUid, reason: '会带上这个人的画像' } }
+    }
+    return {
+      sceneInfo: {
+        resolved: false,
+        kind: 'private',
+        reason: `场景编号必须是人物编号（person_…），而不是外部账号。${c.id} 是旧格式（把号码直接当编号用），没法归属`,
+      },
+    }
+  }
+  if (c.kind === 'group') {
+    if (!c.gid) {
+      return {
+        sceneInfo: {
+          resolved: false,
+          kind: 'group',
+          reason: `场景编号必须是群体编号（grp_…）。${c.id} 是旧格式（把群号直接当编号用），没法归属；跑一次 yuanling group backfill 会把它登记成正式编号`,
+        },
+      }
+    }
+    return { sceneInfo: { resolved: true, kind: 'group', gid: c.gid, reason: '会带上这个群体的印象' } }
+  }
+  return { sceneInfo: { resolved: true, kind: c.kind, reason: '这不是人物/群体场景，注入里不会多出卡' } }
 }
 
 /**
@@ -287,7 +335,17 @@ export function handleApi(root, url) {
     const text = contextFor(root, pid, { channel: scene, budget, preview: true })
     return {
       status: 200,
-      body: { ok: true, scene, channel: scene, text, budget, bytes: Buffer.byteLength(text, 'utf8') },
+      body: {
+        ok: true,
+        scene,
+        channel: scene,
+        text,
+        budget,
+        bytes: Buffer.byteLength(text, 'utf8'),
+        // 场景解析结果：选了场景却和通用预览一模一样时，**必须能说清为什么**。
+        // 否则人会以为"选了没用"，或者以为功能坏了。
+        ...sceneReport(root, scene),
+      },
     }
   }
 

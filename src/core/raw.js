@@ -387,10 +387,12 @@ export function listScenes(root, { days = 30, limit = 50 } = {}) {
       if ((r.type ?? 'message') !== 'message') continue
       const raw = String(r.channel ?? '')
       if (!raw) continue
-      const canon = resolveChannel(root, raw).canonical
+      const resolved = resolveChannel(root, raw)
+      const canon = resolved.canonical
       const cur = seen.get(canon) ?? { scene: canon, messages: 0, lastAt: null, legacy: 0 }
       cur.messages += 1
-      if (canon !== raw) cur.legacy += 1
+      // 旧格式（把外部号当编号用）单独标出来：它没有对应卡片，列表里要能看出来
+      if (canon !== raw || resolved.legacy) cur.legacy += 1
       const ts = String(r.ts ?? '')
       if (!cur.lastAt || ts > cur.lastAt) cur.lastAt = ts
       seen.set(canon, cur)

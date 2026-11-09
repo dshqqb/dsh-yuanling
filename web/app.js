@@ -374,12 +374,12 @@ function sceneLabel(scene, extra = '') {
   const [kind, ...rest] = String(scene).split(':')
   const tail = rest.join(':')
   const kindText = SCENE_LABELS[kind] ?? kind
-  // 编号对人没意义；能截短就截短，还能对上人物页/群体页
+  // 场景编号 = 人物编号 / 群体编号（内部编号）。截短显示，方便和人物页/群体页对。
   if (tail.startsWith('person_')) return `${kindText} · 人物 ${tail.slice(7, 15)}…${extra}`
   if (tail.startsWith('grp_')) return `${kindText} · 群体 ${tail.slice(4, 12)}…${extra}`
-  // 老形状：外部号码直接写在场景里。这种场景**认不到人/群体**，因为它没说是哪个平台的号。
-  // 页面上要明说，否则人点进去看到"没有卡片"会以为数据丢了。
-  if (kind === 'private' || kind === 'group') return `${kindText} · 未归属（老场景 ${tail}）${extra}`
+  // 旧格式：把外部号码直接当编号用。它不是"编号"，也认不到卡片——
+  // 页面上要明说，否则人会以为"10001 是 QQ 号"，或者以为数据丢了。
+  if (kind === 'private' || kind === 'group') return `${kindText} · 旧格式 ${tail}（无对应卡片）${extra}`
   return `${kindText} · ${tail}${extra}`
 }
 
@@ -422,6 +422,25 @@ async function loadCard() {
   const d = await api(`/api/card${q}`)
   $('card-out').textContent = d.text || '（空）'
   $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.scene ? ` · ${sceneLabel(d.scene)}` : ' · 通用（不含群体与人物卡）'}`
+
+  // 选了场景却和通用预览一样，必须说清为什么——否则人会以为"选了没用"或功能坏了
+  const note = $('card-scene-note')
+  const info = d.sceneInfo ?? null
+  if (d.scene && !info) {
+    // 接口没给这个字段：几乎一定是后端还是旧代码（静态页刷新就生效，后端要重启）。
+    // 不报错就等于让人对着"没反应"猜。
+    note.textContent = '⚠ 这个接口没返回场景解析结果（sceneInfo）：后端可能还是旧代码，重启 DSH 再试'
+    note.classList.add('dirty')
+  } else if (d.scene && !info.resolved) {
+    note.textContent = `⚠ 这个场景没解析到人物/群体，所以内容和不选一样：${info.reason}`
+    note.classList.add('dirty')
+  } else if (d.scene && info.resolved) {
+    note.textContent = `✓ ${info.reason}`
+    note.classList.remove('dirty')
+  } else {
+    note.textContent = ''
+    note.classList.remove('dirty')
+  }
 }
 
 // ── 人格 → 概况 ────────────────────────────────────────────────────────
@@ -435,9 +454,11 @@ async function loadCard() {
 // `persona/user.md`（"用户画像"）已经整个删掉了——它从来没被任何代码读写，
 // 而"关于你"这件事由**记忆事实 + 人物卡**覆盖，不需要第三份。
 const PERSONA_FILE_HINT = {
-  self: '三段进上下文；其余段落只给人看。',
+  self: '三段进上下文；其余段落只给人看。骨架只有人能改——她永远动不了这一页。',
   lines: '会整段进上下文——代码在拦的那条（guardrails.json）她看不见，这段是让她知道边界。',
-  style: '采纳的提案写在这里，会进上下文。回滚某条提案会把整个文件退回应用前那一版，手改会一起被覆盖。',
+  style:
+    '这是**她自己也能改**的一层：她可以用工具直接增删，人也可以在这里手改，提案批准也写这里。' +
+    '每一条都会进上下文（最多 8 条 / 240 字节）。注意：回滚某条提案会把整个文件退回应用前那一版，中间的直改会一起被覆盖。',
 }
 
 function markDirty() {
@@ -450,7 +471,11 @@ function sectionBlock(s, areas) {
   const sect = el('div', 'sect')
   const sh = el('div', 'sect-head')
   sh.append(el('span', 'sect-title', s.title))
-  if (s.injected) {
+  if (s.deprecated) {
+    // 老文件里还留着这一节：不替人删字，但必须说清它早就不生效了
+    sh.append(el('span', 'tag warn', '已废弃'))
+    sh.append(el('span', 'muted small', '这一节从没被任何代码读写；她学到的表达请写到「表达层」'))
+  } else if (s.injected) {
     // 比的是**她真正读到的那一行**，不是这一节的字节数——
     // 一节里可能只有两条被抽走（核心身份只取名字/存在的原因），拿整节去比会误报超预算。
     const over = s.lineBytes > s.budget

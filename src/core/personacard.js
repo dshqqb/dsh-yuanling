@@ -134,6 +134,9 @@ function describeFile(root, pid, spec, injected) {
             budget: key ? sectionBudget(key) : null,
             line: hit?.text ?? null,
             lineBytes: hit?.bytes ?? 0,
+            // 「演化区」已废弃（2026-11-09）：从没被任何代码读写过，演化统一走表达层。
+            // 老数据里还留着——不替人删字，但要标出来，别让人以为它还在生效。
+            deprecated: s.title === '演化区',
           }
         })
       : [],
