@@ -123,24 +123,19 @@ function describeFile(root, pid, spec, injected) {
     line: whole?.text ?? null,
     lineBytes: whole?.bytes ?? 0,
     sections: parsed
-      ? parsed.sections
-          // 「演化区」已彻底废弃（2026-11-09）：它从没被任何代码读写过，演化统一走表达层。
-          // 老文件里可能还留着这一节——**不在界面上露出来**；保存时不传它，
-          // mdtext 只替换改过的节，所以文件里那一节原样保留（不替人删字）。
-          .filter((s) => s.title !== '演化区')
-          .map((s) => {
-            const key = sectionKey(s.title)
-            const hit = key ? lineOf(injected, SECTION_TAG[key]) : null
-            return {
-              title: s.title,
-              body: trimBody(s.body),
-              bytes: Buffer.byteLength(trimBody(s.body), 'utf8'),
-              injected: Boolean(key),
-              budget: key ? sectionBudget(key) : null,
-              line: hit?.text ?? null,
-              lineBytes: hit?.bytes ?? 0,
-            }
-          })
+      ? parsed.sections.map((s) => {
+          const key = sectionKey(s.title)
+          const hit = key ? lineOf(injected, SECTION_TAG[key]) : null
+          return {
+            title: s.title,
+            body: trimBody(s.body),
+            bytes: Buffer.byteLength(trimBody(s.body), 'utf8'),
+            injected: Boolean(key),
+            budget: key ? sectionBudget(key) : null,
+            line: hit?.text ?? null,
+            lineBytes: hit?.bytes ?? 0,
+          }
+        })
       : [],
     hasSections: Boolean(parsed?.hasSections),
     title: parsed?.title ?? '',

@@ -213,25 +213,6 @@ test('readCard：小节名带后缀（价值观（按优先级））也算进上
   assert.equal(sec.budget, card.budgets.values)
 })
 
-test('readCard：老文件里的「演化区」不会出现在卡片上（已彻底废弃）', () => {
-  createPersona(root, 'legacy', '老文件')
-  const rel = personaPaths('legacy').self
-  fs.writeFileSync(
-    path.join(root, rel),
-    '# 老文件 · 骨架\n\n## 核心身份\n\n- 名字：老文件\n\n## 演化区\n\n- 最近在意的事：随便写的\n',
-    'utf8',
-  )
-
-  const { card } = readCard(root, 'legacy')
-  const titles = card.files.find((f) => f.key === 'self').sections.map((s) => s.title)
-  assert.ok(titles.includes('核心身份'))
-  assert.ok(!titles.includes('演化区'), '废弃的节不该再露出来')
-
-  // 但文件内容不替人删：那一节还在盘上
-  const raw = fs.readFileSync(path.join(root, rel), 'utf8')
-  assert.match(raw, /## 演化区/)
-})
-
 test('saveCardFile：写盘 + 进版本历史 + actor 是人', () => {
   const { card } = readCard(root, PID)
   const self = card.files.find((f) => f.key === 'self')
