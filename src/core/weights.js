@@ -25,8 +25,10 @@ function isInteraction(r, identity) {
   const actor = String(r.actor?.id ?? '')
   if (!id || actor !== id) return false
   if (identity.platform === 'qq') {
-    // 只认私聊：群里说话不等于跟她说话
-    return chan === `private:${id}`
+    // 只认私聊：群里说话不等于跟她说话。
+    // 不再比 `private:<对方QQ号>`——频道已经改成内部编号（`private:person_x`），
+    // 而老记录还是老形状。人是谁已经由 actor.id 说清了，这里只要判断"这是私聊"。
+    return chan.startsWith('private:')
   }
   if (identity.platform === 'bili') {
     return chan.startsWith('bili:')

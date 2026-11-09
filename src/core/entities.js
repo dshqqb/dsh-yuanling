@@ -210,7 +210,24 @@ export function writeProfile(root, pid, uid, patch = {}, { actor = 'system:entit
     actor,
     reason: __reason ?? '更新人物档案',
   })
+  // 有人给她写档案 = 从"见过"变成"认识"：影子卡转正。
+  // 反过来（转正后再写档案）什么也不用做，promoteShadow 自己会判断。
+  if (personIsShadow(root, uid)) promoteShadowLocal(root, uid)
   return next
+}
+
+/** 局部实现，避免 entities ↔ channels 的循环 import。 */
+function personIsShadow(root, uid) {
+  return loadIdentities(root).people?.[uid]?.tier === 'shadow'
+}
+
+function promoteShadowLocal(root, uid) {
+  const data = loadIdentities(root)
+  const person = data.people?.[uid]
+  if (!person || person.tier !== 'shadow') return false
+  delete person.tier
+  saveIdentities(root, data)
+  return true
 }
 
 /** 第一次和这个人打交道：只写一次。 */
@@ -287,7 +304,36 @@ export function parseIdentityText(text) {
     if (matchedPlatform) unparsed.push(seg)
   }
 
+  // 第二遍：补"省略平台名"的后续号。
+  // "QQ 号是 12345，还有个号 54321" —— 后半句没写平台，但它跟着前半句走。
+  // 只在前一段刚刚认出了平台、且这段里没有别的平台名时才补，避免张冠李戴。
+  let lastPlatform = null
+  for (let i = 0; i < segs.length; i += 1) {
+    const seg = segs[i]
+    const hit = items.find((x) => seg.includes(x.id) && maybeMentionsPlatform(seg))
+    if (hit) {
+      lastPlatform = hit.platform
+      continue
+    }
+    if (!lastPlatform) continue
+    if (PLATFORM_ALIASES.some((a) => a.re.test(seg))) continue // 这段有自己的平台名，别抢
+    if (!/号|账号|小号|另一个|还有/.test(seg)) continue
+    const m = /(?:^|[^\d])(\d{4,12})(?:[^\d]|$)/.exec(seg)
+    if (!m) continue
+    const id = m[1]
+    if (!items.some((x) => x.platform === lastPlatform && x.id === id)) {
+      items.push({ platform: lastPlatform, id })
+      const idx = unparsed.indexOf(seg)
+      if (idx >= 0) unparsed.splice(idx, 1)
+    }
+  }
+
   return { items, unparsed, segments: segs.length }
+}
+
+/** 这一段里有没有出现平台名（用来判断"平台线索是否还延续"）。 */
+function maybeMentionsPlatform(seg) {
+  return PLATFORM_ALIASES.some((a) => a.re.test(seg))
 }
 
 /**
@@ -394,9 +440,13 @@ export function currentAdmin(root) {
 /**
  * 人物页列表：管理员 → 重要人物 → 其余（按权重或按时间）。
  */
-export function listPeopleForUi(root, pid, { sort = 'weight' } = {}) {
+export function listPeopleForUi(root, pid, { sort = 'weight', includeShadow = false } = {}) {
   const data = loadIdentities(root)
-  const rows = Object.values(data.people).map((person) => {
+  const rows = Object.values(data.people)
+    // 影子卡（只见过、没认识过）默认不显示：人物页是"她认识谁"，不是"谁发过言"。
+    // 没写过档案的影子也一定没有 sketch/pinned/weight，藏起来不丢信息。
+    .filter((person) => includeShadow || person.tier !== 'shadow')
+    .map((person) => {
     const profile = readProfile(root, pid, person.uid)
     return {
       uid: person.uid,
@@ -429,7 +479,7 @@ export function listPeopleForUi(root, pid, { sort = 'weight' } = {}) {
 
 // ── 频道解析 ────────────────────────────────────────────────────────────
 
-/** `private:10001` / `group:123` / `bili:video:BV1` / `dsh:xxx` */
+/** `private:person_x` / `group:qq:123` / `bili:video:BV1` / `dsh:xxx` */
 export function parseChannel(channel) {
   const s = String(channel ?? '')
   const i = s.indexOf(':')
@@ -437,10 +487,20 @@ export function parseChannel(channel) {
   return { kind: s.slice(0, i), id: s.slice(i + 1) }
 }
 
-/** 私聊频道 → 人物 uid（认不出来就 null）。 */
+/**
+ * 私聊频道 → 人物 uid（认不出来就 null）。
+ *
+ * 新形状直接就是 `private:<person_uid>`；老形状 `private:10001` 按账号反查一次
+ * （唯一命中才算，见 channels.js 的 resolveChannel）。
+ */
 export function personForChannel(root, channel) {
   const { kind, id } = parseChannel(channel)
   if (kind !== 'private') return null
+  if (/^person_/.test(id)) return existsInIdentities(root, id) ? id : null
   const hit = findByIdentity(root, 'qq', id)
   return hit ? hit.uid : null
+}
+
+function existsInIdentities(root, uid) {
+  return Boolean(loadIdentities(root).people?.[uid])
 }

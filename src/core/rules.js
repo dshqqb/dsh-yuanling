@@ -15,6 +15,8 @@ import { P } from './paths.js'
 import { parseChannel } from './entities.js'
 import { appendEvent } from './events.js'
 import { writeTracked } from './version.js'
+import { resolveChannel } from './channels.js'
+import { readGroupIdentity } from './channels.js'
 
 export const LEVELS = { global: 10, group: 20, private: 30 }
 
@@ -28,14 +30,45 @@ export function rulePaths(root, pid) {
   }
 }
 
-/** 按 channel 推这条会话该叠哪几层。 */
+/**
+ * 按 channel 推这条会话该叠哪几层。
+ *
+ * 群层的文件名要能装下 gid（`qq:123456`）——Windows 不允许文件名带冒号，所以
+ * 冒号一律换成 `_`（`group-qq_123456.json`）。同时**仍然认老文件**（`group-123456.json`）：
+ * 群覆盖层是手写的，改名等于让人重新抄一遍。
+ */
 export function ruleChain(root, pid, { channel = null } = {}) {
   const p = rulePaths(root, pid)
   const chain = [p.global]
-  const { kind, id } = parseChannel(channel)
-  if (kind === 'group' && id) chain.push(`${p.groupDir}/group-${id}.json`)
-  if (kind === 'private' && id) chain.push(`${p.privateDir}/private-${id}.json`)
-  return chain
+  if (!channel) return chain
+
+  // 场景的"键"用内部编号：老写法（private:10001 / group:123555）和新写法
+  // 必须叠到同一份覆盖规则，否则换个写法就等于换了一套规矩。
+  const c = resolveChannel(root, channel)
+  const kind = c.kind
+  const id = c.personUid ?? c.gid ?? c.id
+
+  if (kind === 'group' && id) {
+    chain.push(`${p.groupDir}/group-${encodeKey(id)}.json`)
+    // 老命名（2026-11-09 之前）：`group-<群号>.json` 和 `group-<平台>_<群号>.json`。
+    // 群覆盖层是手写的，改名不能让人重新抄一遍，所以这两种也列进来。
+    const idn = c.gid ? readGroupIdentity(root, c.gid) : null
+    if (idn?.nativeId) {
+      chain.push(`${p.groupDir}/group-${encodeKey(`${idn.platform}_${idn.nativeId}`)}.json`)
+      chain.push(`${p.groupDir}/group-${encodeKey(idn.nativeId)}.json`)
+    }
+  }
+  if (kind === 'private' && id) {
+    chain.push(`${p.privateDir}/private-${encodeKey(id)}.json`)
+    // 老形状：private-<对方QQ号>.json
+    if (c.personUid && c.personUid !== c.id) chain.push(`${p.privateDir}/private-${encodeKey(c.id)}.json`)
+  }
+  return [...new Set(chain)]
+}
+
+/** 文件名里的键：冒号/斜杠等非法字符换 `_`。 */
+function encodeKey(value) {
+  return String(value).replace(/[\\/:*?"<>|]/g, '_')
 }
 
 function deepMerge(a, b) {

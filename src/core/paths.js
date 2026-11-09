@@ -140,6 +140,9 @@ export const P = {
   system: 'system',
   manifest: 'system/manifest.json',
   identities: 'system/identities.json',
+  // 群体身份（客观）：`(平台, 原生号) ↔ grp_xxx`。和 identities.json 同一层道理——
+  // 群体是谁是客观事实、跨人格共用；"她对这个群有什么印象"才按人格存。
+  groupIdentities: 'system/groups.json',
   shields: 'system/shields.json',
   inbox: 'system/inbox',
   health: 'system/inbox/.health',

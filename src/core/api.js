@@ -10,7 +10,7 @@ import { loadEffectiveRules, recentRefusals, rulePaths, ruleFieldSpec, writeGlob
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals } from './proposals.js'
 import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
-import { listDays, readDay, today, listChannels } from './raw.js'
+import { listDays, readDay, today, listScenes } from './raw.js'
 import { setManualWeight, clearManualWeight } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -266,21 +266,29 @@ export function handleApi(root, url) {
   }
 
   // 原始层里出现过的频道：注入预览要能挑一个真实存在的，而不是让人手打（打错了看不出）
-  if (pathname === '/api/channels') {
+  // 原始层里出现过的**场景**（人物场景 / 群体场景）。
+  // 注入预览要能挑一个真实存在的，而不是让人手打（打错了看不出）。
+  // `/api/channels` 是老名字，保留兼容（旧页面/脚本还在用）。
+  if (pathname === '/api/scenes' || pathname === '/api/channels') {
     const days = Number(searchParams.get('days') ?? 30)
+    const list = listScenes(root, { days: Number.isFinite(days) ? days : 30 })
     return {
       status: 200,
-      body: { ok: true, days, channels: listChannels(root, { days: Number.isFinite(days) ? days : 30 }) },
+      body: { ok: true, days, scenes: list, channels: list },
     }
   }
 
   if (pathname === '/api/card') {
-    const channel = searchParams.get('channel') || null
+    // `scene` 是新名字，`channel` 是老名字——两个都收，老页面不会突然 502
+    const scene = searchParams.get('scene') || searchParams.get('channel') || null
     const budgetParam = searchParams.get('budget')
     const budget = budgetParam ? Number(budgetParam) : CARD_BUDGET_BYTES
     // preview：管理台里"看一眼"不该改她的状态（不记 offered、不挖新的、不判过期）
-    const text = contextFor(root, pid, { channel, budget, preview: true })
-    return { status: 200, body: { ok: true, channel, text, budget, bytes: Buffer.byteLength(text, 'utf8') } }
+    const text = contextFor(root, pid, { channel: scene, budget, preview: true })
+    return {
+      status: 200,
+      body: { ok: true, scene, channel: scene, text, budget, bytes: Buffer.byteLength(text, 'utf8') },
+    }
   }
 
   if (pathname === '/api/memory') {
@@ -458,6 +466,10 @@ export function handleApi(root, url) {
   if (pathname === '/api/people') {
     const sort = searchParams.get('sort') === 'time' ? 'time' : 'weight'
     const data = loadIdentities(root)
+    const all = Object.values(data.people ?? {})
+    // 影子卡（只见过、没认识过）不进列表，但要让人知道"还有这些人"——
+    // 藏起来不等于不存在，否则会出现"我明明在群里见到过他，人物页却没有"。
+    const shadow = all.filter((p) => p.tier === 'shadow')
     return {
       status: 200,
       body: {
@@ -466,6 +478,7 @@ export function handleApi(root, url) {
         admin: currentAdmin(root),
         people: listPeopleForUi(root, pid, { sort }),
         pending: data.pending ?? [],
+        shadowCount: shadow.length,
       },
     }
   }

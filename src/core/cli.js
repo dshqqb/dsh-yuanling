@@ -26,7 +26,7 @@ import {
   readProfile,
   writeProfile,
 } from './entities.js'
-import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight, backfillGroups } from './groups.js'
+import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight, backfillGroups, ensureGroupScene, findGidByNative, migrateGroupIds } from './groups.js'
 import { setImpression, renderImpression } from './impressions.js'
 import { readTimeline } from './events.js'
 import { diagnose, renderDiagnostics } from './diagnostics.js'
@@ -1383,10 +1383,17 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       const marker = readMarker(root)
       const pid = flags.persona ? String(flags.persona) : marker?.active
       // 群体 id 是 `平台:标识`；只给一串数字时按 QQ 群理解（最常用的那个）
+      // 群体编号现在是内部编号（grp_xxx）。命令行仍然接受两种老写法
+      // （`qq:123456` / 纯数字），按登记表换成编号——命令行不该因为换了编号模型就不能用。
       const asGid = (raw) => {
         const s = String(raw ?? '').trim()
         if (!s) return ''
-        return s.includes(':') ? s : `qq:${s}`
+        if (/^grp_/.test(s)) return s
+        if (s.includes(':')) {
+          const [platform, ...rest] = s.split(':')
+          return findGidByNative(root, platform, rest.join(':')) ?? ensureGroupScene(root, { platform, nativeId: rest.join(':') })
+        }
+        return findGidByNative(root, 'qq', s) ?? ensureGroupScene(root, { platform: 'qq', nativeId: s })
       }
       const needGid = () => {
         const g = asGid(_[2])
@@ -1417,6 +1424,15 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         const r = backfillGroups(root, pid)
         out(`✓ 扫了 ${r.scannedDays} 天原始层：新建 ${r.created.length} 个群体，更新 ${r.touched.length} 个`)
         if (r.created.length) out(`  新建：${r.created.join('、')}`)
+        return EXIT.OK
+      }
+
+      if (sub === 'migrate') {
+        // 一次性：老的 `qq:123456` 编号 → `grp_xxx`。幂等，重复跑不会重复迁。
+        const r = migrateGroupIds(root)
+        out(`✓ 迁移 ${r.migrated.length} 个群体${r.rules.length ? `，${r.rules.length} 个规则覆盖文件跟着改名` : ''}`)
+        for (const m of r.migrated) out(`  ${m.pid}：${m.from} → ${m.to}（${m.platform}:${m.nativeId}）`)
+        if (r.skipped.length) out(`  跳过 ${r.skipped.length} 个（${[...new Set(r.skipped.map((s) => s.why))].join('、')}）`)
         return EXIT.OK
       }
 

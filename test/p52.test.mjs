@@ -12,6 +12,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { personaPaths } from '../src/core/paths.js'
 import { readToken, listen } from '../src/core/server.js'
 import { ruleFieldSpec, writeGlobalRules, loadEffectiveRules, RULE_FIELDS } from '../src/core/rules.js'
+import { createPersona } from '../src/core/persona.js'
 import { history } from '../src/core/version.js'
 
 const PID = 'yuanling'
@@ -177,4 +178,36 @@ test('POST /api/rules：群覆盖层的内容会体现在"有效值"里', async 
   // own 仍然是全局层自己那份，不把覆盖混进来
   const own = JSON.parse(fs.readFileSync(path.join(root, personaPaths(PID).globalRule), 'utf8'))
   assert.equal(d.own.action.max_per_day, own.action.max_per_day)
+})
+
+// 规则按人格存：换人格就是另一份，新建人格拿默认值——**不跟着 --from 抄**。
+// 抄规则 = 让新人格一出生就背着别人的行为边界，这种串味最难发现。
+test('新建人格：规则是默认值，不是照抄源人格的', () => {
+  writeGlobalRules(root, PID, { 'action.max_per_day': 7, 'persona.rollback_days': 30 })
+
+  // 空白创建
+  createPersona(root, 'fresh', '空白')
+  const freshRules = JSON.parse(fs.readFileSync(path.join(root, personaPaths('fresh').globalRule), 'utf8'))
+  assert.equal(freshRules.action.max_per_day, 20, '应该是模板默认值')
+  assert.equal(freshRules.persona.rollback_days, 7)
+
+  // 照抄骨架的创建：骨架跟着走，规则不跟
+  createPersona(root, 'copied', '照抄', { from: PID })
+  const copiedRules = JSON.parse(fs.readFileSync(path.join(root, personaPaths('copied').globalRule), 'utf8'))
+  assert.equal(copiedRules.action.max_per_day, 20)
+  // 但骨架确实抄过来了
+  const srcSelf = fs.readFileSync(path.join(root, personaPaths(PID).self), 'utf8')
+  const copiedSelf = fs.readFileSync(path.join(root, personaPaths('copied').self), 'utf8')
+  assert.equal(copiedSelf, srcSelf, '骨架应该照抄')
+  // 源人格自己的规则不受影响
+  const mine = JSON.parse(fs.readFileSync(path.join(root, personaPaths(PID).globalRule), 'utf8'))
+  assert.equal(mine.action.max_per_day, 7)
+})
+
+test('新建人格：两套规则的改动互不影响', () => {
+  writeGlobalRules(root, 'fresh', { 'action.max_per_hour': 9 })
+  const mine = JSON.parse(fs.readFileSync(path.join(root, personaPaths(PID).globalRule), 'utf8'))
+  assert.equal(mine.action.max_per_hour, 3, '改 A 人格的规则不该动到 B 人格')
+  const fresh = JSON.parse(fs.readFileSync(path.join(root, personaPaths('fresh').globalRule), 'utf8'))
+  assert.equal(fresh.action.max_per_hour, 9)
 })

@@ -50,13 +50,19 @@ export function loadIngestRules(root) {
  * 对一条文本应用入口策略。
  * @returns {{text:string, flags:string[], skip:boolean, hits:number}}
  */
-export function applyIngestPolicy(text, { channel = '', rules } = {}) {
+export function applyIngestPolicy(text, { channel = '', channelNative = '', gid = '', rules } = {}) {
   const r = rules ?? { soft_blacklist: [], skip_channels: [] }
   const masked = redact(text)
 
-  // 显式 skip：连内容都不留，只让调用方加计数
+  // 显式 skip：连内容都不留，只让调用方加计数。
+  //
+  // 频道在 2026-11-09 之后改成内部编号（`group:qq:123456`），而 skip_channels 是
+  // 人手写进 ingest.json 的，写的多半是外部形状（`group:123456`）。所以这里三个都认：
+  // 规范频道、适配器原话、群体 gid。只认其中一个，会让"我明明拉黑了它"变成静默失效。
+  const candidates = [channel, channelNative, gid].filter(Boolean)
   for (const c of r.skip_channels) {
-    if (c && (channel === c || channel.startsWith(c))) {
+    if (!c) continue
+    if (candidates.some((cur) => cur === c || cur.startsWith(c))) {
       return { text: '', flags: [], skip: true, hits: masked.hits }
     }
   }

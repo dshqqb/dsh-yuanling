@@ -78,6 +78,8 @@ export function createPersona(root, id, name = id, { from = null } = {}) {
     self: () => T.selfMd(name),
     lines: () => T.linesMd(),
     style: () => T.styleMd(),
+    // 规则**永远**是默认值：不跟着 --from 抄。每个新人格有自己的规则，
+    // 从别人格照抄规则 = 让新人格一出生就背着别人的行为边界，那是最难发现的一种串味。
     globalRule: () => JSON.stringify(T.globalRuleJson(), null, 2) + '\n',
   }
 
@@ -90,7 +92,6 @@ export function createPersona(root, id, name = id, { from = null } = {}) {
       [src.self, pp.self],
       [src.lines, pp.lines],
       [src.style, pp.style],
-      [src.globalRule, pp.globalRule],
     ]
     for (const [fromAbs, toAbs] of copies) {
       const srcPath = path.join(root, fromAbs)

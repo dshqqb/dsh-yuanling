@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { createPerson, linkIdentity, personProfileRel, readProfile, writeProfile } from '../src/core/entities.js'
-import { writeGroup, readGroup, groupRel } from '../src/core/groups.js'
+import { writeGroup, readGroup, groupRel, ensureGroupScene, ensureGroup } from '../src/core/groups.js'
 import { setImpression, readImpression, impressionHistory, renderImpression, IMPRESSION_MAX_BYTES } from '../src/core/impressions.js'
 import { history } from '../src/core/version.js'
 
@@ -291,15 +291,19 @@ test('observe：withHistory 能看到自己的印象是怎么变的', async () =
 })
 
 test('observe：群体走同一套（写 feature）', async () => {
+  // 先让这个群存在（收到过群消息 / 回填过才会有卡）
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
+  ensureGroup(root, 'yuanling', gid, {})
+
   toolText(
     await tool('yuanling_observe', {
       kind: 'group',
-      id: 'qq:555',
+      id: gid,
       text: '一群下班后还在折腾项目的人',
       reason: '连着几天都是这类话题',
     }),
   )
-  const r = toolText(await tool('yuanling_group', { gid: 'qq:555' }))
+  const r = toolText(await tool('yuanling_group', { gid }))
   assert.match(r, /下班后/)
 })
 

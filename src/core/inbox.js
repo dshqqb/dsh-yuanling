@@ -12,6 +12,7 @@ import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel } from './groups.js'
+import { canonicalChannelForIngest } from './channels.js'
 import { appendEvent } from './events.js'
 
 export const INBOX_VERSION = 1
@@ -46,7 +47,23 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
 
   for (const item of items) {
     try {
-      const channel = String(item.channel ?? 'unknown')
+      const channelIn = String(item.channel ?? 'unknown')
+
+      // 频道一律换成内部编号（private:<person_uid> / group:<gid>）。
+      // 外部号码不进频道——但必须留痕，所以下面写 raw 时同时给 channel_native。
+      // 私聊来源还没有人物卡时，这里会建一张影子卡（tier=shadow，不进注入）。
+      let canonical = { channel: channelIn, native: null, personUid: null, gid: null }
+      try {
+        canonical = canonicalChannelForIngest(root, {
+          channel: channelIn,
+          source,
+          actorName: item.actor?.name ?? '',
+        })
+      } catch {
+        // 归人失败（比如缺 id）不该丢这条消息：退回原频道，让它带着老形状进 raw
+        canonical = { channel: channelIn, native: null, personUid: null, gid: null }
+      }
+      const channel = canonical.channel
       const rawText = String(item.text ?? '')
 
       // 硬线：guardrails.never_record 命中的内容，连 raw 都不进。
@@ -65,7 +82,12 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
         continue
       }
 
-      const policy = applyIngestPolicy(rawText, { channel, rules })
+      const policy = applyIngestPolicy(rawText, {
+        channel,
+        channelNative: canonical.native || '',
+        gid: canonical.gid || '',
+        rules,
+      })
 
       if (policy.skip) {
         // 完全不入 raw，只留计数。计数写进当天的 day.json 之外的一个小账本，
@@ -84,6 +106,8 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
           source,
           acct: item.acct ?? acct,
           channel,
+          // 适配器原话（`private:10001` / `group:123555`）。没有它就再也查不回真实号码了。
+          channel_native: canonical.native || undefined,
           text: policy.text,
           flags: [...new Set([...(Array.isArray(item.flags) ? item.flags : []), ...policy.flags])],
         },
@@ -128,14 +152,14 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
 
 /**
  * 群消息 → 群体档案的一笔。这里只做"记账"，不判断内容：
- * 是不是群频道由 `gidForChannel` 说了算（私聊、module:、bili:video: 都不算）。
+ * 是不是群体场景由 `gidForChannel` 说了算（私聊、module:、bili:video: 都不算）。
  * 记失败也不该挡住摄入——所以整个吞掉异常。
  */
 function touchGroup(root, channel, seenAt) {
   try {
     const pid = readMarker(root)?.active
     if (!pid) return
-    const gid = gidForChannel(channel)
+    const gid = gidForChannel(root, channel)
     if (!gid) return
     ensureGroup(root, pid, gid, { seenAt: seenAt ?? localIso() })
   } catch {

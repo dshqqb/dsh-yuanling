@@ -18,6 +18,7 @@ import { refreshDrives } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
 import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile } from './entities.js'
 import { groupsForContext, groupCardLine } from './groups.js'
+import { nativeChannelsFor } from './channels.js'
 import {
   ageDays,
   clarityOf,
@@ -641,13 +642,23 @@ function mentionedIds(text) {
   return out
 }
 
-/** 某频道最近的消息（按时间倒序）。只用来判断"这一轮谁在场"。 */
+/**
+ * 某频道最近的消息（按时间倒序）。只用来判断"这一轮谁在场"。
+ *
+ * 频道在 2026-11-09 之后改成内部编号，而老记录里写的是外部 id
+ * （`private:10001` / `group:123555`）。所以这里按"这个频道可能出现的所有写法"匹配——
+ * 只比一个字符串，老记录就会突然"不在场"，在场人物卡也跟着空掉。
+ */
 function recentChannelRecords(root, channel, limit = 40) {
+  const wanted = new Set(nativeChannelsFor(root, channel))
+  wanted.add(String(channel))
   const out = []
   for (const date of listDays(root).slice(-3).reverse()) {
     for (const r of readDay(root, date)) {
       if ((r.type ?? 'message') !== 'message') continue
-      if (String(r.channel ?? '') !== String(channel)) continue
+      const cur = String(r.channel ?? '')
+      const nat = String(r.channel_native ?? '')
+      if (!wanted.has(cur) && !(nat && wanted.has(nat))) continue
       out.push(r)
     }
     if (out.length >= limit * 2) break

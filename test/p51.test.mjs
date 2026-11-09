@@ -18,7 +18,7 @@ import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from '../
 import { contextFor } from '../src/core/memory.js'
 import { createPersona } from '../src/core/persona.js'
 import { readPurposes, writePurposes } from '../src/core/purposes.js'
-import { appendRecord, listChannels } from '../src/core/raw.js'
+import { appendRecord, listScenes } from '../src/core/raw.js'
 import { localIso } from '../src/core/fsx.js'
 import { history } from '../src/core/version.js'
 import { textSha256 } from '../src/core/fsx.js'
@@ -398,11 +398,11 @@ test('GET /api/card：连着看两次预览，账本一个字节都不动', asyn
 
 // ── 注入预览的频道 ────────────────────────────────────────────────────
 
-test('listChannels：从原始层数出真实频道（注入预览只让人挑存在的）', () => {
+test('listScenes：从原始层数出真实场景（注入预览只让人挑存在的）', () => {
   const ptr = appendRecord(root, {
     source: 'qq',
     acct: '10001',
-    channel: 'group:123555',
+    channel: 'group:qq:123555',
     actor: { kind: 'member', id: '10002', name: '群友' },
     role: 'user',
     text: '群里说一句',
@@ -410,9 +410,9 @@ test('listChannels：从原始层数出真实频道（注入预览只让人挑�
   })
   assert.ok(ptr?.id)
 
-  const list = listChannels(root, { days: 30 })
-  const g = list.find((c) => c.channel === 'group:123555')
-  assert.ok(g, '刚写进去的群聊频道应该被数出来')
+  const list = listScenes(root, { days: 30 })
+  const g = list.find((sc) => sc.scene === 'group:qq:123555')
+  assert.ok(g, '刚写进去的群体场景应该被数出来')
   assert.ok(g.messages >= 1)
   // 排序：最近活动的在前
   for (let i = 1; i < list.length; i += 1) {
@@ -420,12 +420,15 @@ test('listChannels：从原始层数出真实频道（注入预览只让人挑�
   }
 })
 
-test('GET /api/channels：返回频道清单（手打频道名打错了看不出来，所以只列真的）', async () => {
-  const d = await get('/api/channels?days=90')
+test('GET /api/scenes：返回场景清单（手打名字打错了看不出来，所以只列真的）', async () => {
+  const d = await get('/api/scenes?days=90')
   assert.equal(d.ok, true)
+  assert.ok(Array.isArray(d.scenes))
+  assert.ok(d.scenes.some((sc) => sc.scene === 'group:qq:123555'))
+  assert.ok(d.scenes.every((sc) => /^(private|group):/.test(sc.scene)))
+  // 老名字仍然给同一份数据（旧页面/脚本还在用）
   assert.ok(Array.isArray(d.channels))
-  assert.ok(d.channels.some((c) => c.channel === 'group:123555'))
-  assert.ok(d.channels.every((c) => /^(private|group):/.test(c.channel)))
+  assert.equal(d.channels.length, d.scenes.length)
 })
 
 test('GET /api/motive：给五股劲和账本，且读页面不写盘', async () => {  const p = path.join(root, personaPaths(PID).purposes)

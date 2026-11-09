@@ -15,7 +15,8 @@ import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
-import { readGroupLive, writeGroup, ensureGroup, gidForChannel } from './src/core/groups.js'
+import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
+import { resolveChannel } from './src/core/channels.js'
 import { setImpression, renderImpression, IMPRESSION_MAX_BYTES } from './src/core/impressions.js'
 import { readPurposes, writePurposes, markHit, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './src/core/purposes.js'
 import { refreshDrives } from './src/core/drives.js'
@@ -279,12 +280,38 @@ function formatIdentityResult(uid, display, r) {
   return lines.join('\n')
 }
 
-/** 群体的 id：显式 gid 优先，其次从频道推（group:123 → qq:123）。推不出来就返回空。 */
-function resolveGroupGid(args) {
+/**
+ * 群体的 id：显式 gid 优先，其次从场景推。
+ *
+ * 群体编号现在是纯内部编号（`grp_xxx`）。模型如果还按老习惯传 `qq:123456`，
+ * 就把它当"平台:原生号"去登记表里换一个编号——不假装没看见，也不直接报错。
+ */
+function resolveGroupGid(root, args) {
   const raw = String(args.gid ?? '').trim()
-  if (raw) return raw.includes(':') ? raw : `qq:${raw}`
+  if (raw) {
+    if (/^grp_/.test(raw)) return raw
+    if (raw.includes(':')) {
+      const [platform, ...rest] = raw.split(':')
+      const gid = findGidByNative(root, platform, rest.join(':'))
+      if (gid) return gid
+      // 登记表里没有：这是个还没见过的群，现在登记一个（第一次写描述就顺手建档）
+      return ensureGroupScene(root, { platform, nativeId: rest.join(':') })
+    }
+    const gid = findGidByNative(root, 'qq', raw)
+    return gid ?? ensureGroupScene(root, { platform: 'qq', nativeId: raw })
+  }
   const ch = String(args.channel ?? '').trim()
-  if (ch) return gidForChannel(ch) ?? ''
+  if (ch) {
+    const gid = gidForChannel(root, ch)
+    if (gid) return gid
+    // 场景还没登记过（例如第一次给这个群写描述）：按场景里的平台与号登记一个。
+    // 认不出平台的场景（私聊、module:、bili:video:）返回空——那些根本不是"一个地方"。
+    const c = resolveChannel(root, ch)
+    if (!GROUP_KINDS.has(c.kind)) return ''
+    const platform = c.id.includes(':') ? c.id.split(':')[0] : CHANNEL_PLATFORM[c.kind] ?? c.kind
+    const nativeId = c.id.includes(':') ? c.id.split(':').slice(1).join(':') : c.id
+    return ensureGroupScene(root, { platform, nativeId })
+  }
   return ''
 }
 
@@ -394,8 +421,8 @@ async function callTool(root, name, args = {}) {
   }
 
   if (name === 'yuanling_group') {
-    const gid = resolveGroupGid(args)
-    if (!gid) throw new Error('需要 gid（qq:123456）或 channel（group:123456）')
+    const gid = resolveGroupGid(root, args)
+    if (!gid) throw new Error('需要 gid（群体编号 grp_xxx 或 平台:号）或 channel（group:<编号>）')
 
     const patch = {}
     if (typeof args.name === 'string' && args.name.trim()) patch.name = args.name.trim().slice(0, 60)

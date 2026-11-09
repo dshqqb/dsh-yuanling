@@ -76,11 +76,11 @@ const I = {
 // 顶部三块：框架（共通）/ 人格（每人格一份）/ 模块（外部进程）。
 //
 // 分开的依据只有一条：**切换人格时，哪一页会变？**
-// 会变的进"人格"，不会变的进"框架"。所以"规则"在框架里（硬线在根级、意愿只有一份），
-// 而"人物 / 群体 / 动机 / 记忆"在人格里（换人格就全换）。
+// 会变的进"人格"，不会变的进"框架"。所以"规则"在人格里（它存在
+// personas/<人格>/rules/ 下，换人格就换一份，新建人格拿默认值），
+// 而"用量 / 来源 / 日志 / 诊断 / 拒绝记录 / 状态"在框架里（跟人格无关）。
 const FRAME_NAV = [
   { id: 'status', label: '状态', icon: 'gauge' },
-  { id: 'rules', label: '规则', icon: 'shield' },
   { id: 'usage', label: '用量', icon: 'chart' },
   { id: 'sources', label: '来源', icon: 'plug' },
   { id: 'logs', label: '日志', icon: 'list' },
@@ -95,6 +95,7 @@ const PERSONA_NAV = [
   { id: 'motive', label: '动机', icon: 'flame' },
   { id: 'people', label: '人物', icon: 'user' },
   { id: 'groups', label: '群体', icon: 'users' },
+  { id: 'rules', label: '规则', icon: 'shield' },
 ]
 
 const NAV_BY_MODE = { frame: FRAME_NAV, persona: PERSONA_NAV }
@@ -348,55 +349,79 @@ async function loadStatus() {
 }
 
 /**
- * 注入预览的频道选择。
+ * 注入预览的**场景**选择。
  *
- * 频道决定三件**只跟这个会话有关**的事：当前群卡（群聊才有）、在场人物卡（这一轮谁在场）、
- * 以及按频道叠加的规则。不选频道 = 通用预览：没有群卡、没有人物卡。
+ * 「场景」= 她这一轮在哪儿说话。只有两种：
+ *   · 人物场景（`private:<人物编号>`）—— 跟某个人一对一
+ *   · 群体场景（`group:<群体编号>`）—— 在某个群里
  *
- * 为什么是下拉而不是输入框：手打频道名打错了，结果和"没有这个频道"长得一模一样
- * ——都是同一份通用预览，人看不出自己输错了。所以只列原始层里**真实出现过**的频道。
+ * 场景**不属于任何 App**。它不是"QQ 私聊""QQ 群"——换成微信、贴吧、Discord，
+ * 场景还是这两类，变的只是人物卡/群体卡里记的账号。所以场景编号一律指向
+ * **人物卡编号 / 群体卡编号**，真实号码（QQ 号、微博 uid、群号、吧名）只存在两张卡里。
+ *
+ * 这么做的理由很简单：两个不同 App 上的 `10001` 是两个人。把外部号码写进场景，
+ * 等于让"新增一个平台"变成"改掉全部历史数据的语义"。
+ *
+ * 场景决定三件只跟这一轮有关的事：当前群体卡、在场人物卡、按场景叠加的规则。
+ * 不选场景 = 通用预览：没有群体卡、没有人物卡。
+ *
+ * 为什么是下拉而不是输入框：手打场景名打错了，结果和"没有这个场景"长得一模一样
+ * ——都是同一份通用预览，人看不出自己输错了。所以只列原始层里**真实出现过**的场景。
  */
-const CHANNEL_LABELS = { private: '私聊', group: '群聊' }
+const SCENE_LABELS = { private: '人物场景', group: '群体场景' }
 
-async function loadCardChannels() {
-  const sel = $('card-channel')
-  const hint = $('card-channel-hint')
-  let channels = []
+function sceneLabel(scene, extra = '') {
+  const [kind, ...rest] = String(scene).split(':')
+  const tail = rest.join(':')
+  const kindText = SCENE_LABELS[kind] ?? kind
+  // 编号对人没意义；能截短就截短，还能对上人物页/群体页
+  if (tail.startsWith('person_')) return `${kindText} · 人物 ${tail.slice(7, 15)}…${extra}`
+  if (tail.startsWith('grp_')) return `${kindText} · 群体 ${tail.slice(4, 12)}…${extra}`
+  // 老形状：外部号码直接写在场景里。这种场景**认不到人/群体**，因为它没说是哪个平台的号。
+  // 页面上要明说，否则人点进去看到"没有卡片"会以为数据丢了。
+  if (kind === 'private' || kind === 'group') return `${kindText} · 未归属（老场景 ${tail}）${extra}`
+  return `${kindText} · ${tail}${extra}`
+}
+
+async function loadCardScenes() {
+  const sel = $('card-scene')
+  const hint = $('card-scene-hint')
+  let scenes = []
   try {
-    const d = await api('/api/channels?days=90')
-    channels = d.channels ?? []
+    const d = await api('/api/scenes?days=90')
+    scenes = d.scenes ?? []
   } catch {
-    channels = []
+    scenes = []
   }
 
   const keep = sel.value
   sel.innerHTML = ''
   const none = document.createElement('option')
   none.value = ''
-  none.textContent = '（不带频道：通用预览）'
+  none.textContent = '（不带场景：通用预览）'
   sel.append(none)
 
-  for (const c of channels) {
+  for (const c of scenes) {
     const o = document.createElement('option')
-    o.value = c.channel
-    o.textContent = `${CHANNEL_LABELS[c.channel.split(':')[0]] ?? c.channel} · ${c.channel}（${c.messages} 条）`
+    o.value = c.scene
+    o.textContent = `${sceneLabel(c.scene)}（${c.messages} 条${c.legacy ? `，${c.legacy} 条老写法` : ''}）`
     sel.append(o)
   }
 
   if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep
 
-  hint.textContent = channels.length
-    ? `频道决定三件事：当前群体卡、这一轮在场的人物卡、按频道叠加的规则。共 ${channels.length} 个真实频道（近 90 天）。`
-    : '原始层里还没有任何频道记录，所以只能看通用预览：没有群体卡、没有人物卡。等收到第一条真实消息后，这里会出现具体频道。'
-  return channels.length
+  hint.textContent = scenes.length
+    ? `场景决定三件事：当前群体卡、这一轮在场的人物卡、按场景叠加的规则。共 ${scenes.length} 个真实场景（近 90 天）。编号指向人物卡/群体卡，不是 QQ 号或群号——所以新增一个平台不会串号。`
+    : '原始层里还没有任何场景记录，所以只能看通用预览：没有群体卡、没有人物卡。等收到第一条真实消息后，这里会出现具体场景。'
+  return scenes.length
 }
 
 async function loadCard() {
-  const ch = $('card-channel').value
-  const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
+  const scene = $('card-scene').value
+  const q = scene ? `?scene=${encodeURIComponent(scene)}` : ''
   const d = await api(`/api/card${q}`)
   $('card-out').textContent = d.text || '（空）'
-  $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.channel ? ` · 频道 ${d.channel}` : ' · 通用（不含群体与人物卡）'}`
+  $('card-meta').textContent = `${d.bytes} 字节 / 预算 ${d.budget}${d.scene ? ` · ${sceneLabel(d.scene)}` : ' · 通用（不含群体与人物卡）'}`
 }
 
 // ── 人格 → 概况 ────────────────────────────────────────────────────────
@@ -540,7 +565,7 @@ async function loadOverview() {
 
   // 卡下面就是注入预览。它是 preview：算得出她会读到什么，但**不改她的状态**
   // （不记 offered、不挖新的、不判过期）——翻几遍管理台不该把一件事翻成"她不想提"。
-  await loadCardChannels().catch(() => {})
+  await loadCardScenes().catch(() => {})
   await loadCard().catch(() => {})
 }
 
@@ -970,7 +995,11 @@ async function loadPeople() {
   for (const p of pinned) pinnedSlot.append(personCard(p))
 
   const rest = d.people.filter((p) => !p.admin && !p.pinned)
-  $('people-count').textContent = `共 ${d.people.length} 人`
+  $('people-count').textContent = d.people.length
+    ? `共 ${d.people.length} 人${d.shadowCount ? ` · 另有 ${d.shadowCount} 个只见过、还没认识的人没列出来` : ''}`
+    : d.shadowCount
+      ? `还没有认识的人 · 另有 ${d.shadowCount} 个只见过、还没认识的`
+      : ''
   const box = $('people-out')
   box.innerHTML = ''
   if (!rest.length) box.append(el('div', 'muted small', '没有其他人物了。'))
@@ -1021,6 +1050,8 @@ function groupCard(g) {
   head.append(tags, document.createTextNode(g.name || g.gid))
 
   const bits = [g.gid]
+  // 群体编号是内部编号（grp_xxx）；真实群号/吧名在卡里，显示出来才认得出是哪个群
+  if (g.nativeId || g.id) bits.push(`${g.platform}:${g.nativeId || g.id}`)
   if (g.memberCount) bits.push(`成员 ${g.memberCount}`)
   if (g.topics) bits.push(g.topics.slice(0, 48))
   else if (g.feature) bits.push(g.feature.slice(0, 48))
@@ -1100,12 +1131,12 @@ async function saveGroup() {
 
 // ── 框架 → 规则 ────────────────────────────────────────────────────────
 //
-// 以前这页只有一个频道输入框 + 一个「查看」按钮，下面是整段 JSON。
+// 以前这页只有一个输入框 + 一个「查看」按钮，下面是整段 JSON。
 // JSON 能看懂的人不需要这页；需要这页的人看不懂 JSON。所以改成按字段渲染的真表单：
 // 每一项有中文标签、单位、范围、以及**它到底有没有在生效**。
 //
-// 那个频道选择器的作用不是"搜索"：规则是三层继承的（全局 → 群 → 私聊），
-// 换个频道就换一条继承链，页面显示的"有效值"跟着变。但**保存只写全局层**——
+// 那个**场景**选择器的作用不是"搜索"：规则是三层继承的（全局 → 群体 → 人物），
+// 换个场景就换一条继承链，页面显示的"有效值"跟着变。但**保存只写全局层**——
 // 把合并结果压平写回某一层，等于把继承悄悄改掉。
 const RULE_INPUTS = { fields: new Map() }
 
@@ -1185,7 +1216,7 @@ function ruleGroup(g, own, effective) {
     const ctl = makeRuleInput(f, ownVal ?? f.def)
     row.append(label, ctl.node)
 
-    // 选了频道之后，"这一层写的"和"实际生效的"可能不是一回事。
+    // 选了场景之后，"这一层写的"和"实际生效的"可能不是一回事。
     // 不把差异说出来，人会以为自己写进去的被忽略了（其实是被更具体的层覆盖了）。
     if (effVal !== undefined && JSON.stringify(effVal) !== JSON.stringify(ownVal ?? f.def)) {
       const shown = Array.isArray(effVal) ? effVal.join('、') || '（空）' : String(effVal)
@@ -1199,9 +1230,9 @@ function ruleGroup(g, own, effective) {
 }
 
 async function loadRules() {
-  await loadRuleChannels()
+  await loadRuleScenes()
 
-  const ch = $('rule-channel').value
+  const ch = $('rule-scene').value
   const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
   const d = await api(`/api/rules${q}`)
 
@@ -1246,7 +1277,7 @@ async function saveRules() {
   for (const [pathKey, io] of RULE_INPUTS.fields) patch[pathKey] = io.get()
 
   try {
-    const r = await postApi('/api/rules', { patch, channel: $('rule-channel').value || null })
+    const r = await postApi('/api/rules', { patch, channel: $('rule-scene').value || null })
     await loadRules()
     msg.textContent = r.changed
       ? `✓ 已保存${r.dropped?.length ? `（${r.dropped.length} 个未知字段被忽略：${r.dropped.join('、')}）` : ''}`
@@ -1259,14 +1290,14 @@ async function saveRules() {
   }
 }
 
-/** 规则页的频道下拉和注入预览共用一份清单，但用途不同：这里选的是"按哪条继承链算有效值"。 */
-async function loadRuleChannels() {
-  const sel = $('rule-channel')
-  let channels = []
+/** 规则页的场景下拉和注入预览共用一份清单，但用途不同：这里选的是"按哪条继承链算有效值"。 */
+async function loadRuleScenes() {
+  const sel = $('rule-scene')
+  let scenes = []
   try {
-    channels = (await api('/api/channels?days=90')).channels ?? []
+    scenes = (await api('/api/scenes?days=90')).scenes ?? []
   } catch {
-    channels = []
+    scenes = []
   }
   const keep = sel.value
   sel.innerHTML = ''
@@ -1276,17 +1307,17 @@ async function loadRuleChannels() {
   none.textContent = '（只看全局层）'
   sel.append(none)
 
-  for (const c of channels) {
+  for (const c of scenes) {
     const o = document.createElement('option')
-    o.value = c.channel
-    o.textContent = `${CHANNEL_LABELS[c.channel.split(':')[0]] ?? c.channel} · ${c.channel}`
+    o.value = c.scene
+    o.textContent = sceneLabel(c.scene)
     sel.append(o)
   }
   if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep
 
-  $('rule-channel-hint').textContent = channels.length
-    ? '换个频道，页面显示的"有效值"就换一条继承链（群/私聊的覆盖层目前只能改文件）。'
-    : '原始层里还没有任何频道记录，所以现在只能看全局层。'
+  $('rule-scene-hint').textContent = scenes.length
+    ? '换个场景，页面显示的"有效值"就换一条继承链（群体/人物的覆盖层目前只能改文件）。'
+    : '原始层里还没有任何场景记录，所以现在只能看全局层。'
 }
 
 async function loadUsage() {
@@ -2404,9 +2435,9 @@ async function openModule(id) {
 
   const sources = m.sources ?? []
   $('module-rules').innerHTML = ''
-  if (m.routes?.length) $('module-rules').append(el('div', undefined, `认领的频道：${m.routes.join('、')}`))
+  if (m.routes?.length) $('module-rules').append(el('div', undefined, `认领的场景：${m.routes.join('、')}`))
   if (sources.length) $('module-rules').append(el('div', undefined, `它能被要的数据：${sources.join('、')}`))
-  if (!m.routes?.length && !sources.length) $('module-rules').append(el('div', undefined, '没有频道认领，也没有声明可被取数的来源。'))
+  if (!m.routes?.length && !sources.length) $('module-rules').append(el('div', undefined, '没有场景认领，也没有声明可被取数的来源。'))
 
   const log = $('module-log')
   log.textContent = (m.log ?? []).slice(-40).join('\n') || '（还没有日志）'
@@ -2770,11 +2801,11 @@ $('mem-view').addEventListener('click', (e) => {
 
 
 $('card-load').addEventListener('click', () => loadCard().catch((err) => showPageError(err)))
-$('card-channel').addEventListener('change', () => loadCard().catch((err) => showPageError(err)))
+$('card-scene').addEventListener('change', () => loadCard().catch((err) => showPageError(err)))
 $('mem-go').addEventListener('click', () => loadMemory().catch(() => {}))
 $('mem-q').addEventListener('keydown', (e) => e.key === 'Enter' && loadMemory().catch(() => {}))
 $('mem-all').addEventListener('change', () => loadMemory().catch(() => {}))
-$('rule-channel').addEventListener('change', () => loadRules().catch((err) => showPageError(err)))
+$('rule-scene').addEventListener('change', () => loadRules().catch((err) => showPageError(err)))
 $('rule-save').addEventListener('click', () => {
   saveRules().catch((err) => {
     $('rule-msg').textContent = `保存失败：${err.message}`

@@ -12,7 +12,15 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { readGroup, listGroups } from '../src/core/groups.js'
+import { readGroup, listGroups, gidForChannel, findGidByNative, readGroupIdentity } from '../src/core/groups.js'
+
+const PID = 'yuanling'
+
+/** 按原生号找群体卡（编号是内部编号，测试里不写死）。 */
+function groupByNative(platform, nativeId) {
+  const gid = findGidByNative(root, platform, nativeId)
+  return gid ? readGroup(root, PID, gid) : null
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SERVER = path.join(HERE, '..', 'mcp-server.mjs')
@@ -88,40 +96,41 @@ test('写：只给 channel 就能定位到群并建档案', async () => {
     }),
   )
   assert.match(text, /已写入/)
-  assert.match(text, /qq:12345/)
+  // 输出里给的是群体编号（内部编号），不再是 qq:12345
+  assert.match(text, /grp_/)
 
-  const g = readGroup(root, 'yuanling', 'qq:12345')
+  const g = groupByNative('qq', '12345')
   assert.ok(g, '应该落下档案')
   assert.equal(g.platform, 'qq')
-  assert.equal(g.id, '12345')
+  assert.equal(g.nativeId, '12345')
   assert.match(g.feature, /老同学/)
   assert.equal(g.tier, null)
 })
 
 test('写：只给数字的 gid 按 QQ 群理解', async () => {
   toolText(await tool('yuanling_group', { gid: '777', topics: '主要在聊数码和键盘', reason: '看了一会儿，话题集中在键盘' }))
-  const g = readGroup(root, 'yuanling', 'qq:777')
-  assert.ok(g, '数字该被补成 qq:777')
+  const g = groupByNative('qq', '777')
+  assert.ok(g, '数字该被补成 QQ 群的号')
   assert.match(g.topics, /键盘/)
 })
 
 test('写：第二次写是合并，不是覆盖', async () => {
   toolText(await tool('yuanling_group', { gid: 'qq:12345', topics: '最近在聊孩子上学', reason: '话题变了' }))
-  const g = readGroup(root, 'yuanling', 'qq:12345')
+  const g = groupByNative('qq', '12345')
   assert.match(g.feature, /老同学/, '原来写下的特征不能被冲掉')
   assert.match(g.topics, /孩子上学/)
 })
 
 test('读：没有任何写入参数时是只读，不会凭空建档', async () => {
-  const before = listGroups(root, 'yuanling').length
+  const before = listGroups(root, PID).length
   const text = toolText(await tool('yuanling_group', { gid: 'qq:999000' }))
   assert.match(text, /还没有档案/)
-  assert.equal(listGroups(root, 'yuanling').length, before, '只读不该建出新群体')
+  assert.equal(listGroups(root, PID).length, before, '只读不该建出新群体')
 })
 
 test('读：读到的是自然语言描述，成员带名字不带 uid', async () => {
   const text = toolText(await tool('yuanling_group', { channel: 'group:12345' }))
-  assert.match(text, /qq:12345/)
+  assert.match(text, /grp_/)
   assert.match(text, /老同学/)
   assert.ok(text.includes('权重'), '应该报权重，管理台和 CLI 用的是同一套数')
 })
@@ -134,6 +143,6 @@ test('两个参数都不给 → 报错而不是瞎猜一个群', async () => {
 
 test('写：别名数组会去空、截断', async () => {
   toolText(await tool('yuanling_group', { gid: 'qq:777', aliases: ['  七群 ', '', '777'] }))
-  const g = readGroup(root, 'yuanling', 'qq:777')
+  const g = groupByNative('qq', '777')
   assert.deepEqual(g.aliases, ['七群', '777'])
 })

@@ -8,6 +8,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { exists, isDir, ensureDir, readJson, writeJsonAtomic, sha256, ulid, localIso } from './fsx.js'
 import { P } from './paths.js'
+// raw → channels → entities：entities 不反向依赖 raw，没有环。
+import { resolveChannel } from './channels.js'
 
 /** 单文件分片阈值（文档 §5.1）。 */
 export const MAX_RAW_BYTES = 32 * 1024 * 1024
@@ -168,6 +170,10 @@ export function appendRecord(root, input, { maxBytes = MAX_RAW_BYTES, now } = {}
     source,
     acct: String(input.acct ?? 'default'),
     channel: String(input.channel ?? 'unknown'),
+    // 频道的**外部原始写法**（适配器原话）。频道已经改成指向内部编号
+    // （private:person_x / group:qq:123456），没有这一列就再也查不回真实号码。
+    // 空值不写：老记录没有这一列，凭空塞个 "" 只会让"有没有"变得不可判定。
+    ...(input.channel_native ? { channel_native: String(input.channel_native) } : {}),
     actor: normalizeActor(input.actor),
     role: input.role ?? 'user',
     text: String(input.text ?? ''),
@@ -359,32 +365,44 @@ export function _resetSeenCache() {
  * 手动测试与排障用：不用自己拼 `raw/…/qq.ndjson#ULID`。
  */
 /**
- * 原始层里出现过的频道（最近 N 天，按最近一次活动倒序）。
+ * 原始层里出现过的**场景**（最近 N 天，按最近一次活动倒序）。
  *
- * 用途：管理台的「注入预览」要让人能挑一个真实频道看效果。手打频道名容易打错，
- * 而打错的频道和"没有这个频道"在页面上长得一样——都是同一份通用预览，看不出输入无效。
+ * 「场景」= 她这一轮在哪儿说话，只有两类：人物场景（`private:<人物编号>`）与
+ * 群体场景（`group:<群体编号>`）。场景不属于任何 App——换成微信、贴吧、Discord，
+ * 还是这两类，变的只是人物卡/群体卡里记的账号。
  *
- * @returns {Array<{channel:string, messages:number, lastAt:string}>}
+ * 用途：管理台的「注入预览」要让人能挑一个真实场景看效果。手打容易打错，
+ * 而打错的场景和"没有这个场景"在页面上长得一样——都是通用预览，看不出输入无效。
+ *
+ * 老记录里场景还是外部号码（`private:10001`），所以这里按**规范场景**归并：
+ * 同一个场景不会因为换了写法就变成两条。
+ *
+ * @returns {Array<{scene:string, messages:number, lastAt:string, legacy:number}>}
  */
-export function listChannels(root, { days = 30, limit = 50 } = {}) {
+export function listScenes(root, { days = 30, limit = 50 } = {}) {
   const seen = new Map()
   const recent = listDays(root).slice(-Math.max(1, days))
   for (const date of recent) {
     for (const r of readDay(root, date)) {
       if ((r.type ?? 'message') !== 'message') continue
-      const ch = String(r.channel ?? '')
-      if (!ch) continue
-      const cur = seen.get(ch) ?? { channel: ch, messages: 0, lastAt: null }
+      const raw = String(r.channel ?? '')
+      if (!raw) continue
+      const canon = resolveChannel(root, raw).canonical
+      const cur = seen.get(canon) ?? { scene: canon, messages: 0, lastAt: null, legacy: 0 }
       cur.messages += 1
+      if (canon !== raw) cur.legacy += 1
       const ts = String(r.ts ?? '')
       if (!cur.lastAt || ts > cur.lastAt) cur.lastAt = ts
-      seen.set(ch, cur)
+      seen.set(canon, cur)
     }
   }
   return [...seen.values()]
     .sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)))
     .slice(0, limit)
 }
+
+/** 老名字：`listChannels`。数据是同一份，只是叫法换了。 */
+export const listChannels = listScenes
 
 export function recentMessages(root, { limit = 5, source = null } = {}) {
   const out = []

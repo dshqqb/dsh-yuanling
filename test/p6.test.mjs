@@ -24,7 +24,7 @@ import {
   readProfile,
   loadIdentities,
 } from '../src/core/entities.js'
-import { writeGroup, readGroup } from '../src/core/groups.js'
+import { writeGroup, readGroup, ensureGroupScene } from '../src/core/groups.js'
 import { catchUp, catchUpStatus } from '../src/core/catchup.js'
 import { history } from '../src/core/version.js'
 import { createPersona as pbCreate } from '../src/core/persona.js'
@@ -184,11 +184,12 @@ test('profile：档案按人格隔离（同一个人，两个角色各记各的�
 
 test('group：写群体档案并读回', () => {
   const root = tmpRoot()
-  writeGroup(root, PID, 'qq:123456', { name: 'XX 游戏群', feature: '折腾 mod 的人，技术向' })
-  const g = readGroup(root, PID, 'qq:123456')
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '123456' })
+  writeGroup(root, PID, gid, { name: 'XX 游戏群', feature: '折腾 mod 的人，技术向' })
+  const g = readGroup(root, PID, gid)
   assert.equal(g.name, 'XX 游戏群')
   assert.equal(g.platform, 'qq')
-  assert.equal(g.id, '123456')
+  assert.equal(g.nativeId, '123456')
   assert.match(g.feature, /技术向/)
 })
 
@@ -223,10 +224,14 @@ test('contextFor：私聊带人档案', () => {
 
 test('contextFor：群里带群体档案', () => {
   const root = tmpRoot()
-  writeGroup(root, PID, 'qq:555', { name: '摸鱼群', feature: '晚上活跃，正经事白天说' })
-  const ctx = contextFor(root, PID, { channel: 'group:555' })
-  assert.match(ctx, /\[群体\] 摸鱼群/)
-  assert.match(ctx, /晚上活跃/)
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
+  writeGroup(root, PID, gid, { name: '摸鱼群', feature: '晚上活跃，正经事白天说' })
+  // 新场景（内部编号）和老场景（group:555）都应该带出同一张卡
+  for (const scene of [`group:${gid}`, 'group:555']) {
+    const ctx = contextFor(root, PID, { channel: scene })
+    assert.match(ctx, /\[群体\] 摸鱼群/, scene)
+    assert.match(ctx, /晚上活跃/, scene)
+  }
 })
 
 test('contextFor：认不出对象时只有卡片，不硬编', () => {

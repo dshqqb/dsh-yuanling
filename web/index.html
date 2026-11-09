@@ -136,10 +136,10 @@
               <span class="muted small">她这一轮真正读到的整段文字（和模型同一个函数算出来）</span>
             </div>
             <div class="field-row">
-              <select id="card-channel"></select>
+              <select id="card-scene"></select>
               <button id="card-load" class="btn">重新生成</button>
             </div>
-            <div class="muted small" id="card-channel-hint"></div>
+            <div class="muted small" id="card-scene-hint"></div>
             <pre id="card-out" class="code"></pre>
             <div id="card-meta" class="muted small"></div>
           </div>
@@ -244,7 +244,7 @@
             <div class="card-head"><h3 id="person-title"></h3></div>
             <div class="field-row"><input id="person-display" placeholder="显示名" /></div>
             <div class="field-row">
-              <input id="person-identity" placeholder="一句话描述他的账号：QQ 号是 12345，b站叫老张" />
+              <input id="person-identity" placeholder="用自然语言写，可以写多个号：QQ 号是 12345，另一个 QQ 号是 67890，b站叫老张" />
             </div>
             <div id="person-identity-msg" class="muted small"></div>
             <textarea id="person-sketch" rows="5" placeholder="素描：这个人是谁、怎么说话、在意什么、别碰什么"></textarea>
@@ -264,6 +264,10 @@
             <h2>群体</h2>
             <p class="muted">
               一个 QQ 群、一个贴吧、一个粉丝群各算一个群体——不跨平台合并。她在群里说话、或有人提到这个群时，这张卡会跟着进上下文。
+            </p>
+            <p class="muted small">
+              每个群体有<b>内部编号</b>（<code>grp_…</code>，不带平台也不带群号）。真实群号 / 吧名存在卡里，
+              所以换一个 App、加一个新平台，都不会和别的群串号。两个平台上的同一个号是两个群体。
             </p>
           </div>
 
@@ -299,7 +303,7 @@
         <section id="tab-rules" class="page" hidden>
           <div class="page-head">
             <h2>规则</h2>
-            <p class="muted">只管"能不能做"，不塑造人格。改了不点保存不算数。</p>
+            <p class="muted">只对<b>当前人格</b>生效。新建人格会自带一份默认值，各自可以不一样。</p>
           </div>
 
           <div class="card">
@@ -308,9 +312,9 @@
               <span class="muted small">越具体越优先：全局 → 群 → 私聊</span>
             </div>
             <div class="field-row">
-              <select id="rule-channel"></select>
+              <select id="rule-scene"></select>
             </div>
-            <div class="muted small" id="rule-channel-hint"></div>
+            <div class="muted small" id="rule-scene-hint"></div>
             <div id="rule-src" class="muted small"></div>
           </div>
 
@@ -331,8 +335,9 @@
               <span id="rule-msg" class="muted small">改了不点保存不算数</span>
             </div>
             <div class="muted small">
-              保存只写<b>当前人格</b>的全局层（<code>personas/&lt;人格&gt;/rules/global.json</code>）。
-              群与私聊的覆盖层故意不做页面编辑——那是"越具体越优先"的继承，压平写回某一层等于把继承改掉。
+              保存只写<b>当前人格</b>的规则（<code>personas/&lt;人格&gt;/rules/global.json</code>）——
+              换人格就是另一份，新建人格拿的是默认值。群与私聊的覆盖层故意不做页面编辑，
+              那是"越具体越优先"的继承，压平写回某一层等于把继承改掉。
               模块自己的能力上限在「模块」页里。
             </div>
           </div>
