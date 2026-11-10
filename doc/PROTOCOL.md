@@ -1,6 +1,7 @@
-# PROTOCOL · 原灵模块协议（v1.2）
+# PROTOCOL · 原灵模块协议（v1.5）
 
-> 状态：**v1.2 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> 状态：**v1.5 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> v1.5：⑧ `outbox` 能力 + `outbox.fetch` / `outbox.ack`——把她主动想说的话交给模块，并听它回报结果（见 §5.1.3）。
 > v1.1：① `sources` 声明、`provide.source` 能力、安装即空授权；② `source.fetch` 与模型工具 `yuanling_sources` / `yuanling_fetch`。
 > v1.2：③ manifest 增 `ui.tabs`，新增只读 op `ui.get`——模块能给管理台加标签页，但**只能给数据，不能给标记**（见 §3.5 / §5.2.3）。
 > 谱系：glm v0.1 → ds v0.2 → glm v0.3 → ds v0.3-ds → **本文（合并定稿）**。三方评审的全部结论已并入正文，修订史见文末附录；`PROTOCOL_glm.md`、`PROTOCOL_ds.md`、`PROTOCOL_ds_0.3.md` 为历史评审稿，已归档。
@@ -364,6 +365,38 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | `config.get` | `{}` | `{ … }` | 模块不读配置文件 |
 | `log` | `{level, event, data}` | — | 核心代写；`data` 过 ingest 同款脱敏；**上限 4KB**，超限截断并打标记 |
 | `diag.report` | `{items:[{code, level, hint, detail?}]}` | `{accepted, truncated}` | **v1.4**：让核心的「诊断」页带上模块的专业判断。见 §5.1.2 |
+| `outbox.fetch` | `{limit?}` | `{version:1, items:[{id, channel, target, text, need, why, created}]}` | **v1.5**：取"她主动想说的话"。需 `outbox`；取出即 `claimed`；见 §5.1.3 |
+| `outbox.ack` | `{id, ok, code?, message?}` | `{id, status:'sent'\|'pending'\|'dropped'}` | **v1.5**：回报说没说出来。`ok:false` 会重试，连续失败到上限自动放弃 |
+
+#### 5.1.3 `outbox.*`：把她"主动想说的话"交给模块（v1.5）
+
+§1 第 4 条说"发送由核心发起"。主动开口仍然遵守它：**内容与对象都由核心算**（动机 + 目的 + 规则闸门），
+模块只是来取走并投递。取用与投递分开，是因为**说没说出去只有模块知道**——核心不能假设。
+
+```jsonc
+// 模块 → 核心：取
+{ "op":"outbox.fetch", "id":"…", "data":{ "limit":5 } }
+// 核心 → 模块
+{ "ok":true, "result":{ "version":1, "items":[
+  { "id":"out_…", "channel":"private:person_x", "target":null,
+    "text":"你上次说「我妈住院了」，后来怎么样了？",
+    "need":"care", "why":"pur_…", "created":"2026-11-10T18:00:00+08:00" }
+]}}
+
+// 模块 → 核心：回执（说成了 / 没成）
+{ "op":"outbox.ack", "id":"…", "data":{ "id":"out_…", "ok":true } }
+{ "op":"outbox.ack", "id":"…", "data":{ "id":"out_…", "ok":false, "code":"rate_limited", "message":"被上游限流" } }
+```
+
+纪律（四条，都是硬性）：
+
+1. **取出即 `claimed`，不直接标 `sent`**。核心不知道消息有没有真的出去；只有 `ack` 才算数。
+2. **交给模块之前重新过闸门**：静默时段、黑白名单、主动开关、每小时/每天配额——排队时合法不代表现在合法。
+3. **`ok:false` 不立刻重试**：回 `pending`，由模块按自己的退避再来取；连续失败 **3 次**自动 `dropped`
+   （与 `send` 的 at-most-once 同一个理由：宁可少一条，不能在真人群里复读）。
+4. **领了不 ack 会超时回收**（5 分钟）：模块崩了，队列不能永久卡在 `claimed`。
+
+`target` 是平台侧投递地址的原始字符串（群号/QQ 号），语义与 `send` 的 `target` 完全一致。
 
 #### 5.1.2 `diag.report`：让模块的专业判断进同一张诊断清单（v1.4）
 
@@ -507,6 +540,7 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 | `media.read` | `media.get` |
 | `actuate.<kind>`（如 `actuate.speech`） | 接收 `actuate` 的对应 kind；kind 词表：`speech` \| `image` \| `video` |
 | `provide.source`（v1.1） | 接收 `source.fetch`；须同时在 manifest 里声明 `sources` |
+| `outbox`（v1.5） | `outbox.fetch` / `outbox.ack`：取"她主动想说的话"并回执 |
 | `enrich.*` | v1 只保留名，不实现 |
 
 - 不在表内的 capability → 拒装（§3.3 第 6 条）。

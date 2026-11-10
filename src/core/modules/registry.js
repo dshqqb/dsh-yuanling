@@ -21,6 +21,8 @@ export const GRANTABLE = [
   'send',
   'actuate',
   'provide.source',
+  // v1.5：取 / 回执主动开口的待发队列
+  'outbox',
 ]
 
 export function registryPath(root) {

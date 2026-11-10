@@ -224,6 +224,7 @@ export function addFact(
     origin = null,
     person = null,
     kind = 'fact',
+    originModule = null,
     now = localIso(),
   },
 ) {
@@ -294,6 +295,9 @@ export function addFact(
     emotional: emotionalScore(t),
     origin: origin === null ? (person ? personFirst : autoOrigin) : Boolean(origin),
     tags: Array.isArray(tags) ? tags : [],
+    // 模块提交的事实：记下是谁提的（协议 §5.1 `propose.fact`）。
+    // 人写的、核心提炼的都没有这个字段——这一条就是"这条事实从哪个模块来的"。
+    origin_module: originModule ? String(originModule) : null,
     created: now,
     last_seen: now,
     recall: 0,

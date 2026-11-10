@@ -70,10 +70,10 @@ export const writeModuleConfig = writeModuleConfigFromManage
  *   · 崩溃到上限后标 crashed，不再自动拉起，等人工处理。
  */
 export class ModuleService {
-  constructor({ root, pid = null, onIngest = null, onSend = null, onPropose = null, spawnImpl = undefined } = {}) {
+  constructor({ root, pid = null, onIngest = null, onSend = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, spawnImpl = undefined } = {}) {
     this.root = root
     this.pid = pid
-    this.handlers = { onIngest, onSend, onPropose }
+    this.handlers = { onIngest, onSend, onPropose, onOutboxFetch, onOutboxAck }
     this.spawnImpl = spawnImpl
     this.procs = new Map() // id -> ModuleProcess
     this.logs = new Map() // id -> string[] 最近若干行（内存里，页面即时看）
@@ -256,6 +256,10 @@ export class ModuleService {
       'media.get': 'media.read',
       send: 'send',
       actuate: 'actuate',
+      // v1.5：取/回执主动开口的待发队列。和 send 同一份权利（都是"往外说话"），
+      // 但单独一个词：只做投递的模块可以只申请 send，不申请 outbox。
+      'outbox.fetch': 'outbox',
+      'outbox.ack': 'outbox',
     }[op]
 
     if (need && !granted.includes(need)) {
@@ -303,6 +307,17 @@ export class ModuleService {
     if (op === 'propose.fact') {
       if (!this.handlers.onPropose) throw new Error('核心未配置 propose 处理器')
       return this.handlers.onPropose({ id, data })
+    }
+
+    // v1.5：主动开口的待发队列。队列由核心算，**发不发、发没发出去只有模块知道**，
+    // 所以这里只做两件事：交给它（claimed）、听它回报（sent / 重试 / 放弃）。
+    if (op === 'outbox.fetch') {
+      if (!this.handlers.onOutboxFetch) throw new Error('核心未配置 outbox 处理器')
+      return this.handlers.onOutboxFetch({ id, data })
+    }
+    if (op === 'outbox.ack') {
+      if (!this.handlers.onOutboxAck) throw new Error('核心未配置 outbox 处理器')
+      return this.handlers.onOutboxAck({ id, data })
     }
 
     // v1.4：模块回报自己的健康项（诊断页把它们并进核心那份清单）。

@@ -542,7 +542,34 @@ function startModules(ctx, config, root, pid) {
   Promise.resolve()
     .then(async () => {
       const { ModuleService } = await import('./src/core/modules/service.js')
-      const svc = new ModuleService({ root, pid })
+      const { moduleHandlers } = await import('./src/core/modules/wire.js')
+      const { claimOutbox, ackOutbox } = await import('./src/core/proactive.js')
+      const activePid = () => readMarker(root)?.active ?? pid
+      const core = moduleHandlers({ root, pid })
+      const svc = new ModuleService({
+        root,
+        pid,
+        // 模块真正碰核心的四个口：收消息、提事实、取她要说的话、回报说没说出来。
+        // 少接一个，模块就是"装上了但干不了活"——而且报错是"核心未配置处理器"，很难查。
+        onIngest: core.onIngest,
+        onPropose: core.onPropose,
+        // v1.5：模块来取"她想说的话"，并回报说没说出来。
+        // 队列由核心算（动机 + 目的 + 闸门），模块只负责投递——和 send 的分工一致。
+        onOutboxFetch: ({ id: moduleId, data }) => ({
+          version: 1,
+          items: claimOutbox(root, activePid(), {
+            limit: Number(data?.limit) || undefined,
+            claimBy: moduleId,
+          }),
+        }),
+        onOutboxAck: ({ id: moduleId, data }) =>
+          ackOutbox(root, activePid(), String(data?.id ?? ''), {
+            ok: data?.ok === true,
+            code: data?.code ?? '',
+            message: data?.message ?? '',
+            claimBy: moduleId,
+          }),
+      })
       modules = svc
 
       const results = await svc.startEnabled()

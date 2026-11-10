@@ -233,8 +233,7 @@ export function markSent(root, pid, id, { now = Date.now() } = {}) {
 }
 
 /** 人不要她说这句：标记成 dropped（不删记录，留着能回看"她本来想说什么"）。 */
-export function dropOutbox(root, pid, id, { reason = '人为取消', actor = 'human:editor' } = {}) {
-  const doc = readOutbox(root, pid)
+export function dropOutbox(root, pid, id, { reason = '人为取消', actor = 'human:editor' } = {}) {  const doc = readOutbox(root, pid)
   const it = doc.items.find((x) => x.id === id)
   if (!it) throw new Error(`没有这条待发：${id}`)
   it.status = 'dropped'
@@ -245,8 +244,137 @@ export function dropOutbox(root, pid, id, { reason = '人为取消', actor = 'hu
 }
 
 /** 定时器：每 N 分钟算一轮。返回 stop()。 */
-export function startProactive(root, { everyMinutes = PROACTIVE_EVERY_MINUTES, firstDelayMs = 20_000, onRun = null } = {}) {
-  const everyMs = Math.max(60_000, Number(everyMinutes || PROACTIVE_EVERY_MINUTES) * 60_000)
+export const OUTBOX_CLAIM_TTL_MS = 5 * 60 * 1000
+/** 连续发送失败几次就放弃这条（不能在真人群里反复试）。 */
+export const OUTBOX_MAX_ATTEMPTS = 3
+/** 一次最多交给模块几条。 */
+export const OUTBOX_FETCH_LIMIT = 5
+
+/** 对外只暴露模块需要的字段：内部记账字段不外泄。 */
+function publicItem(it) {
+  return {
+    id: it.id,
+    channel: it.scene,
+    target: it.target ?? null,
+    text: it.text,
+    need: it.need,
+    why: it.why,
+    created: it.created,
+  }
+}
+
+/**
+ * 交给模块之前**重新过一遍闸门**。
+ *
+ * 排队时合法不代表现在合法：可能刚进了静默时段、被拉进黑名单、或者主动开关被关掉。
+ * 这一层不能省——模块拿到就会直接发出去。
+ */
+function maySpeakNow(root, pid, item, now) {
+  const scene = String(item.scene ?? '')
+  const isGroup = scene.startsWith('group:')
+  const kind = isGroup ? 'groups' : 'people'
+  const targetId = isGroup ? scene.slice('group:'.length) : scene.slice('private:'.length)
+  if (!targetId) return { ok: false, reason: 'bad-scene' }
+
+  if (!canReply(root, pid, kind, targetId).allowed) return { ok: false, reason: 'audience' }
+
+  const rules = loadEffectiveRules(root, pid, { channel: scene }).rules
+  const action = rules.action ?? {}
+  if (action.proactive === 'off') return { ok: false, reason: 'proactive=off' }
+  if (isGroup && action.group_proactive === false) return { ok: false, reason: 'group_proactive=false' }
+  if (inQuietHours(action.quiet_hours, new Date(now))) return { ok: false, reason: 'quiet_hours' }
+
+  const perTarget = action.per_target !== false
+  const key = perTarget ? scene : null
+  const box = readOutbox(root, pid)
+  if (countSent(box.items, 3_600_000, key) >= Number(action.max_per_hour ?? 3)) return { ok: false, reason: 'max_per_hour' }
+  if (countSent(box.items, 86_400_000, key) >= Number(action.max_per_day ?? 20)) return { ok: false, reason: 'max_per_day' }
+  return { ok: true }
+}
+
+/** 领了却迟迟不 ack（模块崩了）→ 放回 pending；试太多次就 dropped。 */
+export function releaseStaleClaims(root, pid, { now = Date.now(), ttlMs = OUTBOX_CLAIM_TTL_MS } = {}) {
+  const doc = readOutbox(root, pid)
+  let changed = false
+  for (const it of doc.items) {
+    if (it.status !== 'claimed') continue
+    if (now - Date.parse(it.claimed_at ?? 0) < ttlMs) continue
+    it.status = Number(it.attempts ?? 0) >= OUTBOX_MAX_ATTEMPTS ? 'dropped' : 'pending'
+    it.last_error = 'claim-timeout'
+    if (it.status === 'dropped') {
+      it.dropped_at = localIso(new Date(now))
+      it.drop_reason = 'claim-timeout（模块领了没回执）'
+    }
+    changed = true
+  }
+  if (changed) saveOutbox(root, pid, doc, { reason: '回收超时未回执的待发' })
+  return changed
+}
+
+/**
+ * 模块取待发消息（协议 v1.5 `outbox.fetch`）。
+ *
+ * 取出即 `pending → claimed`（带 claim_by / claimed_at / attempts+1）。
+ * 不直接标 sent：**说没说出去只有模块知道**，必须等它 `outbox.ack` 回来。
+ *
+ * @returns {Array<{id, channel, target, text, need, why, created}>}
+ */
+export function claimOutbox(root, pid, { limit = OUTBOX_FETCH_LIMIT, claimBy = 'module', now = Date.now() } = {}) {
+  releaseStaleClaims(root, pid, { now })
+  const doc = readOutbox(root, pid)
+  const ready = []
+  for (const it of doc.items) {
+    if (ready.length >= Math.max(1, Number(limit) || OUTBOX_FETCH_LIMIT)) break
+    if (it.status !== 'pending') continue
+    if (Date.parse(it.due ?? 0) > now) continue
+    if (!maySpeakNow(root, pid, it, now).ok) continue
+    it.status = 'claimed'
+    it.claimed_at = localIso(new Date(now))
+    it.claim_by = String(claimBy)
+    it.attempts = Number(it.attempts ?? 0) + 1
+    ready.push(it)
+  }
+  if (ready.length) saveOutbox(root, pid, doc, { reason: `模块 ${claimBy} 取走 ${ready.length} 条待发` })
+  return ready.map(publicItem)
+}
+
+/**
+ * 模块回报发送结果（协议 v1.5 `outbox.ack`）。
+ *
+ *   · ok=true  → sent（说出口了，记 sent_at / delivered_by）
+ *   · ok=false → 回 pending 重试；连续失败到上限就 dropped（**不在真人群里反复试**）
+ *
+ * @returns {{id:string, status:'sent'|'pending'|'dropped'}}
+ */
+export function ackOutbox(root, pid, id, { ok = false, code = '', message = '', claimBy = 'module', now = Date.now() } = {}) {
+  const doc = readOutbox(root, pid)
+  const it = doc.items.find((x) => x.id === String(id))
+  if (!it) throw new Error(`没有这条待发：${id}`)
+  if (it.status !== 'claimed') throw new Error(`这条不在"已领取"状态（现在：${it.status}）——先 fetch 再 ack`)
+
+  if (ok) {
+    it.status = 'sent'
+    it.sent_at = localIso(new Date(now))
+    it.delivered_by = String(claimBy)
+    delete it.last_error
+  } else {
+    it.last_error = String(message || code || 'send-failed').slice(0, 200)
+    if (Number(it.attempts ?? 0) >= OUTBOX_MAX_ATTEMPTS) {
+      it.status = 'dropped'
+      it.dropped_at = localIso(new Date(now))
+      it.drop_reason = `发送失败 ${it.attempts} 次：${it.last_error}`
+    } else {
+      it.status = 'pending'
+    }
+  }
+  saveOutbox(root, pid, doc, {
+    reason: ok ? `已发出：${it.text.slice(0, 30)}` : `发送失败（第 ${it.attempts} 次）：${it.last_error}`,
+  })
+  return { id: it.id, status: it.status }
+}
+
+/** 定时器：每 N 分钟算一轮。返回 stop()。 */
+export function startProactive(root, { everyMinutes = PROACTIVE_EVERY_MINUTES, firstDelayMs = 20_000, onRun = null } = {}) {  const everyMs = Math.max(60_000, Number(everyMinutes || PROACTIVE_EVERY_MINUTES) * 60_000)
   let stopped = false
   let timer = null
 

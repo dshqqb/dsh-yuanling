@@ -3,7 +3,7 @@
 // 纯函数，不碰文件系统：给它一个已解析的对象，回 {ok, errors[]}。
 // 校验规则逐条对应 §3.3，宁可拒装，也不让一个坏的 manifest 进注册表。
 export const API_MAJOR = 1
-export const API_MINOR = 4
+export const API_MINOR = 5
 
 /** §3.2 id 保留字：模块 id 会成为 raw 的来源名，撞名会污染原始层。 */
 export const RESERVED_IDS = [
@@ -21,6 +21,9 @@ export const CAPABILITIES = [
   // v1.1：模块可以被核心按需要数据（配合 manifest.sources 与 op source.fetch）。
   // 与 send 方向相反——send 是往外说话，这个是往里取数，所以是独立的一个词。
   'provide.source',
+  // v1.5：取 / 回执"她主动想说的话"。和 send 都是"往外说话"，但单独一个词：
+  // 只做投递的模块可以只申请 send，不必拿到队列。
+  'outbox',
 ]
 
 /** §3.4（v1.1）：`sources[].params` 只允许这个子集，超出的类型一律拒装。 */
