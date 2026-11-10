@@ -27,8 +27,6 @@ import {
   collectMembers,
   computeGroupWeight,
   setGroupTier,
-  setGroupWeight,
-  clearGroupWeight,
   refreshGroupWeight,
   backfillGroups,
   scanGroupChannels,
@@ -116,14 +114,13 @@ test('群体：没有档案时返回 null（不凭空造群）', () => {
 
 test('群体：写了能读回来，字段齐全（平台/原生号来自登记表）', () => {
   const root = tmpRoot()
-  const gid = mkGroup(root, 'qq', '123456', { name: '游戏群', feature: '一群人互相嘲讽', topics: '主要在聊抽卡' })
+  const gid = mkGroup(root, 'qq', '123456', { name: '游戏群', feature: '一群人互相嘲讽' })
   const g = readGroup(root, PID, gid)
   assert.equal(g.gid, gid)
   assert.equal(g.platform, 'qq')
   assert.equal(g.nativeId, '123456')
   assert.equal(g.name, '游戏群')
   assert.equal(g.feature, '一群人互相嘲讽')
-  assert.equal(g.topics, '主要在聊抽卡')
 })
 
 test('群体：卡里不重复存平台与号码（同一事实只存一处）', () => {
@@ -135,11 +132,19 @@ test('群体：卡里不重复存平台与号码（同一事实只存一处）',
   assert.equal(raw.nativeId, undefined)
 })
 
-test('群体：老版本文件（name/intro/tone/topics 数组）能升级，不丢内容', () => {
-  const old = normalizeGroup({ gid: 'grp_x', name: '旧群', intro: '旧简介', tone: '阴阳怪气', topics: ['抽卡', '攻略'] }, 'grp_x')
-  assert.match(old.feature, /旧简介/, 'intro 不该丢')
-  assert.match(old.feature, /阴阳怪气/, 'tone 折进 feature')
-  assert.equal(old.topics, '主要在聊：抽卡、攻略')
+test('群体卡只有名字/描述/成员/权重：没有别名与话题', () => {
+  const root = tmpRoot()
+  const gid = mkGroup(root, 'qq', '123456', { name: '游戏群', feature: '爱互相嘲讽' })
+  const g = readGroup(root, PID, gid)
+  assert.equal(g.aliases, undefined, '别名等价于名字，不该单独存在')
+  assert.equal(g.topics, undefined, '“在聊什么”是描述的一部分')
+
+  // 就算旧文件里还带着这两个字段，读出来也不认（不保留兼容）
+  const raw = JSON.parse(fs.readFileSync(path.join(root, 'personas', PID, 'entities', 'groups', `${gid}.json`), 'utf8'))
+  writeGroup(root, PID, gid, { name: raw.name })
+  const after = JSON.parse(fs.readFileSync(path.join(root, 'personas', PID, 'entities', 'groups', `${gid}.json`), 'utf8'))
+  assert.equal(after.aliases, undefined)
+  assert.equal(after.topics, undefined)
 })
 
 test('群体：写档案走版本追踪（可回滚）', () => {
@@ -271,23 +276,26 @@ test('权重：聊得多、跨天数多、最近活跃 → 更高，封顶 100',
   assert.equal(computeGroupWeight({ msgs: 10000, days: 400, recent: 4000 }), 100)
 })
 
-test('权重：手改之后自动计分不再覆盖', () => {
-  const root = tmpRoot()
-  const gid = mkGroup(root, 'qq', '1', { name: '群' })
-  setGroupWeight(root, PID, gid, 88)
-  const g = refreshGroupWeight(root, PID, gid)
-  assert.equal(g.weight, 88, 'manual 的权重不该被自动算掉')
-  assert.equal(g.weightSource, 'manual')
-
-  clearGroupWeight(root, PID, gid)
-  assert.equal(readGroup(root, PID, gid).weightSource, 'auto')
+test('权重：没有手改入口了（群体权重也只由互动/名次决定）', async () => {
+  const g = await import('../src/core/groups.js')
+  assert.equal(g.setGroupWeight, undefined)
+  assert.equal(g.clearGroupWeight, undefined)
 })
 
-test('重要群体：置顶与取消', () => {
+test('重要群体：置顶与取消，并给名次分（110 起）', () => {
   const root = tmpRoot()
   const gid = mkGroup(root, 'qq', '1', { name: '群' })
-  assert.equal(setGroupTier(root, PID, gid, 'important').tier, 'important')
+  const a = setGroupTier(root, PID, gid, 'important')
+  assert.equal(a.tier, 'important')
+  assert.equal(a.pinRank, 0)
+
+  const [row] = listGroups(root, PID)
+  assert.equal(row.weightKind, 'pinned')
+  assert.equal(row.weight, 110, '只有一个重点群体时是 110')
+
   assert.equal(setGroupTier(root, PID, gid, null).tier, null)
+  const [back] = listGroups(root, PID)
+  assert.equal(back.weightKind, 'auto')
 })
 
 test('ensureGroup：见过才建，第二次只更新 lastSeen', () => {
@@ -380,7 +388,7 @@ test('注入：群体卡是自然语言，带成员名字而不是 uid', () => {
   const root = tmpRoot()
   const a = createPerson(root, { uid: 'person_a', display: '张三' })
   linkIdentity(root, a.uid, { platform: 'qq', id: '111' })
-  const gid = mkGroup(root, 'qq', '123456', { name: '游戏群', feature: '爱互相嘲讽', topics: '主要聊抽卡', members: ['person_a'] })
+  const gid = mkGroup(root, 'qq', '123456', { name: '游戏群', feature: '爱互相嘲讽', members: ['person_a'] })
   const line = groupCardLine(root, PID, readGroup(root, PID, gid))
   assert.match(line, /^\[群体\]/)
   assert.match(line, /游戏群/)

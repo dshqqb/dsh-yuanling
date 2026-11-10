@@ -26,14 +26,14 @@ import {
   readProfile,
   writeProfile,
 } from './entities.js'
-import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, refreshGroupWeight, backfillGroups, ensureGroupScene, findGidByNative, migrateGroupIds } from './groups.js'
+import { listGroups, readGroupLive, writeGroup, setGroupTier, moveGroupPinned, createGroupWithCard, collectMembers, refreshGroupWeight, backfillGroups, ensureGroupScene, findGidByNative, migrateGroupIds } from './groups.js'
 import { setImpression, renderImpression } from './impressions.js'
 import { readTimeline } from './events.js'
 import { diagnose, renderDiagnostics } from './diagnostics.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
-import { refreshWeights, setManualWeight, clearManualWeight } from './weights.js'
+import { refreshWeights } from './weights.js'
 import {
   findProfiles,
   mcpStatus,
@@ -240,7 +240,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling unshield <id...>          撤销屏蔽
   yuanling person list|new|show|link|merge|split|profile
   yuanling person candidates|confirm <n>|reject <n>
-  yuanling person weight [refresh] | set <uid> <0-100> | auto <uid>
+  yuanling person weight [refresh] | 权重只能看，不能手改
   yuanling person identity <uid> [--text "QQ 号是 12345，b站叫老张"] [--no-link]
   yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
@@ -258,7 +258,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling proposal list|show|approve|reject|rollback|sweep|policy
   yuanling group list                  列出所有群体（按权重）
   yuanling group show <群>             看一个群体的档案
-  yuanling group set <群> [--name --feature --topics --alias]
+  yuanling group set <群> [--name --feature]
   yuanling group members <群>          从原始层重新归集成员
   yuanling group backfill              扫 raw 里出现过的群频道，补建档案
   yuanling group promote|demote <群>   置顶 / 取消置顶
@@ -1318,33 +1318,17 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
 
       if (sub === 'weight') {
         const action = _[2]
-        if (action === 'set') {
-          const uid = _[3]
-          const w = _[4]
-          if (!uid || w === undefined) {
-            err('用法：yuanling person weight set <uid> <0-100>')
-            return EXIT.CONFIG
-          }
-          const prof = setManualWeight(root, pid, uid, Number(w))
-          out(`✓ ${uid} 权重 = ${prof.weight}（手动，自动分不再覆盖）`)
-          return EXIT.OK
-        }
-        if (action === 'auto') {
-          const uid = _[3]
-          if (!uid) {
-            err('用法：yuanling person weight auto <uid>')
-            return EXIT.CONFIG
-          }
-          clearManualWeight(root, pid, uid)
-          out(`✓ ${uid} 已恢复自动计分（下次 refresh 重算）`)
-          return EXIT.OK
+        if (action === 'set' || action === 'auto') {
+          // 权重只能由互动推演（2026-11-10 起手改入口全删）
+          err('权重不能手改：普通名单按互动算（0–100），设为重点后按名次算（110 起）。')
+          err('想抬高某个人：yuanling person pin <uid>')
+          return EXIT.CONFIG
         }
 
         const list = refreshWeights(root, pid)
         if (!list.length) out('（还没有人物档案）')
         for (const x of list) {
-          const tag = x.source === 'manual' ? '手动' : '自动'
-          out(`${String(x.weight).padStart(3)}  ${tag}  ${x.uid}${x.changed ? '  ·已更新' : ''}`)
+          out(`${String(x.weight).padStart(3)}  ${x.uid}${x.changed ? '  ·已更新' : ''}`)
         }
         return EXIT.OK
       }
@@ -1412,9 +1396,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         }
         for (const g of all) {
           const tier = g.tier === 'important' ? ' [重要]' : ''
-          const w = g.weightSource === 'manual' ? `${g.weight}(手)` : String(g.weight)
+          const w = String(g.weight)
           out(`${g.name || g.gid}${tier}  ${g.gid}  权重 ${w}  成员 ${g.memberCount}`)
-          if (g.topics) out(`  ${g.topics}`)
         }
         out(`\n共 ${all.length} 个群体`)
         return EXIT.OK
@@ -1445,9 +1428,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
           return EXIT.OK
         }
         out(`${g.name || g.gid}  ${g.gid}`)
-        out(`  权重：${g.weight}${g.weightSource === 'manual' ? '（手动）' : '（自动）'}${g.tier === 'important' ? '  [重要]' : ''}`)
+        out(`  权重：${g.weight}${g.tier === 'important' ? '  [重要]' : ''}`)
         if (g.feature) out(`  特征：${g.feature}`)
-        if (g.topics) out(`  话题：${g.topics}`)
         if (g.members.length) out(`  常出现的人（${g.memberCount}）：${g.members.join('、')}`)
         if (g.lastSeen) out(`  最后一次见到：${g.lastSeen}`)
         if (flags.history) out(renderImpression(root, pid, 'group', gid, { withHistory: true }))
@@ -1459,14 +1441,6 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         if (!gid) return EXIT.CONFIG
         const patch = { __reason: '手动编辑群体档案' }
         if (flags.name) patch.name = String(flags.name)
-        if (flags.topics) patch.topics = String(flags.topics)
-        if (flags.alias) {
-          patch.aliases = String(flags.alias)
-            .split(/[,，、\s]+/)
-            .map((x) => x.trim())
-            .filter(Boolean)
-            .slice(0, 10)
-        }
         if (Object.keys(patch).length > 1) writeGroup(root, pid, gid, patch, { actor: 'human:editor' })
         if (flags.feature) {
           setImpression(root, pid, 'group', gid, {
@@ -1500,15 +1474,17 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       }
 
       if (sub === 'weight') {
+        // 权重只能由互动推演（2026-11-10 起手改入口全删）。
+        // 命令保留：告诉人"现在不能改"，并显示当前生效值与口径。
         const gid = needGid()
         if (!gid) return EXIT.CONFIG
-        const raw = String(_[3] ?? '')
-        if (!raw) {
-          err('用法：yuanling group weight <群> <0-100|auto>')
+        const g = readGroupLive(root, pid, gid)
+        if (!g) {
+          err(`没有这个群体：${gid}`)
           return EXIT.CONFIG
         }
-        const g = raw === 'auto' ? clearGroupWeight(root, pid, gid) : setGroupWeight(root, pid, gid, Math.max(0, Math.min(100, Number(raw) || 0)))
-        out(`✓ ${g.gid} 权重 → ${g.weight}（${g.weightSource === 'manual' ? '手动' : '自动'}）`)
+        out(`· ${g.gid} 权重 ${g.weight}（${g.weightKind === 'pinned' ? `重点第 ${Number(g.rank ?? 0) + 1} 名` : '互动分'}）`)
+        out('  权重不能手改：普通名单按互动算（0–100），设为重点后按名次算（110 起）。')
         return EXIT.OK
       }
 

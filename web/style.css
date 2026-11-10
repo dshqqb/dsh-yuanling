@@ -332,14 +332,17 @@ input[type='number'] { min-width: 100px; width: 120px; }
 .bar.is-empty { background: var(--pill); }
 .bar-label { display: block; text-align: center; font-size: 10.5px; color: var(--muted); margin-top: 6px; height: 14px; }
 
-/* ── 人物页：分段栏位 / 拖拽 ─────────────────────────────────────────── */
-
+/* ── 分段按钮组（日志筛选 / 记忆视图 / 诊断模式 / 模块标签）─────────────
+   人物页那个「按权重 / 按时间」已经去掉，但这一套别处还在用：
+   删样式不会报错，只会让按钮变成一排裸文字——上一轮就是这么踩的。 */
 .seg { display: flex; gap: 2px; padding: 3px; background: var(--pill); border-radius: 999px; margin-left: auto; }
 .seg button {
   border: 0; background: transparent; color: var(--muted);
   padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: 12.5px;
 }
 .seg button.is-active { background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+
+/* ── 人物页 / 群体页：栏位 / 勾选行 ──────────────────────────────────── */
 
 .zone {
   background: var(--card); border-radius: var(--r); padding: 16px 20px;
@@ -348,12 +351,45 @@ input[type='number'] { min-width: 100px; width: 120px; }
 .zone-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .zone-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .zone-body { display: flex; flex-direction: column; gap: 8px; min-height: 62px; border-radius: 14px; }
-.zone-body.drop-target { outline: 1px dashed transparent; transition: outline-color 0.15s; padding: 4px; margin: -4px; }
-.zone-body.drop-hot { outline-color: var(--accent); background: rgba(47, 128, 255, 0.06); }
 .zone-empty { color: var(--muted); font-size: 12.5px; padding: 14px 4px; }
 
-.item.is-draggable { cursor: grab; }
-.item.dragging { opacity: 0.45; }
+.check-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 13px; cursor: pointer;
+}
+.check-row input { margin-top: 3px; }
+.check-row .muted { display: block; font-size: 12px; }
+.check-row[hidden] { display: none; }
+
+/* ── 通用弹窗 ───────────────────────────────────────────────────────── */
+.modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; }
+.modal[hidden] { display: none; }
+.modal-mask { position: absolute; inset: 0; background: rgba(16, 20, 28, 0.42); backdrop-filter: blur(2px); }
+.modal-box {
+  position: relative; z-index: 1;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 64px); overflow: auto;
+  background: var(--card); border-radius: 16px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  padding: 18px 20px 16px;
+}
+.modal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.modal-head h3 { margin: 0; font-size: 16px; }
+.modal-body { display: flex; flex-direction: column; gap: 10px; }
+.modal-field { display: flex; flex-direction: column; gap: 4px; }
+.modal-label { font-size: 12px; color: var(--muted); }
+.modal-static {
+  font-size: 13px; padding: 8px 10px; border-radius: 10px;
+  background: var(--pill); color: var(--text);
+}
+.modal-msg { min-height: 16px; margin-top: 8px; }
+.modal-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  background: rgba(24, 28, 36, 0.94); color: #fff; font-size: 12.5px;
+  padding: 8px 14px; border-radius: 999px; z-index: 70; pointer-events: none;
+}
 
 input.narrow { min-width: 0; width: 110px; }
 

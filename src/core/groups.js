@@ -23,6 +23,7 @@ import { writeTracked } from './version.js'
 // 频道 kind ↔ 平台、哪些 kind 算"一个地方"——纯常量放 platforms.js（channels.js 也要用，
 // 放在这里会和它循环 import）。这里 import 进来自己用，并重新导出，老调用方不用改。
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
+import { pinWeight } from './weights.js'
 export { CHANNEL_PLATFORM, GROUP_KINDS }
 
 // 场景解析、群体身份登记表都在 channels.js。它不 import groups.js（只 import 常量层），
@@ -79,9 +80,10 @@ export function readGroup(root, pid, gid) {
 }
 
 /**
- * 老版本的文件（[name/intro/tone/topics]）在这里被认出来并升级：
- * intro/tone 折进 `feature`，topics 数组折进自然语言 `topics`。
- * 不丢内容——用户手写的字也算她的记忆。
+ * 群体卡的形状。
+ *
+ * 卡里只有：名字、描述（自然语言）、成员（事实）、权重与重点名次。
+ * 平台与原生号不在这里——它们在 `system/groups.json`（客观身份），卡只认 `gid`。
  */
 export function normalizeGroup(raw, gid, root = null) {
   // 平台与原生号不在编号里（编号是 `grp_xxx`），从**客观登记表**取。
@@ -89,16 +91,6 @@ export function normalizeGroup(raw, gid, root = null) {
   const platform = identity?.platform ?? raw?.platform ?? 'unknown'
   const nativeId = identity?.nativeId ?? raw?.nativeId ?? raw?.id ?? ''
 
-  if (raw?.feature === undefined && (raw?.intro || raw?.tone)) {
-    const bits = []
-    if (raw.intro) bits.push(String(raw.intro))
-    if (raw.tone) bits.push(`说话语气：${raw.tone}`)
-    raw.feature = bits.join('；')
-  }
-  if (raw?.topics === undefined || Array.isArray(raw?.topics)) {
-    const arr = Array.isArray(raw?.topics) ? raw.topics : []
-    raw.topics = arr.length ? `主要在聊：${arr.join('、')}` : ''
-  }
   return {
     gid: gid ?? raw.gid,
     platform,
@@ -107,13 +99,16 @@ export function normalizeGroup(raw, gid, root = null) {
     // 老字段名，前端和 CLI 还在读；等于 nativeId
     id: nativeId,
     name: String(raw?.name ?? ''),
-    aliases: Array.isArray(raw?.aliases) ? raw.aliases.map(String) : [],
     feature: String(raw?.feature ?? ''),
-    topics: String(raw?.topics ?? ''),
     members: Array.isArray(raw?.members) ? raw.members.map(String) : [],
     memberCount: Number(raw?.memberCount ?? 0),
     weight: Number(raw?.weight ?? 0),
-    weightSource: raw?.weight_source === 'manual' ? 'manual' : 'auto',
+    // 新建时的默认分：一次互动都没有时用它显示（否则刚建的群会显示 0）
+    weightSeed: Number(raw?.weight_seed ?? 0),
+    // 重点名单里的名次（0 起）；不在名单里就是 null。
+    // 名次决定权重（weights.js 的 pinWeight：最后一名 110，往上每名 +5）。
+    pinRank: Number.isFinite(Number(raw?.pin_rank)) ? Number(raw.pin_rank) : null,
+    weightSource: 'auto',
     tier: raw?.tier === 'important' ? 'important' : null,
     firstSeen: raw?.first_seen ?? null,
     lastSeen: raw?.last_seen ?? null,
@@ -121,25 +116,59 @@ export function normalizeGroup(raw, gid, root = null) {
   }
 }
 
+/** 名字的规范形：全角半角统一、空白压成一个、大小写不敏感。 */
+function nameKey(s) {
+  return String(s ?? '')
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * 群体名字在同一人格里唯一（不同人格可以各叫各的：那是她对不同地方的印象）。
+ *
+ * @returns {object|null} 占用这个名字的群体
+ */
+export function groupNameOwner(root, pid, name, { exceptGid = null } = {}) {
+  const key = nameKey(name)
+  if (!key) return null
+  for (const g of listGroups(root, pid)) {
+    if (g.gid === exceptGid) continue
+    if (nameKey(g.name) === key) return g
+  }
+  return null
+}
+
+/** 名字被占了就抛错，并说清"换个什么"——不静默改名。 */
+export function assertGroupNameFree(root, pid, name, opts = {}) {
+  const hit = groupNameOwner(root, pid, name, opts)
+  if (!hit) return
+  const n = String(name ?? '').trim()
+  throw new Error(`群体名字「${n}」已经有人用了（${hit.gid}）。换一个：可以带上平台或特点，例如「${n}（贴吧）」`)
+}
+
 /** 写群体档案。走 version.js 的追踪写，可回滚、有变更记录。 */
-export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group', reason = '更新群体档案' } = {}) {
+export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group', reason = '更新群体档案', skipNameCheck = false } = {}) {
   const rel = groupRel(pid, gid)
   const cur = readGroup(root, pid, gid) ?? normalizeGroup({}, gid, root)
+  // 改名查重（新建也走这里，所以创建同样受约束）。
+  // 迁移例外：那是同一张卡换个编号，名字本来就在那儿。
+  if (!skipNameCheck && patch.name !== undefined && nameKey(patch.name) !== nameKey(cur.name)) {
+    assertGroupNameFree(root, pid, patch.name, { exceptGid: gid })
+  }
   const next = {
     // 卡里**不再存 gid 之外的编号信息**：平台与原生号在 system/groups.json（客观层）。
     // 不在这里再抄一份，否则两处迟早分叉。
     gid,
     name: patch.name !== undefined ? String(patch.name) : cur.name,
-    aliases: patch.aliases ? patch.aliases.map(String) : cur.aliases,
     feature: patch.feature !== undefined ? String(patch.feature) : cur.feature,
-    topics: patch.topics !== undefined ? String(patch.topics) : cur.topics,
     members: patch.members ? patch.members.map(String) : cur.members,
     memberCount: patch.memberCount !== undefined ? Number(patch.memberCount) : cur.memberCount,
     weight: patch.weight !== undefined ? Number(patch.weight) : cur.weight,
-    // 注意：这里不能写成"不是 manual 就沿用旧值"——那样 `clearGroupWeight` 永远清不掉。
-    // 要区分"没给这个字段"（沿用）和"明确给了 auto"（清掉手改）。
-    weight_source:
-      patch.weightSource === undefined ? (cur.weightSource === 'manual' ? 'manual' : 'auto') : patch.weightSource === 'manual' ? 'manual' : 'auto',
+    weight_seed: patch.weightSeed !== undefined ? Number(patch.weightSeed) : cur.weightSeed ?? 0,
+    weight_source: 'auto',
+    pin_rank: patch.pinRank !== undefined ? patch.pinRank : cur.pinRank ?? null,
     tier: patch.tier === undefined ? cur.tier : patch.tier === 'important' ? 'important' : null,
     first_seen: patch.firstSeen ?? cur.firstSeen ?? localIso(),
     last_seen: patch.lastSeen ?? cur.lastSeen,
@@ -172,20 +201,67 @@ export function listGroups(root, pid, { now = Date.now() } = {}) {
     const cur = normalizeGroup(g, gid, root)
     out.push({ ...cur, sealedNotes: undefined, weight: liveGroupWeight(root, pid, cur, { now }) })
   }
-  return out.sort((a, b) => b.weight - a.weight || String(b.lastSeen ?? '').localeCompare(String(a.lastSeen ?? '')))
+  // 重点名单按名次（越靠前越高），其余按互动分
+  const pinned = out.filter((g) => g.tier === 'important')
+  const total = pinned.length
+  for (const g of out) {
+    const eff = effectiveGroupWeight(g, { totalPinned: total })
+    g.weight = eff.weight
+    g.storedWeight = eff.stored
+    g.weightKind = eff.kind
+    g.rank = eff.rank
+  }
+  out.sort((a, b) => {
+    const ap = a.tier === 'important' ? 1 : 0
+    const bp = b.tier === 'important' ? 1 : 0
+    if (ap !== bp) return bp - ap
+    if (ap) return Number(a.rank ?? 0) - Number(b.rank ?? 0)
+    return b.weight - a.weight || String(b.lastSeen ?? '').localeCompare(String(a.lastSeen ?? ''))
+  })
+  return out
 }
 
-/** 读一个群体，返回值里带上**实时**权重（详情页 / CLI / MCP 用）。 */
+/**
+ * 读一个群体，返回值里带上**生效**权重（详情页 / CLI / MCP 用）。
+ * 生效口径：重点名单按名次（110 起），其余用互动分。
+ */
 export function readGroupLive(root, pid, gid, { now = Date.now() } = {}) {
   const g = readGroup(root, pid, gid)
-  return g ? { ...g, weight: liveGroupWeight(root, pid, g, { now }) } : null
+  if (!g) return null
+  const live = liveGroupWeight(root, pid, g, { now })
+  const total = pinnedGroups(root, pid).length
+  const eff = effectiveGroupWeight({ ...g, weight: live }, { totalPinned: total })
+  return { ...g, weight: eff.weight, storedWeight: eff.stored, weightKind: eff.kind, rank: eff.rank }
 }
 
-/** 实时权重：手改过的用手改值，其余按原始层里的互动现算（不写盘）。 */
+/** 实时权重：按原始层里的互动现算（不写盘）。重点名单则由名次覆盖，见 effectiveGroupWeight。 */
 export function liveGroupWeight(root, pid, g, { now = Date.now() } = {}) {
   if (!g) return 0
-  if (g.weightSource === 'manual') return Number(g.weight ?? 0)
-  return computeGroupWeight(channelStats(root, g.gid, now))
+  const computed = computeGroupWeight(channelStats(root, g.gid, now))
+  // 一次互动都没有：保留新建时的默认分（50），别把"刚建的群"显示成 0
+  if (computed === 0) return Number(g.weightSeed ?? g.weight ?? 0)
+  return computed
+}
+
+/**
+ * 一个群体生效的权重：重点名单按名次（110 起），其余用互动分。
+ * 和人物同一套口径（weights.js）。
+ */
+export function effectiveGroupWeight(g, { totalPinned = 0 } = {}) {
+  const stored = Math.max(0, Math.min(100, Math.round(Number(g?.weight ?? 0))))
+  if (g?.tier === 'important') {
+    const rank = Number.isFinite(Number(g.pinRank)) ? Number(g.pinRank) : 0
+    return { weight: pinWeight(rank, totalPinned), kind: 'pinned', stored, rank }
+  }
+  return { weight: stored, kind: 'auto', stored, rank: null }
+}
+
+/** 重点群体名单（按名次），返回 gid 数组。 */
+export function pinnedGroups(root, pid) {
+  return listGroups(root, pid)
+    .filter((g) => g.tier === 'important')
+    .sort((a, b) => Number(a.pinRank ?? 0) - Number(b.pinRank ?? 0))
+    .map((g) => g.gid)
 }
 
 /**
@@ -460,18 +536,161 @@ function channelDayCount(root, day, keys) {
   return n
 }
 
-/** 重要群体：手动置顶（和人物的 pinned 同一个语义）。 */
+/**
+ * 重要群体（重点名单）：置顶时分配名次，取消时把后面的往前挪（不留空洞）。
+ */
 export function setGroupTier(root, pid, gid, tier) {
-  return writeGroup(root, pid, gid, { tier }, { reason: tier === 'important' ? '提升为重要群体' : '取消重要群体' })
+  const important = tier === 'important'
+  const list = pinnedGroups(root, pid)
+  const already = list.includes(gid)
+  if (important && !already) {
+    return writeGroup(root, pid, gid, { tier: 'important', pinRank: list.length }, { reason: '设为重点群体' })
+  }
+  if (!important && already) {
+    const next = list.filter((x) => x !== gid)
+    const g = writeGroup(root, pid, gid, { tier: null, pinRank: null }, { reason: '取消重点群体' })
+    renumberGroups(root, pid, next)
+    return g
+  }
+  return readGroup(root, pid, gid)
 }
 
-/** 手改权重（改过之后自动计分不再覆盖）。 */
-export function setGroupWeight(root, pid, gid, weight) {
-  return writeGroup(root, pid, gid, { weight, weightSource: 'manual' }, { reason: '手动设置群体权重' })
+/** 把名单里的名次重排成 0..n-1。 */
+export function renumberGroups(root, pid, gids) {
+  gids.forEach((gid, i) => {
+    const g = readGroup(root, pid, gid)
+    if (Number(g?.pinRank) === i) return
+    writeGroup(root, pid, gid, { pinRank: i }, { reason: '重点群体重新排序' })
+  })
 }
 
-export function clearGroupWeight(root, pid, gid) {
-  return writeGroup(root, pid, gid, { weightSource: 'auto' }, { reason: '恢复自动权重' })
+/** 在重点名单里往上/下挪一格。 */
+export function moveGroupPinned(root, pid, gid, direction) {
+  const list = pinnedGroups(root, pid)
+  const i = list.indexOf(gid)
+  if (i < 0) throw new Error('不在重点名单里')
+  const j = direction === 'up' ? i - 1 : i + 1
+  if (j < 0 || j >= list.length) return { moved: false, rank: i }
+  const next = [...list]
+  ;[next[i], next[j]] = [next[j], next[i]]
+  renumberGroups(root, pid, next)
+  return { moved: true, rank: j }
+}
+
+/**
+ * 平台名 → 内部 id。**只认得出常见的那几个**，认不出的原样保留小写——
+ * 因为"加一个新平台"不该需要改代码（贴吧、Discord、Telegram 都能这么进来）。
+ */
+const PLATFORM_WORDS = [
+  [/^(qq群|qq|扣扣)$/i, 'qq'],
+  [/^(微信群|微信|wechat|weixin)$/i, 'wechat'],
+  [/^(贴吧|tieba)$/i, 'tieba'],
+  [/^(b站|bilibili|bili)$/i, 'bili'],
+  [/^(discord|dc)$/i, 'discord'],
+  [/^(telegram|tg|电报)$/i, 'telegram'],
+  [/^(kook|开黑啦)$/i, 'kook'],
+]
+
+function platformOfWord(word) {
+  const w = String(word ?? '').trim()
+  for (const [re, id] of PLATFORM_WORDS) if (re.test(w)) return id
+  return w.toLowerCase()
+}
+
+/** 去掉"号是 / 群号 / 叫 / @"这类连接词，留下真正的号码或名字。 */
+function cleanNative(v) {
+  return String(v ?? '')
+    .trim()
+    .replace(/^[:：\-—\s]+/, '')
+    .replace(/^(群号|群号码|号码|号)\s*(是|为|:)?\s*/i, '')
+    .replace(/^(是|为)\s*/, '')
+    .replace(/^[@＠]\s*/, '')
+    .replace(/[。，,；;、\s]+$/, '')
+    .trim()
+}
+
+/**
+ * 用自然语言描述一个群体的账号，解析成 `{platform, nativeId}`。
+ *
+ * 为什么不做平台下拉：下拉等于把"有哪些平台"写死在界面上，而模块是可扩展的。
+ * 这里只做一件事——从一句人话里认出"哪个平台 + 哪个号"，认不出就明确拒绝。
+ *
+ * 接受的写法（示例）：
+ *   · QQ群 123456789 / QQ 群号是 123456789
+ *   · 贴吧 原神吧 / tieba:原神吧
+ *   · 微信群 abc123@chatroom
+ *   · discord: 987654321098765432
+ *   · 电报 https://t.me/somegroup（未知平台就原样记成 platform='telegram' 之外的值也照收）
+ *
+ * @returns {{ok:true, platform:string, nativeId:string} | {ok:false, reason:string}}
+ */
+export function parseGroupAccountText(text) {
+  const raw = String(text ?? '').trim()
+  if (!raw) return { ok: false, reason: '先写清是哪个平台、哪个号，例如「QQ群 123456789」或「贴吧 原神吧」' }
+
+  // ① "平台:号码"（中英文冒号都认），平台可以是任何词
+  const colon = /^([^:：\s]{1,20})\s*[:：]\s*(.+)$/.exec(raw)
+  if (colon) {
+    const platform = platformOfWord(colon[1])
+    const nativeId = cleanNative(colon[2])
+    if (nativeId) return { ok: true, platform, nativeId }
+  }
+
+  // ② "平台 + 号码/名字"（空格或直接连着）
+  const lead = /^([A-Za-z\u4e00-\u9fa5]{1,12})\s*(.*)$/.exec(raw)
+  if (lead) {
+    const platform = platformOfWord(lead[1])
+    // 认出来的平台才继续；否则这句可能是"原神吧 123"这种没有平台的话
+    const known = PLATFORM_WORDS.some(([re]) => re.test(lead[1]))
+    if (known) {
+      const nativeId = cleanNative(lead[2])
+      if (nativeId) return { ok: true, platform, nativeId }
+      return { ok: false, reason: `认出了平台「${lead[1]}」，但没看到号码/名字` }
+    }
+  }
+
+  // ③ 只有号码没有平台：不猜（QQ 号 / 微信群 id / Discord id 长得都不一样）
+  if (/^\d{4,}$/.test(raw)) {
+    return { ok: false, reason: '只有号码不够：这是哪个平台的号？写成「QQ群 123456789」这样' }
+  }
+
+  return {
+    ok: false,
+    reason: `没认出平台与号码：${raw}。写成「QQ群 123456789」「贴吧 原神吧」或「平台:号码」`,
+  }
+}
+
+/**
+ * 新建群体：必须说清是哪个平台的哪个号（否则它对应不到任何真实地方）。
+ *
+ * `accountText` 是给人用的自然语言入口；`platform`/`nativeId` 留给程序调用（CLI、测试）。
+ * 建完顺手写名字与描述。
+ */
+export function createGroupWithCard(root, pid, { name, accountText, platform, nativeId, feature = '' } = {}) {
+  const title = String(name ?? '').trim()
+  if (!title) throw new Error('名字不能为空')
+
+  let p = String(platform ?? '').trim()
+  let nid = String(nativeId ?? '').trim()
+  if (accountText !== undefined && accountText !== null && String(accountText).trim()) {
+    const parsed = parseGroupAccountText(accountText)
+    if (!parsed.ok) throw new Error(parsed.reason)
+    p = parsed.platform
+    nid = parsed.nativeId
+  }
+  if (!p) throw new Error('平台不能为空：写成「QQ群 123456789」或「贴吧 原神吧」')
+  if (!nid) throw new Error('群号 / 吧名不能为空，否则这个群体对应不到任何地方')
+
+  const gid = ensureGroupScene(root, { platform: p, nativeId: nid })
+  const existsAlready = Boolean(readJson(path.join(root, groupRel(pid, gid)), null))
+  if (existsAlready) throw new Error(`这个群体已经有卡了：${gid}（${p}:${nid}）`)
+  return writeGroup(
+    root,
+    pid,
+    gid,
+    { name: title, feature: String(feature ?? ''), weight: 50, weightSeed: 50 },
+    { reason: '新建群体' },
+  )
 }
 
 // ── 注入用的检索 ────────────────────────────────────────────────────────
@@ -512,9 +731,8 @@ export function groupsForContext(root, pid, { channel = null, text = '', limit =
 }
 
 function mentionsGroup(text, g) {
-  const needles = [g.name, ...(g.aliases ?? [])].map((s) => String(s ?? '').trim()).filter((s) => s.length >= 2)
-  for (const n of needles) if (text.includes(n)) return true
-  return false
+  const name = String(g?.name ?? '').trim()
+  return name.length >= 2 && text.includes(name)
 }
 
 /**
@@ -531,7 +749,6 @@ export function groupCardLine(root, pid, g, { budgetBytes = 240, maxNames = 4 } 
   const head = g.name ? `${g.name}（${g.gid}）` : g.gid
   bits.push(head)
   if (g.feature) bits.push(g.feature)
-  if (g.topics) bits.push(g.topics)
 
   const names = mentionableNames(root, pid, g.members ?? []).slice(0, maxNames)
   if (names.length) bits.push(`常出现的人：${names.join('、')}`)
@@ -625,9 +842,7 @@ export function migrateGroupIds(root) {
         }
         writeGroup(root, pid, gid, {
           name: raw?.name,
-          aliases: raw?.aliases,
-          feature: raw?.feature ?? raw?.intro,
-          topics: Array.isArray(raw?.topics) ? raw.topics : raw?.topics,
+          feature: raw?.feature,
           members: raw?.members,
           memberCount: raw?.memberCount,
           weight: raw?.weight,
@@ -636,7 +851,7 @@ export function migrateGroupIds(root) {
           firstSeen: raw?.first_seen,
           lastSeen: raw?.last_seen,
           __reason: `迁移群体编号：${oldGid} → ${gid}`,
-        }, { actor: 'system:migration', reason: `迁移群体编号：${oldGid} → ${gid}` })
+        }, { actor: 'system:migration', reason: `迁移群体编号：${oldGid} → ${gid}`, skipNameCheck: true })
         fs.unlinkSync(abs)
         out.migrated.push({ pid, from: oldGid, to: gid, platform: idn.platform, nativeId: idn.nativeId })
       }

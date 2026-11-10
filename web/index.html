@@ -220,44 +220,36 @@
         <section id="tab-people" class="page" hidden>
           <div class="page-head">
             <h2>人物</h2>
-            <p class="muted">她对每个人的印象。这里的排序只影响这张列表，不决定谁进上下文。</p>
-            <div class="seg" id="people-sort">
-              <button data-sort="weight" class="is-active">按权重</button>
-              <button data-sort="time">按时间</button>
+            <p class="muted">
+              她对每个人的印象。权重由互动推演（私聊越多越高，普通名单 0–100）；
+              <b>设为重点人物</b>之后按名次计分（最后一名 110，越靠前越高），人不能手改。
+            </p>
+            <div class="field-row">
+              <button id="person-new" class="btn">新增人物</button>
             </div>
           </div>
 
           <div class="zone">
             <div class="zone-head"><h3>管理员</h3><span class="muted small">全库唯一，换人要先卸任</span></div>
             <div id="admin-slot" class="zone-body"></div>
+            <label class="check-row" id="gentle-row">
+              <input type="checkbox" id="gentle-admin" />
+              <span class="check-tick">✓</span>
+              <span>对管理员更温柔<span class="muted small">（按人格存；勾上后注入里多一句要求，换人格不生效）</span></span>
+            </label>
           </div>
 
           <div class="zone">
-            <div class="zone-head"><h3>重要人物</h3><span class="muted small">把人物卡拖进来即置顶，没有人数量上限</span></div>
-            <div id="pinned-slot" class="zone-body drop-target"></div>
+            <div class="zone-head">
+              <h3>重点人物</h3>
+              <span class="muted small">点「设为重点」加入；越靠前权重越高（110 起，每名 +5）</span>
+            </div>
+            <div id="pinned-slot" class="zone-body"></div>
           </div>
 
           <div class="card">
             <div class="card-head"><h3>其余</h3><span class="muted small" id="people-count"></span></div>
             <div id="people-out" class="list"></div>
-          </div>
-
-          <div id="person-editor" class="card" hidden>
-            <div class="card-head"><h3 id="person-title"></h3></div>
-            <div class="field-row"><input id="person-display" placeholder="显示名" /></div>
-            <div class="field-row">
-              <input id="person-identity" placeholder="用自然语言写，可以写多个号：QQ 号是 12345，另一个 QQ 号是 67890，b站叫老张" />
-            </div>
-            <div id="person-identity-msg" class="muted small"></div>
-            <textarea id="person-sketch" rows="5" placeholder="素描：这个人是谁、怎么说话、在意什么、别碰什么"></textarea>
-            <div class="field-row">
-              <input id="person-weight" type="number" min="0" max="100" placeholder="权重 0-100" class="narrow" />
-              <button id="person-weight-auto" class="btn ghost small">恢复自动</button>
-            </div>
-            <div class="field-row">
-              <button id="person-save" class="btn">保存</button>
-              <span id="person-msg" class="muted small"></span>
-            </div>
           </div>
         </section>
 
@@ -271,34 +263,22 @@
               每个群体有<b>内部编号</b>（<code>grp_…</code>，不带平台也不带群号）。真实群号 / 吧名存在卡里，
               所以换一个 App、加一个新平台，都不会和别的群串号。两个平台上的同一个号是两个群体。
             </p>
+            <div class="field-row">
+              <button id="group-new" class="btn">新增群体</button>
+            </div>
           </div>
 
           <div class="zone">
-            <div class="zone-head"><h3>重要群体</h3><span class="muted small">置顶的群排前面，进上下文时也更优先</span></div>
+            <div class="zone-head">
+              <h3>重点群体</h3>
+              <span class="muted small">点「设为重点」加入；越靠前权重越高（110 起，每名 +5）</span>
+            </div>
             <div id="groups-important" class="zone-body"></div>
           </div>
 
           <div class="card">
             <div class="card-head"><h3>其余</h3><span class="muted small" id="groups-count"></span></div>
             <div id="groups-out" class="list"></div>
-          </div>
-
-          <div id="group-editor" class="card" hidden>
-            <div class="card-head"><h3 id="group-title"></h3></div>
-            <div class="field-row"><input id="group-name" placeholder="群名" /></div>
-            <textarea id="group-feature" rows="4" placeholder="这个群是什么地方、什么氛围、她在这里怎么说话"></textarea>
-            <textarea id="group-topics" rows="3" placeholder="这里主要在聊什么"></textarea>
-            <div class="field-row"><input id="group-aliases" placeholder="别名 / 简称，逗号分隔" /></div>
-            <div class="field-row">
-              <input id="group-weight" type="number" min="0" max="100" placeholder="权重 0-100" class="narrow" />
-              <button id="group-weight-auto" class="btn ghost small">恢复自动</button>
-              <button id="group-members" class="btn ghost small">重新归集成员</button>
-            </div>
-            <div id="group-members-msg" class="muted small"></div>
-            <div class="field-row">
-              <button id="group-save" class="btn">保存</button>
-              <span id="group-msg" class="muted small"></span>
-            </div>
           </div>
         </section>
 
@@ -634,6 +614,25 @@
 
   <!-- 带版本号：浏览器对 .js 的缓存很顽固，改了脚本不换 query 就可能跑旧代码，
        排查时会一路怀疑到后端（真踩过）。后端也加了 no-cache，这里是双保险。 -->
-  <script src="/app.js?v=20261110d"></script>
+  <!-- 通用弹窗：人物/群体的新增与编辑都走它。
+       自己画而不是用 <dialog>：<dialog> 的 backdrop 在各家浏览器里细节不一样，
+       而这套样式本来就只有一个遮罩层要管。 -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-mask" id="modal-mask"></div>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h3 id="modal-title"></h3>
+        <button id="modal-x" class="btn ghost small">关闭</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div id="modal-msg" class="muted small modal-msg"></div>
+      <div class="modal-foot">
+        <button id="modal-ok" class="btn">保存</button>
+        <button id="modal-cancel" class="btn ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js?v=20261110e"></script>
 </body>
 </html>

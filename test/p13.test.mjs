@@ -1,4 +1,4 @@
-// test/p13.test.mjs —— 人物权重：只算与 AI 的互动；自动分、手动覆写、幂等。
+// test/p13.test.mjs —— 人物权重：只算与 AI 的互动；纯自动（没有手改入口）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -8,14 +8,12 @@ import path from 'node:path'
 import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso, ulid } from '../src/core/fsx.js'
-import { createPerson, linkIdentity, writeProfile, readProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile, readProfile, setPinned, loadIdentities } from '../src/core/entities.js'
 import {
   WEIGHT,
   interactionStats,
   computeWeight,
   refreshWeights,
-  setManualWeight,
-  clearManualWeight,
 } from '../src/core/weights.js'
 import { history } from '../src/core/version.js'
 import { buildCard, contextFor } from '../src/core/memory.js'
@@ -89,14 +87,13 @@ test('computeWeight：公式与封顶', () => {
   assert.equal(computeWeight({ msgs: 1000, days: 100, recent: 1000 }), WEIGHT.cap)
 })
 
-test('refresh：写入权重并标 auto；没变化就不写版本', () => {
+test('refresh：写入权重；没变化就不写版本', () => {
   const root = tmpRoot()
   const uid = mkPerson(root)
   for (let i = 0; i < 3; i += 1) seedMsg(root, { ts: daysAgo(3 - i) })
 
   const first = refreshWeights(root, PID)
   const row = first.find((x) => x.uid === uid)
-  assert.equal(row.source, 'auto')
   assert.equal(row.changed, true)
   assert.equal(readProfile(root, PID, uid).weight, row.weight)
 
@@ -108,28 +105,35 @@ test('refresh：写入权重并标 auto；没变化就不写版本', () => {
   assert.equal(history(root, rel).length, before, '不该产生新版本')
 })
 
-test('manual：手动权重不会被自动分覆盖', () => {
+test('manual 入口已经不存在：权重只能靠互动推演', async () => {
+  const w = await import('../src/core/weights.js')
+  assert.equal(w.setManualWeight, undefined, '手改接口已删除')
+  assert.equal(w.clearManualWeight, undefined, '恢复自动的接口也一起删了')
+})
+
+test('refresh：落盘的权重永远来自互动（不会被人写死）', () => {
   const root = tmpRoot()
   const uid = mkPerson(root)
   for (let i = 0; i < 10; i += 1) seedMsg(root)
 
-  setManualWeight(root, PID, uid, 77)
-  const rows = refreshWeights(root, PID)
-  assert.equal(rows.find((x) => x.uid === uid).source, 'manual')
-  assert.equal(readProfile(root, PID, uid).weight, 77)
-})
-
-test('manual：恢复自动后，下一次 refresh 会重算', () => {
-  const root = tmpRoot()
-  const uid = mkPerson(root)
-  seedMsg(root)
-  setManualWeight(root, PID, uid, 90)
-
-  clearManualWeight(root, PID, uid)
   const rows = refreshWeights(root, PID)
   const row = rows.find((x) => x.uid === uid)
-  assert.equal(row.source, 'auto')
-  assert.ok(row.weight < 90, '应该按真实互动重算，而不是留着 90')
+  const expected = computeWeight(interactionStats(root, loadIdentities(root).people[uid]))
+  assert.equal(row.weight, expected)
+  assert.equal(readProfile(root, PID, uid).weight, expected)
+})
+
+test('重点名单里落盘权重照样更新（取消重点时拿到的是最新互动分，不是陈年旧数）', () => {
+  const root = tmpRoot()
+  const uid = mkPerson(root)
+  setPinned(root, PID, uid, true)
+
+  for (let i = 0; i < 10; i += 1) seedMsg(root)
+  refreshWeights(root, PID)
+
+  const prof = readProfile(root, PID, uid)
+  assert.ok(prof.pinned)
+  assert.ok(prof.weight > 0, '重点人物的落盘权重也要跟着互动走')
 })
 
 test('refresh：没有档案的人不参与（她还没认识他）', () => {

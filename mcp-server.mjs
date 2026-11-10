@@ -20,7 +20,7 @@ import { resolveChannel } from './src/core/channels.js'
 import { readStyle, addStyleLine, removeStyleLine } from './src/core/style.js'
 import { setImpression, renderImpression, IMPRESSION_MAX_BYTES } from './src/core/impressions.js'
 import { readPurposes, writePurposes, markHit, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './src/core/purposes.js'
-import { refreshDrives } from './src/core/drives.js'
+import { refreshDrives, readDrives, driveName, addDrive, adjustDrive, removeDrive } from './src/core/drives.js'
 import { listSources, readConsoleRuntime, renderFetched, clipText } from './src/core/modules/sources.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
@@ -110,7 +110,7 @@ const TOOLS = [
     description:
       '看 / 写一个"群体"的档案：一个 QQ 群、一个贴吧、一个粉丝群，各是一个群体（**不跨平台合并**）。\n' +
       '在群里说话时，当前群体的卡已经自动出现在 yuanling_context 里；这个工具用来查一个群、' +
-      '或者改它的名字/别名/在聊什么。\n' +
+      '或者改它的名字。\n' +
       '**群体是怎么一种地方**（`feature`）请用 yuanling_observe 写——那里有覆盖、上限与历史；' +
       '这个工具改 description 类字段时也要带 reason。别编成员：成员由核心从原始层归集（谁在这个群说过话）。',
     inputSchema: {
@@ -120,8 +120,28 @@ const TOOLS = [
         channel: { type: 'string', description: '当前会话频道，如 group:123456，用来推断是哪个群。' },
         name: { type: 'string', description: '群名（只在写入时用）' },
         feature: { type: 'string', description: '这个群是什么地方、什么氛围——自然语言，≤2000 字' },
-        topics: { type: 'string', description: '这里主要在聊什么——自然语言，≤2000 字' },
-        aliases: { type: 'array', items: { type: 'string' }, description: '别名/简称，最多 10 个' },
+      },
+    },
+  },
+  {
+    name: 'yuanling_drive',
+    description:
+      '看 / 改"动机层"——她**想要什么**的强度（陪 / 关心 / 好奇 / 分享 / 自我，以及她自己加的动机）。\n' +
+      '动机按半衰期回落到基线，所以"最近更想要"要她自己去调，或者等关键词在聊天里出现自动升温。\n' +
+      '**她可以自己加新动机**：加的时候必须给一组关键词（"听到什么会更有劲"），记忆/消息里撞上就会升温，' +
+      '并且能生成属于它的「惦记」——所以关键词要选她真会遇到的说法。\n' +
+      '限制：内置五个不能删；自定义最多 3 个（总共 8）；名字 ≤12 字；单次调整 ≤±0.2、一天最多 6 次；' +
+      '每次都要写 reason，全部进版本历史、可回滚。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'adjust', 'add', 'remove'], description: 'list 只读（默认）；adjust 调权重；add 加新动机；remove 删自定义动机' },
+        need: { type: 'string', description: '动机 id 或名字（adjust/remove 用）。内置：connect/care/curiosity/share/identity' },
+        delta: { type: 'number', description: 'adjust 的增量：正数=更想要，负数=淡一点，绝对值 ≤0.2' },
+        name: { type: 'string', description: 'add 的动机名（≤12 字）' },
+        keywords: { type: 'array', items: { type: 'string' }, description: 'add 的关键词：听到这些词就会更想要（≤8 个，每个 ≤12 字）' },
+        base: { type: 'number', description: 'add 的基线（默认 0.25）：静下来之后回落到多少' },
+        reason: { type: 'string', description: 'adjust/add/remove 必填：这次为什么动它' },
       },
     },
   },
@@ -342,9 +362,8 @@ function resolveGroupGid(root, args) {
 function formatGroupDetail(root, pid, g) {
   const people = loadIdentities(root).people ?? {}
   const lines = [`${g.name || '（未命名）'}  ${g.gid}`]
-  lines.push(`权重 ${g.weight}（${g.weightSource === 'manual' ? '手动' : '自动'}）${g.tier === 'important' ? '  〔重要群体〕' : ''}`)
+  lines.push(`权重 ${g.weight}${g.tier === 'important' ? '  〔重要群体〕' : ''}`)
   if (g.feature) lines.push(`特征：${g.feature}`)
-  if (g.topics) lines.push(`话题：${g.topics}`)
   if (g.members.length) {
     const names = g.members.slice(0, 10).map((uid) => people[uid]?.display ?? uid)
     lines.push(`常出现的人（${g.memberCount}）：${names.join('、')}${g.members.length > 10 ? ' …' : ''}`)
@@ -352,6 +371,25 @@ function formatGroupDetail(root, pid, g) {
     lines.push('常出现的人：还没归集（管理台点「重新归集成员」，或 yuanling group members）')
   }
   if (g.lastSeen) lines.push(`最后一次见到：${g.lastSeen}`)
+  return lines.join('\n')
+}
+
+/**
+ * 动机的渲染：按强度从高到低，标出哪些是她自己加的。
+ * 强调"关键词"——那是它唯一会自己升温的来源，也是她能预见后果的地方。
+ */
+function formatDrives(root, pid) {
+  const d = readDrives(root, pid)
+  const rows = Object.entries(d.values).sort((a, b) => Number(b[1]) - Number(a[1]))
+  const lines = ['动机（她想要什么；括号是强度，按半衰期自动回落）']
+  for (const [need, v] of rows) {
+    const custom = d.custom?.find((x) => x.id === need)
+    const label = custom ? `${custom.name}（自定义）` : driveName(d, need)
+    const kws = custom?.keywords?.length ? `  关键词：${custom.keywords.join('、')}` : ''
+    lines.push(`  ${String(Math.round(Number(v) * 100)).padStart(3)}%  ${label}${kws}`)
+  }
+  lines.push('')
+  lines.push('调权重用 adjust（≤±0.2/次，6 次/天）；加新动机用 add，必须给关键词——听到那些词它才会涨。')
   return lines.join('\n')
 }
 
@@ -469,26 +507,19 @@ async function callTool(root, name, args = {}) {
 
     const patch = {}
     if (typeof args.name === 'string' && args.name.trim()) patch.name = args.name.trim().slice(0, 60)
-    if (Array.isArray(args.aliases)) {
-      patch.aliases = args.aliases
-        .map((x) => String(x).trim())
-        .filter(Boolean)
-        .slice(0, 10)
-    }
-    // 描述（feature / topics）统一走 impressions：整段覆盖、要写原因、进版本历史。
+    // 描述统一走 impressions：整段覆盖、要写原因、进版本历史。
     // 这里不再自己拼 patch，免得同一段描述有两条写路径。
     const wantFeature = typeof args.feature === 'string' && args.feature.trim()
-    const wantTopics = typeof args.topics === 'string' && args.topics.trim()
     const reason = String(args.reason ?? '').trim()
-    if ((wantFeature || wantTopics) && !reason) throw new Error('改群体描述要带 reason：这次为什么这么改')
+    if (wantFeature && !reason) throw new Error('改群体描述要带 reason：这次为什么这么改')
 
-    const writing = Object.keys(patch).length > 0 || wantFeature || wantTopics
+    const writing = Object.keys(patch).length > 0 || wantFeature
 
     if (!writing) {
       const g = readGroupLive(root, pid, gid)
       if (!g) {
         return {
-          text: `（${gid} 还没有档案。在这个群说过话、或有人提到它之后才会有；第一次写描述时，传 feature / topics 就会顺手建。）`,
+          text: `（${gid} 还没有档案。在这个群说过话、或有人提到它之后才会有；第一次写描述时，传 feature 就会顺手建。）`,
         }
       }
       return { text: formatGroupDetail(root, pid, g) }
@@ -501,18 +532,29 @@ async function callTool(root, name, args = {}) {
     if (wantFeature) {
       setImpression(root, pid, 'group', gid, { text: args.feature, reason, evidence: args.evidence ?? null })
     }
-    if (wantTopics) {
-      writeGroup(
-        root,
-        pid,
-        gid,
-        { topics: String(args.topics).trim().slice(0, 2000), __reason: reason },
-        { actor: 'model:group' },
-      )
-    }
 
     const g = readGroupLive(root, pid, gid)
     return { text: `✓ 已写入群体 ${g.gid}\n\n${formatGroupDetail(root, pid, g)}` }
+  }
+
+  if (name === 'yuanling_drive') {
+    const action = String(args.action ?? 'list').trim() || 'list'
+    if (action === 'list') return { text: formatDrives(root, pid) }
+    if (action === 'adjust') {
+      const r = adjustDrive(root, pid, { need: args.need, delta: args.delta, reason: args.reason })
+      return {
+        text: `✓ ${r.name}：${Math.round(r.before * 100)}% → ${Math.round(r.after * 100)}%\n\n${formatDrives(root, pid)}`,
+      }
+    }
+    if (action === 'add') {
+      addDrive(root, pid, { name: args.name, keywords: args.keywords, reason: args.reason, base: args.base })
+      return { text: `✓ 加了一个新动机\n\n${formatDrives(root, pid)}` }
+    }
+    if (action === 'remove') {
+      removeDrive(root, pid, { need: args.need, reason: args.reason })
+      return { text: `✓ 已删掉这个自定义动机\n\n${formatDrives(root, pid)}` }
+    }
+    throw new Error(`不认识的 action：${action}（list / adjust / add / remove）`)
   }
 
   if (name === 'yuanling_style') {

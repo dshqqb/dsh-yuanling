@@ -65,11 +65,11 @@ test('people：默认按权重排，管理员恒在第一位', async () => {
   assert.deepEqual(rest, [...rest].sort((a, b) => b - a), '其余按权重降序')
 })
 
-test('people：sort=time 按最近互动排', async () => {
+test('people：去掉时间排序（只按权重）', async () => {
+  // 排序参数已经不认了：传了也按权重
   const d = await (await get('/api/people?sort=time')).json()
-  assert.equal(d.sort, 'time')
-  const rest = d.people.filter((p) => !p.admin)
-  assert.equal(rest[0].uid, uids['近期活跃'], '最近互动过的排前面')
+  const rest = d.people.filter((p) => !p.admin && !p.pinned).map((p) => p.weight)
+  assert.deepEqual(rest, [...rest].sort((a, b) => b - a))
 })
 
 test('pin：设为重要后排到「其余」之前，且可取消', async () => {
@@ -102,21 +102,54 @@ test('admin：全库唯一，换人必须先卸任', async () => {
   assert.equal(d2.admin.uid, uids['高权重'])
 })
 
-test('weight：手动覆写与恢复自动', async () => {
-  const r1 = await (await post('/api/person/weight', { uid: uids['近期活跃'], weight: 45 })).json()
-  assert.equal(r1.weight, 45)
-  assert.equal(r1.source, 'manual')
-
-  const d = await (await get('/api/people')).json()
-  assert.equal(d.people.find((p) => p.uid === uids['近期活跃']).weightSource, 'manual')
-
-  const r2 = await (await post('/api/person/weight', { uid: uids['近期活跃'], weight: null })).json()
-  assert.equal(r2.source, 'auto')
+test('weight：手改接口已经删掉（权重只能由互动/名次决定）', async () => {
+  const res = await post('/api/person/weight', { uid: uids['近期活跃'], weight: 45 })
+  assert.equal(res.status, 404, '这个接口不该再存在')
 })
 
-test('weight：超出范围的数值被夹住', async () => {
-  const r = await (await post('/api/person/weight', { uid: uids['低权重'], weight: 999 })).json()
-  assert.equal(r.weight, 100)
+test('pin：重点人物按名次给分（110 起，越靠前越高），取消后回到落盘权重', async () => {
+  const before = (await (await get('/api/people')).json()).people.find((p) => p.uid === uids['高权重'])
+  const stored = before.weight
+
+  await post('/api/person/pin', { uid: uids['高权重'], pinned: true })
+  const pinnedOnly = (await (await get('/api/people')).json()).people.find((p) => p.uid === uids['高权重'])
+  assert.equal(pinnedOnly.weightKind, 'pinned')
+  assert.equal(pinnedOnly.weight, 110, '只有一个重点时就是 110')
+  assert.equal(pinnedOnly.storedWeight, stored, '落盘权重仍然保留')
+
+  // 再设一个重点、并把它挪到前面 → 它 115、原来那个 110
+  await post('/api/person/pin', { uid: uids['近期活跃'], pinned: true })
+  await post('/api/person/move', { uid: uids['近期活跃'], direction: 'up' })
+  const two = (await (await get('/api/people')).json()).people
+  assert.equal(two.find((p) => p.uid === uids['近期活跃']).weight, 115)
+  assert.equal(two.find((p) => p.uid === uids['高权重']).weight, 110)
+
+  // 取消重点 → 立刻回到落盘的互动分
+  await post('/api/person/pin', { uid: uids['高权重'], pinned: false })
+  const after = (await (await get('/api/people')).json()).people.find((p) => p.uid === uids['高权重'])
+  assert.equal(after.weightKind, 'auto')
+  assert.equal(after.weight, stored)
+})
+
+test('create：新增人物必须能认出账户，否则拒绝', async () => {
+  const bad = await post('/api/person/create', { display: '张三', identityText: '他在某处' })
+  assert.equal(bad.status, 400)
+  assert.match((await bad.json()).error, /没认出|账户/)
+
+  const ok = await post('/api/person/create', {
+    display: '李四',
+    identityText: 'QQ 号是 88888',
+    sketch: '说话很快',
+  })
+  assert.equal(ok.status, 200)
+  const created = await ok.json()
+  assert.ok(created.uid)
+
+  const d = await (await get('/api/people')).json()
+  const row = d.people.find((p) => p.uid === created.uid)
+  assert.equal(row.display, '李四')
+  assert.equal(row.weight, 50, '新建默认 50')
+  assert.ok(row.identities.some((x) => x.platform === 'qq' && x.id === '88888'))
 })
 
 test('admin：设给不存在的 uid 时报错', async () => {

@@ -14,10 +14,11 @@ import { P } from './paths.js'
 import { writeTracked, history } from './version.js'
 import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
-import { refreshDrives } from './drives.js'
+import { refreshDrives, readDrives, driveName } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
-import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile } from './entities.js'
+import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile, currentAdmin } from './entities.js'
 import { groupsForContext, groupCardLine } from './groups.js'
+import { readPrefs } from './prefs.js'
 import { nativeChannelsFor } from './channels.js'
 import {
   ageDays,
@@ -557,7 +558,7 @@ function bulletLine(absPath, maxBytes, tag) {
   return `${tag} ${clipItems(items, maxBytes)}`
 }
 
-/** 硬线 + 表达层：两份不进记忆、但每轮都该在她眼前的底稿。 */
+/** 硬线 + 表达层 + 人格偏好：不进记忆、但每轮都该在她眼前的底稿。 */
 export function personaExtraLines(root, pid) {
   const base = path.join(root, P.personas, pid)
   const out = []
@@ -565,6 +566,34 @@ export function personaExtraLines(root, pid) {
   if (hard) out.push(hard)
   const habit = bulletLine(path.join(base, 'style.md'), EXPRESSION_BYTES, '[习惯]')
   if (habit) out.push(habit)
+
+  // 人格级偏好：勾了「对管理员更温柔」就在这里加一行要求。
+  // 放这一层而不是 rules：它随人格变（换人格就是换一个人），不是行为边界。
+  try {
+    const prefs = readPrefs(root, pid)
+    if (prefs.gentleToAdmin) {
+      const admin = currentAdmin(root)
+      const who = admin?.display ? `管理员（${admin.display}）` : '管理员'
+      out.push(`[对象] 对${who}说话更温柔：语气放软一档，先接住情绪再讲道理，别呛人。`)
+    }
+  } catch {
+    /* 偏好读坏了就当没勾：少一行要求，比注入失败好 */
+  }
+
+  // 动机：她自己"最想要什么"。只在真的偏高时才说——恒定的那几行是噪音。
+  try {
+    const drv = readDrives(root, pid)
+    const top = Object.entries(drv.values)
+      .filter(([, v]) => Number(v) >= 0.4)
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .slice(0, 2)
+    if (top.length) {
+      const bits = top.map(([need, v]) => `${driveName(drv, need)}（${Math.round(Number(v) * 100)}%）`)
+      out.push(`[动机] 她最近最想要：${bits.join('、')}`)
+    }
+  } catch {
+    /* 动机读坏了就不显示：少一行，比注入失败好 */
+  }
   return out
 }
 
@@ -842,6 +871,8 @@ function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMI
     const last = lastActivityMs(root)
     const hoursSinceMaster = last ? Math.max(0, (now - last) / 3_600_000) : null
     const drives = refreshDrives(root, pid, { now, hoursSinceMaster, persist: !preview })
+    // 自定义动机要参与挖掘：她自己在意的方向，撞上就该惦记
+    const customDrives = readDrives(root, pid).custom
 
     // 预览是照镜子，不是照做：不挖新的、不过期、不记"摆过"。
     // 否则在管理台里翻几次页面，就能把一件事翻成"摆了 5 次她都没接"从而被放下——
@@ -853,7 +884,7 @@ function rememberLine(root, pid, { now = Date.now(), limit = PURPOSE_INJECT_LIMI
     }
 
     const doc = readPurposes(root, pid)
-    const mined = minePurposes(doc, facts, { now })
+    const mined = minePurposes(doc, facts, { now, customDrives })
     const expired = expirePurposes(mined, { now })
     if (mined.added.length || expired) writePurposes(root, pid, mined)
 

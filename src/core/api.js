@@ -9,17 +9,39 @@ import { healthReport } from './inbox.js'
 import { loadEffectiveRules, recentRefusals, rulePaths, ruleFieldSpec, writeGlobalRules, loadGuardrails } from './rules.js'
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals, mayEvolve } from './proposals.js'
-import { loadIdentities, readProfile, writeProfile, listPeopleForUi, setPinned, setAdmin, currentAdmin, setIdentityText } from './entities.js'
+import {
+  loadIdentities,
+  readProfile,
+  writeProfile,
+  listPeopleForUi,
+  setPinned,
+  movePinned,
+  createPersonWithCard,
+  setAdmin,
+  currentAdmin,
+  setIdentityText,
+} from './entities.js'
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
-import { setManualWeight, clearManualWeight } from './weights.js'
+import { writePrefs, readPrefs } from './prefs.js'
+import { refreshWeights } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
 import { listSources, fetchStats } from './modules/sources.js'
-import { listGroups, readGroupLive, writeGroup, setGroupTier, setGroupWeight, clearGroupWeight, collectMembers, ensureGroup, refreshGroupWeight } from './groups.js'
+import {
+  listGroups,
+  readGroupLive,
+  writeGroup,
+  setGroupTier,
+  moveGroupPinned,
+  createGroupWithCard,
+  collectMembers,
+  ensureGroup,
+  refreshGroupWeight,
+} from './groups.js'
 import { setImpression } from './impressions.js'
 import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
 import { uninstall } from './modules/installer.js'
@@ -144,12 +166,13 @@ function groupRow(g) {
     platform: g.platform,
     id: g.id,
     name: g.name || '',
-    aliases: g.aliases ?? [],
     feature: g.feature || '',
-    topics: g.topics || '',
     memberCount: Number(g.memberCount ?? 0),
     weight: Number(g.weight ?? 0),
-    weightSource: g.weightSource === 'manual' ? 'manual' : 'auto',
+    storedWeight: Number(g.storedWeight ?? g.weight ?? 0),
+    weightKind: g.weightKind ?? 'auto',
+    rank: g.rank ?? null,
+    pinRank: g.pinRank ?? null,
     important: g.tier === 'important',
     firstSeen: g.firstSeen ?? null,
     lastSeen: g.lastSeen ?? null,
@@ -188,7 +211,15 @@ export function handleApi(root, url) {
       status: 200,
       body: {
         ok: true,
-        drives: { values: drv.values, at: drv.at, needs: DRIVE_NEEDS, base: DRIVE_BASE, cap: DRIVE_CAP },
+        drives: {
+          values: drv.values,
+          at: drv.at,
+          needs: DRIVE_NEEDS,
+          base: DRIVE_BASE,
+          cap: DRIVE_CAP,
+          // 她自己加的动机：名字与关键词是"它什么时候会涨"的唯一线索
+          custom: (drv.custom ?? []).map((d) => ({ id: d.id, name: d.name, keywords: d.keywords, base: d.base })),
+        },
         items: items.map((p) => ({
           id: p.id,
           need: p.need,
@@ -522,7 +553,13 @@ export function handleApi(root, url) {
   }
 
   if (pathname === '/api/people') {
-    const sort = searchParams.get('sort') === 'time' ? 'time' : 'weight'
+    // 顺手按互动重算落盘权重：她聊得多，下次打开这页权重就涨了。
+    // 只在值变了的时候写盘（weights.js 自己判断），所以不会刷出一堆版本。
+    try {
+      refreshWeights(root, pid)
+    } catch {
+      /* 权重算不出来不该让页面打不开 */
+    }
     const data = loadIdentities(root)
     const all = Object.values(data.people ?? {})
     // 影子卡（只见过、没认识过）不进列表，但要让人知道"还有这些人"——
@@ -532,11 +569,11 @@ export function handleApi(root, url) {
       status: 200,
       body: {
         ok: true,
-        sort,
         admin: currentAdmin(root),
-        people: listPeopleForUi(root, pid, { sort }),
+        people: listPeopleForUi(root, pid),
         pending: data.pending ?? [],
         shadowCount: shadow.length,
+        prefs: readPrefs(root, pid),
       },
     }
   }
@@ -547,7 +584,9 @@ export function handleApi(root, url) {
     const data = loadIdentities(root)
     const person = data.people[uid]
     if (!person) return { status: 404, body: { ok: false, error: '没有这个人物' } }
-    return { status: 200, body: { ok: true, person, profile: readProfile(root, pid, uid) } }
+    // 生效权重/名次和列表同一口径（重点名单按名次，其余按互动分）
+    const row = listPeopleForUi(root, pid).find((p) => p.uid === uid) ?? null
+    return { status: 200, body: { ok: true, person, profile: readProfile(root, pid, uid), weight: row } }
   }
 
   return { status: 404, body: { ok: false, error: 'no such api' } }
@@ -694,21 +733,13 @@ export function handleApiWrite(root, url, body) {
     }
 
     // ── 群体（写）──────────────────────────────────────────────────────
-    // 只有四类操作：改描述（自然语言）、置顶/取消、手改权重、重新归集成员。
+    // 只有三类操作：改名字/描述（自然语言）、置顶/取消、重新归集成员。
     // 群体**没有** merge：QQ群和贴吧永远不是同一个实体（用户明确要求）。
     if (pathname === '/api/group') {
       const gid = String(b.gid ?? '')
       if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
       const patch = { __reason: '管理台编辑群体档案' }
       if (typeof b.name === 'string') patch.name = b.name.slice(0, 60)
-      if (typeof b.topics === 'string') patch.topics = b.topics.slice(0, 2000)
-      if (typeof b.aliases === 'string') {
-        patch.aliases = b.aliases
-          .split(/[,，、\s]+/)
-          .map((x) => x.trim())
-          .filter(Boolean)
-          .slice(0, 10)
-      }
       if (Object.keys(patch).length > 1) writeGroup(root, pid, gid, patch, { actor: 'human:editor' })
       // 和人物的素描一样：描述走印象层，受 600 字节上限，进版本历史
       if (typeof b.feature === 'string') {
@@ -722,17 +753,27 @@ export function handleApiWrite(root, url, body) {
       const gid = String(b.gid ?? '')
       if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
       const tier = b.important === false ? null : 'important'
-      return { status: 200, body: { ok: true, group: setGroupTier(root, pid, gid, tier) } }
+      return { status: 200, body: { ok: true, group: readGroupLive(root, pid, setGroupTier(root, pid, gid, tier).gid) } }
     }
 
-    if (pathname === '/api/group/weight') {
+    if (pathname === '/api/group/move') {
       const gid = String(b.gid ?? '')
       if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
-      if (b.weight === null || b.weight === undefined) {
-        return { status: 200, body: { ok: true, group: clearGroupWeight(root, pid, gid) } }
-      }
-      const w = Math.max(0, Math.min(100, Number(b.weight) || 0))
-      return { status: 200, body: { ok: true, group: setGroupWeight(root, pid, gid, w) } }
+      const r = moveGroupPinned(root, pid, gid, b.direction === 'down' ? 'down' : 'up')
+      return { status: 200, body: { ok: true, ...r } }
+    }
+
+    if (pathname === '/api/group/create') {
+      // 平台的"自然语言入口"：不强制前端给 platform/nativeId 两个字段，
+      // 一句「QQ群 123456789」就够——加新平台不该改界面。
+      const g = createGroupWithCard(root, pid, {
+        name: b.name,
+        accountText: b.accountText ?? b.account,
+        platform: b.platform,
+        nativeId: b.nativeId ?? b.id,
+        feature: b.feature,
+      })
+      return { status: 200, body: { ok: true, gid: g.gid, group: g } }
     }
 
     if (pathname === '/api/group/members') {
@@ -780,24 +821,35 @@ export function handleApiWrite(root, url, body) {
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
       const pinned = b.pinned === undefined ? true : Boolean(b.pinned)
       const profile = setPinned(root, pid, uid, pinned)
-      return { status: 200, body: { ok: true, pinned: profile.pinned } }
+      return { status: 200, body: { ok: true, pinned: profile.pinned, rank: profile.pin_rank ?? null } }
+    }
+
+    if (pathname === '/api/person/move') {
+      const uid = String(b.uid ?? '')
+      if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
+      const r = movePinned(root, pid, uid, b.direction === 'down' ? 'down' : 'up')
+      return { status: 200, body: { ok: true, ...r } }
+    }
+
+    if (pathname === '/api/person/create') {
+      const r = createPersonWithCard(root, pid, {
+        display: b.display,
+        identityText: b.identityText ?? b.identity,
+        sketch: b.sketch,
+      })
+      return { status: 200, body: { ok: true, uid: r.person.uid, person: r.person, linked: r.linked, conflicts: r.conflicts } }
+    }
+
+    // 人格级偏好（切人格就会变的那部分设置）
+    if (pathname === '/api/prefs') {
+      const next = writePrefs(root, pid, b, { actor: 'human:editor', reason: '管理台修改人格偏好' })
+      return { status: 200, body: { ok: true, prefs: next } }
     }
 
     if (pathname === '/api/person/admin') {
       const uid = b.uid === null || b.uid === undefined || b.uid === '' ? null : String(b.uid)
       const r = setAdmin(root, uid)
       return { status: 200, body: { ok: true, admin: currentAdmin(root), uid: r.adminUid } }
-    }
-
-    if (pathname === '/api/person/weight') {
-      const uid = String(b.uid ?? '')
-      if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-      if (b.weight === null || b.weight === undefined) {
-        const profile = clearManualWeight(root, pid, uid)
-        return { status: 200, body: { ok: true, weight: profile.weight, source: profile.weight_source } }
-      }
-      const profile = setManualWeight(root, pid, uid, Number(b.weight))
-      return { status: 200, body: { ok: true, weight: profile.weight, source: profile.weight_source } }
     }
 
     if (pathname === '/api/person') {

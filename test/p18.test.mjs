@@ -107,11 +107,12 @@ test('initialize：握手返回 yuanling 与 tools 能力', async () => {
   assert.ok(res.result.capabilities.tools, '必须声明 tools 能力')
 })
 
-test('tools/list：九个工具，schema 都是 object', async () => {
+test('tools/list：十个工具，schema 都是 object', async () => {
   const res = await call('tools/list', {})
   const names = res.result.tools.map((t) => t.name)
   assert.deepEqual(names.sort(), [
     'yuanling_context',
+    'yuanling_drive',
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',

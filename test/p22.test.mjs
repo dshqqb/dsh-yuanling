@@ -80,11 +80,12 @@ after(() => {
   child?.kill()
 })
 
-test('tools/list：九个工具都在（v1.1 sources/fetch，v1.2 group，v1.3 observe，v1.4 style）', async () => {
+test('tools/list：十个工具都在（v1.1 sources/fetch，v1.2 group，v1.3 observe，v1.4 style，v1.5 drive）', async () => {
   const res = await call('tools/list', {})
   const names = res.result.tools.map((t) => t.name).sort()
   assert.deepEqual(names, [
     'yuanling_context',
+    'yuanling_drive',
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',

@@ -14,6 +14,7 @@ import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel } from './groups.js'
 import { canonicalChannelForIngest } from './channels.js'
 import { appendEvent } from './events.js'
+import { noteDriveHits } from './drives.js'
 
 export const INBOX_VERSION = 1
 
@@ -115,6 +116,16 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       )
       if (r.deduped) out.deduped += 1
       else out.accepted += 1
+
+      // 消息里出现她自定义动机的关键词 → 那条动机升温。
+      // 放在入库这一处（不是每轮读时算）：一条消息只到一次，热量也就只加一次。
+      if (!r.deduped && typeof item.text === 'string' && item.text) {
+        try {
+          noteDriveHits(root, readMarker(root)?.active, item.text)
+        } catch {
+          /* 动机升温失败不该让入库失败 */
+        }
+      }
 
       // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
       // 只记"谁在这个群说过话"这件事本身，正文照旧只走 raw。

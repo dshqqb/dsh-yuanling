@@ -9,8 +9,6 @@ const state = {
   mode: 'frame',
   // 每个模式各记一个"上次停在哪"，切回来不用重找
   tabByMode: { frame: 'status', persona: 'overview' },
-  peopleSort: 'weight',
-  groupGid: null,
   logLens: 'all',
   diagMode: 'problems',
   memoryView: 'search',
@@ -757,16 +755,24 @@ async function loadMotive() {
   const drives = $('motive-drives')
   drives.innerHTML = ''
   const vals = d.drives?.values ?? {}
-  for (const need of d.drives?.needs ?? []) {
-    const v = Number(vals[need] ?? 0)
-    const row = el('div', 'drive-row')
-    row.append(el('span', 'drive-name', NEED_LABELS[need] ?? need))
+  const rows = (d.drives?.needs ?? []).map((need) => ({ id: need, label: NEED_LABELS[need] ?? need, custom: false }))
+  for (const c of d.drives?.custom ?? []) rows.push({ id: c.id, label: c.name, custom: true, keywords: c.keywords })
+  for (const row of rows) {
+    const v = Number(vals[row.id] ?? 0)
+    const line = el('div', 'drive-row')
+    const name = el('span', 'drive-name', row.label)
+    if (row.custom) name.append(el('span', 'tag', '自定义'))
+    line.append(name)
     const meter = el('span', 'meter')
     const fill = el('span', 'meter-fill')
     fill.style.width = `${Math.round(Math.min(1, v) * 100)}%`
     meter.append(fill)
-    row.append(meter, el('span', 'drive-val', `${Math.round(v * 100)}%`))
-    drives.append(row)
+    line.append(meter, el('span', 'drive-val', `${Math.round(v * 100)}%`))
+    drives.append(line)
+    if (row.keywords?.length) {
+      // 关键词是它唯一会自己升温的来源，摆在明面上
+      drives.append(el('div', 'muted small', `听到这些会更有劲：${row.keywords.join('、')}`))
+    }
   }
   $('motive-drives-at').textContent = d.drives?.at
     ? `上次刷新 ${String(d.drives.at).replace('T', ' ').slice(0, 19)}（注入时会自动强度衰减）`
@@ -792,7 +798,8 @@ async function loadMotive() {
     const tags = el('span')
     const [cls, label] = STATUS[p.status] ?? ['', p.status]
     tags.append(el('span', `tag ${cls}`.trim(), label))
-    tags.append(el('span', 'tag purple', NEED_LABELS[p.need] ?? p.need ?? '—'))
+    const needLabel = NEED_LABELS[p.need] ?? (d.drives?.custom ?? []).find((c) => c.id === p.need)?.name ?? p.need ?? '—'
+    tags.append(el('span', 'tag purple', needLabel))
     t.append(tags, document.createTextNode(p.text))
     body.append(t)
 
@@ -925,24 +932,109 @@ async function loadProposals() {
   }
 }
 
-function personCard(p, { draggable = false } = {}) {
-  const n = el('div', 'item' + (draggable ? ' is-draggable' : ''))
-  if (draggable) {
-    n.draggable = true
-    n.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/plain', p.uid)
-      e.dataTransfer.effectAllowed = 'move'
-      n.classList.add('dragging')
-    })
-    n.addEventListener('dragend', () => n.classList.remove('dragging'))
-  }
+// ── 通用弹窗：新增/编辑人物与群体都走它 ────────────────────────────────
+//
+// 三家共用一套：标题 + 若干字段 + 保存/取消。取消 = 什么都不做（不是"清空表单"），
+// 所以状态全在这个闭包里，关一次就没了。
+const MODAL = { submit: null }
 
+function fieldNode(f, inputs) {
+  const row = el('div', 'modal-field')
+  row.append(el('label', 'modal-label', f.label))
+  let node
+  if (f.type === 'textarea') {
+    node = document.createElement('textarea')
+    node.rows = f.rows ?? 4
+  } else if (f.type === 'select') {
+    node = document.createElement('select')
+    for (const [v, label] of f.options ?? []) {
+      const o = document.createElement('option')
+      o.value = v
+      o.textContent = label
+      node.append(o)
+    }
+  } else if (f.type === 'static') {
+    node = el('div', 'modal-static', String(f.value ?? ''))
+  } else {
+    node = document.createElement('input')
+    node.type = 'text'
+  }
+  if (node.value !== undefined && f.type !== 'static') node.value = f.value ?? ''
+  if (f.placeholder && node.placeholder !== undefined) node.placeholder = f.placeholder
+  if (f.readonly && node.readOnly !== undefined) node.readOnly = true
+  if (f.mono) node.classList.add('mono-line')
+  row.append(node)
+  if (f.hint) row.append(el('div', 'muted small', f.hint))
+  if (f.key) inputs[f.key] = node
+  return row
+}
+
+/**
+ * @param {{title:string, fields:Array, okText?:string, onSubmit:(v:object)=>Promise<void>}} spec
+ */
+function openModal({ title, fields, okText = '保存', onSubmit }) {
+  $('modal-title').textContent = title
+  $('modal-ok').textContent = okText
+  $('modal-msg').textContent = ''
+  $('modal-msg').classList.remove('dirty')
+
+  const body = $('modal-body')
+  body.innerHTML = ''
+  const inputs = {}
+  for (const f of fields) body.append(fieldNode(f, inputs))
+
+  MODAL.submit = async () => {
+    const vals = {}
+    for (const [k, node] of Object.entries(inputs)) vals[k] = node.value
+    await onSubmit(vals)
+  }
+  $('modal').hidden = false
+  const first = Object.values(inputs)[0]
+  if (first?.focus) first.focus()
+}
+
+function closeModal() {
+  MODAL.submit = null
+  $('modal').hidden = true
+}
+
+async function submitModal() {
+  if (!MODAL.submit) return
+  const ok = $('modal-ok')
+  ok.disabled = true
+  try {
+    await MODAL.submit()
+    closeModal()
+  } catch (err) {
+    // 错在弹窗里显示：关掉再报，用户填的东西就白填了
+    $('modal-msg').textContent = String(err?.message ?? err)
+    $('modal-msg').classList.add('dirty')
+  } finally {
+    ok.disabled = false
+  }
+}
+
+/** 权重那一行：只读展示，不可编辑（权重只能由互动/名次决定）。 */
+function weightField(row) {
+  const bits = [`当前生效：${row.weight}`]
+  if (row.weightKind === 'pinned') {
+    bits.push(`重点第 ${Number(row.rank ?? 0) + 1} 名`)
+    bits.push(`落盘权重：${row.storedWeight}`)
+    bits.push('取消重点后，落盘的权重会重新生效')
+  } else {
+    bits.push('由互动推算，不能手改')
+  }
+  return { label: '权重', type: 'static', value: bits.join(' · ') }
+}
+
+function personCard(p, { onMove } = {}) {
+  const n = el('div', 'item')
   const body = el('div', 'body')
   const head = el('div', 't')
   const tags = el('span')
   if (p.admin) tags.append(el('span', 'tag purple', '管理员'))
-  if (p.pinned) tags.append(el('span', 'tag ok', '重要'))
-  tags.append(el('span', p.weightSource === 'manual' ? 'tag warn' : 'tag', `${p.weight}${p.weightSource === 'manual' ? ' 手动' : ''}`))
+  if (p.pinned) tags.append(el('span', 'tag ok', `重点 #${Number(p.rank ?? 0) + 1}`))
+  tags.append(el('span', p.weightKind === 'pinned' ? 'tag ok' : 'tag', String(p.weight)))
   head.append(tags, document.createTextNode(p.display))
 
   const accts = p.identities.map((x) => `${x.platform}:${x.id}`).join('、') || '无账号'
@@ -965,16 +1057,20 @@ function personCard(p, { draggable = false } = {}) {
       }),
     )
   }
+
   if (p.pinned) {
+    // 上下移：重点名单的顺序就是权重，所以这两个按钮是真的在改数值
     acts.append(
-      mkBtn('移出重要', 'small ghost', async () => {
+      mkBtn('↑', 'small ghost', () => onMove?.(p, 'up')),
+      mkBtn('↓', 'small ghost', () => onMove?.(p, 'down')),
+      mkBtn('取消重点', 'small ghost', async () => {
         await postApi('/api/person/pin', { uid: p.uid, pinned: false })
         await loadPeople()
       }),
     )
   } else if (!p.admin) {
     acts.append(
-      mkBtn('设为重要', 'small ghost', async () => {
+      mkBtn('设为重点', 'small ghost', async () => {
         await postApi('/api/person/pin', { uid: p.uid, pinned: true })
         await loadPeople()
       }),
@@ -987,21 +1083,58 @@ function personCard(p, { draggable = false } = {}) {
 
 async function openPersonEditor(p) {
   const d2 = await api(`/api/person?uid=${encodeURIComponent(p.uid)}`)
-  state.personUid = p.uid
-  $('person-editor').hidden = false
-  $('person-title').textContent = `${d2.person.display}（${p.uid}）`
-  $('person-display').value = d2.person.display || ''
-  $('person-identity').value = d2.person.identity_text || ''
-  const parsedBits = (d2.person.identity_parsed ?? []).map((x) => `${x.platform}:${x.id}`)
-  $('person-identity-msg').textContent = parsedBits.length ? `已识别：${parsedBits.join('、')}` : ''
-  $('person-sketch').value = d2.profile?.sketch || ''
-  $('person-weight').value = d2.profile?.weight_source === 'manual' ? d2.profile.weight : ''
-  $('person-msg').textContent = d2.profile ? '' : '（还没有档案，保存后会新建）'
-  $('person-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  const row = d2.weight ?? p
+  openModal({
+    title: `${d2.person.display}（${p.uid}）`,
+    fields: [
+      { key: 'display', label: '名字', value: d2.person.display || '' },
+      {
+        key: 'identity',
+        label: '账户',
+        value: d2.person.identity_text || '',
+        placeholder: 'QQ 号是 12345，另一个 QQ 号是 67890，b站叫老张',
+        hint: '用自然语言写，可以写多个号；保存时自动识别并绑定',
+      },
+      { key: 'sketch', label: '人物描述', type: 'textarea', rows: 5, value: d2.profile?.sketch || '' },
+      weightField(row),
+    ],
+    onSubmit: async (v) => {
+      await postApi('/api/person', { uid: p.uid, display: v.display, sketch: v.sketch })
+      const r = await postApi('/api/person/identity', { uid: p.uid, text: v.identity })
+      await loadPeople()
+      const bits = []
+      if (r.linked?.length) bits.push(`新绑定 ${r.linked.length} 个`)
+      if (r.conflicts?.length) bits.push(`${r.conflicts.length} 个账号已属于别人`)
+      if (r.unparsed?.length) bits.push(`没认出：${r.unparsed.join(' / ')}`)
+      if (bits.length) flash(bits.join('；'))
+    },
+  })
+}
+
+async function openPersonCreate() {
+  openModal({
+    title: '新增人物',
+    okText: '创建',
+    fields: [
+      { key: 'display', label: '名字', placeholder: '怎么称呼他' },
+      {
+        key: 'identity',
+        label: '账户',
+        placeholder: 'QQ 号是 12345，b站叫老张',
+        hint: '必填：没认出账号会拒绝创建（一个只有名字的人对应不到任何真实的人）',
+      },
+      { key: 'sketch', label: '人物描述', type: 'textarea', rows: 4, placeholder: '这个人是谁、怎么说话、在意什么' },
+      { label: '权重', type: 'static', value: '新建默认 50（普通名单的中值），之后由互动推演' },
+    ],
+    onSubmit: async (v) => {
+      await postApi('/api/person/create', { display: v.display, identityText: v.identity, sketch: v.sketch })
+      await loadPeople()
+    },
+  })
 }
 
 async function loadPeople() {
-  const d = await api(`/api/people?sort=${state.peopleSort || 'weight'}`)
+  const d = await api('/api/people')
 
   const adminSlot = $('admin-slot')
   adminSlot.innerHTML = ''
@@ -1009,11 +1142,19 @@ async function loadPeople() {
   if (!admins.length) adminSlot.append(el('div', 'zone-empty', '还没指定管理员。在下面任意一张卡上点「设为管理员」。'))
   for (const p of admins) adminSlot.append(personCard(p))
 
+  // 「对管理员更温柔」是人格级偏好：没有人管理员时勾了也没意义，所以隐藏
+  $('gentle-row').hidden = !admins.length
+  $('gentle-admin').checked = Boolean(d.prefs?.gentleToAdmin)
+
   const pinnedSlot = $('pinned-slot')
   pinnedSlot.innerHTML = ''
   const pinned = d.people.filter((p) => p.pinned && !p.admin)
-  if (!pinned.length) pinnedSlot.append(el('div', 'zone-empty', '把下面的人物卡拖到这里，或点「设为重要」。'))
-  for (const p of pinned) pinnedSlot.append(personCard(p))
+  if (!pinned.length) pinnedSlot.append(el('div', 'zone-empty', '还没有重点人物。点下面任意一张卡上的「设为重点」。'))
+  const move = async (p, direction) => {
+    await postApi('/api/person/move', { uid: p.uid, direction })
+    await loadPeople()
+  }
+  for (const p of pinned) pinnedSlot.append(personCard(p, { onMove: move }))
 
   const rest = d.people.filter((p) => !p.admin && !p.pinned)
   $('people-count').textContent = d.people.length
@@ -1024,34 +1165,7 @@ async function loadPeople() {
   const box = $('people-out')
   box.innerHTML = ''
   if (!rest.length) box.append(el('div', 'muted small', '没有其他人物了。'))
-  for (const p of rest) box.append(personCard(p, { draggable: true }))
-}
-
-async function savePerson() {
-  if (!state.personUid) return
-  await postApi('/api/person', {
-    uid: state.personUid,
-    display: $('person-display').value,
-    sketch: $('person-sketch').value,
-  })
-
-  // 身份描述：原文存下来，解析由核心做；没归属的账号会自动绑上
-  const text = $('person-identity').value
-  const r = await postApi('/api/person/identity', { uid: state.personUid, text })
-  const bits = []
-  if (r.parsed.length) bits.push(`识别出 ${r.parsed.map((x) => `${x.platform}:${x.id}`).join('、')}`)
-  if (r.linked.length) bits.push(`新绑定 ${r.linked.length} 个`)
-  if (r.conflicts.length) bits.push(`${r.conflicts.length} 个账号已属于别人，没有抢`)
-  if (r.unparsed.length) bits.push(`没认出：${r.unparsed.join(' / ')}`)
-  $('person-identity-msg').textContent = bits.join('；')
-
-  const raw = $('person-weight').value.trim()
-  if (raw !== '') {
-    await postApi('/api/person/weight', { uid: state.personUid, weight: Number(raw) })
-  }
-
-  $('person-msg').textContent = '已保存（进版本历史，可回滚）'
-  await loadPeople()
+  for (const p of rest) box.append(personCard(p))
 }
 
 // ── 群体 ──────────────────────────────────────────────────────────────
@@ -1060,35 +1174,56 @@ async function savePerson() {
 // 描述全是自然语言（她自己总结、人也可以改），成员是事实，由核心从原始层归集。
 const PLATFORM_LABELS = { qq: 'QQ 群', wechat: '微信群', tieba: '贴吧', bili: 'B 站' }
 
+function flash(text) {
+  const t = el('div', 'toast', text)
+  document.body.append(t)
+  setTimeout(() => t.remove(), 3200)
+}
+
 function groupCard(g) {
   const n = el('div', 'item')
   const body = el('div', 'body')
   const head = el('div', 't')
   const tags = el('span')
   tags.append(el('span', 'tag purple', PLATFORM_LABELS[g.platform] ?? g.platform))
-  if (g.important) tags.append(el('span', 'tag ok', '重要'))
-  tags.append(el('span', g.weightSource === 'manual' ? 'tag warn' : 'tag', `${g.weight}${g.weightSource === 'manual' ? ' 手动' : ''}`))
+  if (g.important) tags.append(el('span', 'tag ok', `重点 #${Number(g.rank ?? 0) + 1}`))
+  tags.append(el('span', g.weightKind === 'pinned' ? 'tag ok' : 'tag', String(g.weight)))
   head.append(tags, document.createTextNode(g.name || g.gid))
 
   const bits = [g.gid]
   // 群体编号是内部编号（grp_xxx）；真实群号/吧名在卡里，显示出来才认得出是哪个群
   if (g.nativeId || g.id) bits.push(`${g.platform}:${g.nativeId || g.id}`)
   if (g.memberCount) bits.push(`成员 ${g.memberCount}`)
-  if (g.topics) bits.push(g.topics.slice(0, 48))
-  else if (g.feature) bits.push(g.feature.slice(0, 48))
+  if (g.feature) bits.push(g.feature.slice(0, 48))
   body.append(head, el('div', 's', bits.join(' · ')))
   n.append(body)
 
   const acts = el('div', 'actions')
-  acts.append(
-    mkBtn(g.important ? '取消置顶' : '设为重要', 'small ghost', async () => {
-      await postApi('/api/group/tier', { gid: g.gid, important: !g.important })
-      await loadGroups()
-    }),
-  )
+  if (g.important) {
+    acts.append(
+      mkBtn('↑', 'small ghost', () => moveGroup(g, 'up')),
+      mkBtn('↓', 'small ghost', () => moveGroup(g, 'down')),
+      mkBtn('取消重点', 'small ghost', async () => {
+        await postApi('/api/group/tier', { gid: g.gid, important: false })
+        await loadGroups()
+      }),
+    )
+  } else {
+    acts.append(
+      mkBtn('设为重点', 'small ghost', async () => {
+        await postApi('/api/group/tier', { gid: g.gid, important: true })
+        await loadGroups()
+      }),
+    )
+  }
   acts.append(mkBtn('编辑', 'small ghost', () => openGroupEditor(g)))
   n.append(acts)
   return n
+}
+
+async function moveGroup(g, direction) {
+  await postApi('/api/group/move', { gid: g.gid, direction })
+  await loadGroups()
 }
 
 async function loadGroups() {
@@ -1096,7 +1231,7 @@ async function loadGroups() {
 
   const imp = $('groups-important')
   imp.innerHTML = ''
-  if (!d.important.length) imp.append(el('div', 'zone-empty', '把某个群设为重要，它就会排到这里。'))
+  if (!d.important.length) imp.append(el('div', 'zone-empty', '还没有重点群体。点下面任意一个群上的「设为重点」。'))
   for (const g of d.important) imp.append(groupCard(g))
 
   $('groups-count').textContent = `共 ${d.total} 个群体`
@@ -1107,7 +1242,7 @@ async function loadGroups() {
       el(
         'div',
         'muted small',
-        d.total ? '没有其他群体了。' : '还没有任何群体档案。她在某个群里说过话、或有人提到那个群之后，这里才会出现。',
+        d.total ? '没有其他群体了。' : '还没有任何群体档案。点「新增群体」，或等她在某个群里说过话。',
       ),
     )
   }
@@ -1115,39 +1250,53 @@ async function loadGroups() {
 }
 
 async function openGroupEditor(g) {
-  state.groupGid = g.gid
   const d = await api(`/api/group?gid=${encodeURIComponent(g.gid)}`)
   const gg = d.group
-  $('group-editor').hidden = false
-  $('group-title').textContent = `${gg.name || gg.gid}（${gg.gid}）`
-  $('group-name').value = gg.name || ''
-  $('group-feature').value = gg.feature || ''
-  $('group-topics').value = gg.topics || ''
-  $('group-aliases').value = (gg.aliases ?? []).join('、')
-  $('group-weight').value = gg.weightSource === 'manual' ? gg.weight : ''
-
   const names = d.members.slice(0, 12).map((m) => m.display)
-  $('group-members-msg').textContent = names.length
-    ? `常出现的人（${d.members.length}）：${names.join('、')}${d.members.length > names.length ? ' …' : ''}`
-    : '还没归集成员——点「重新归集成员」，只收有档案的人。'
-  $('group-msg').textContent = ''
-  $('group-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  openModal({
+    title: `${gg.name || gg.gid}（${gg.gid}）`,
+    fields: [
+      { key: 'name', label: '名字', value: gg.name || '' },
+      { label: '平台与号码', type: 'static', value: `${PLATFORM_LABELS[gg.platform] ?? gg.platform} · ${gg.nativeId ?? gg.id}` },
+      { key: 'feature', label: '群体描述', type: 'textarea', rows: 5, value: gg.feature || '' },
+      weightField(gg),
+      {
+        label: '成员',
+        type: 'static',
+        value: names.length ? `${names.join('、')}${d.members.length > names.length ? ' …' : ''}` : '还没归集成员（只收有档案的人）',
+      },
+    ],
+    onSubmit: async (v) => {
+      await postApi('/api/group', { gid: g.gid, name: v.name, feature: v.feature })
+      await loadGroups()
+    },
+  })
 }
 
-async function saveGroup() {
-  if (!state.groupGid) return
-  await postApi('/api/group', {
-    gid: state.groupGid,
-    name: $('group-name').value,
-    feature: $('group-feature').value,
-    topics: $('group-topics').value,
-    aliases: $('group-aliases').value,
+async function openGroupCreate() {
+  openModal({
+    title: '新增群体',
+    okText: '创建',
+    fields: [
+      { key: 'name', label: '名字', placeholder: '怎么称呼这个群' },
+      {
+        key: 'account',
+        label: '账号',
+        placeholder: 'QQ群 123456789 / 贴吧 原神吧 / 微信群 abc@chatroom / discord: 987654321',
+        hint: '用自然语言写清「哪个平台 + 哪个号」。不写死平台，任何 App 都能这样填',
+      },
+      { key: 'feature', label: '群体描述', type: 'textarea', rows: 4, placeholder: '这个群是什么地方、什么氛围' },
+      { label: '权重', type: 'static', value: '新建默认 50（普通名单的中值），之后由互动推演' },
+    ],
+    onSubmit: async (v) => {
+      await postApi('/api/group/create', {
+        name: v.name,
+        accountText: v.account,
+        feature: v.feature,
+      })
+      await loadGroups()
+    },
   })
-  const raw = $('group-weight').value.trim()
-  if (raw !== '') await postApi('/api/group/weight', { gid: state.groupGid, weight: Number(raw) })
-
-  $('group-msg').textContent = '已保存（进版本历史，可回滚）'
-  await loadGroups()
 }
 
 // ── 框架 → 规则 ────────────────────────────────────────────────────────
@@ -2845,69 +2994,31 @@ $('proposal-scan').addEventListener('click', async () => {
   }
 })
 
-$('person-save').addEventListener('click', () => {
-  savePerson().catch((err) => {
-    $('person-msg').textContent = `失败：${err.message}`
-  })
+// ── 弹窗事件（人物/群体的新增与编辑共用）──────────────────────────────
+$('modal-ok').addEventListener('click', () => submitModal().catch(() => {}))
+$('modal-cancel').addEventListener('click', () => closeModal())
+$('modal-x').addEventListener('click', () => closeModal())
+$('modal-mask').addEventListener('click', () => closeModal())
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('modal').hidden) closeModal()
 })
 
-$('person-weight-auto').addEventListener('click', async () => {
-  if (!state.personUid) return
+// ── 人物事件 ──────────────────────────────────────────────────────────
+$('person-new').addEventListener('click', () => openPersonCreate().catch((err) => alert(`打不开新增窗口：${err.message}`)))
+
+$('gentle-admin').addEventListener('change', async (e) => {
+  const want = e.target.checked
   try {
-    await postApi('/api/person/weight', { uid: state.personUid, weight: null })
-    $('person-weight').value = ''
-    $('person-msg').textContent = '已恢复自动计分'
-    await loadPeople()
+    await postApi('/api/prefs', { gentleToAdmin: want })
+    flash(want ? '已开启：注入里会要求对管理员更温柔' : '已关闭')
   } catch (err) {
-    $('person-msg').textContent = `失败：${err.message}`
+    e.target.checked = !want
+    alert(`保存失败：${err.message}`)
   }
-})
-
-$('people-sort').addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-sort]')
-  if (!b) return
-  state.peopleSort = b.dataset.sort
-  for (const x of $('people-sort').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
-  loadPeople().catch(() => {})
 })
 
 // ── 群体事件 ──────────────────────────────────────────────────────────
-$('group-save').addEventListener('click', () => {
-  saveGroup().catch((err) => {
-    $('group-msg').textContent = `失败：${err.message}`
-  })
-})
-
-$('group-weight-auto').addEventListener('click', async () => {
-  if (!state.groupGid) return
-  try {
-    await postApi('/api/group/weight', { gid: state.groupGid, weight: null })
-    $('group-weight').value = ''
-    $('group-msg').textContent = '已恢复自动计分'
-    await loadGroups()
-  } catch (err) {
-    $('group-msg').textContent = `失败：${err.message}`
-  }
-})
-
-$('group-members').addEventListener('click', async () => {
-  if (!state.groupGid) return
-  const gid = state.groupGid
-  const btn = $('group-members')
-  btn.disabled = true
-  $('group-members-msg').textContent = '正在从原始层归集…'
-  try {
-    const r = await postApi('/api/group/members', { gid })
-    await loadGroups()
-    await openGroupEditor({ gid })
-    // 归集结果照实说：扫了几天、对上了几个有档案的人
-    $('group-members-msg').textContent = `✓ 重新归集：${r.members.length} 人（扫了 ${r.scannedDays} 天，只收有档案的）`
-  } catch (err) {
-    $('group-members-msg').textContent = `失败：${err.message}`
-  } finally {
-    btn.disabled = false
-  }
-})
+$('group-new').addEventListener('click', () => openGroupCreate().catch((err) => alert(`打不开新增窗口：${err.message}`)))
 
 $('log-lens').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-lens]')
@@ -2923,26 +3034,6 @@ $('diag-mode').addEventListener('click', (e) => {
   state.diagMode = b.dataset.mode
   for (const x of $('diag-mode').querySelectorAll('button')) x.classList.toggle('is-active', x === b)
   loadDiag().catch(() => {})
-})
-
-// 拖进「重要人物」即置顶
-const pinnedSlot = $('pinned-slot')
-pinnedSlot.addEventListener('dragover', (e) => {
-  e.preventDefault()
-  pinnedSlot.classList.add('drop-hot')
-})
-pinnedSlot.addEventListener('dragleave', () => pinnedSlot.classList.remove('drop-hot'))
-pinnedSlot.addEventListener('drop', async (e) => {
-  e.preventDefault()
-  pinnedSlot.classList.remove('drop-hot')
-  const uid = e.dataTransfer.getData('text/plain')
-  if (!uid) return
-  try {
-    await postApi('/api/person/pin', { uid, pinned: true })
-    await loadPeople()
-  } catch (err) {
-    alert(`失败：${err.message}`)
-  }
 })
 
 // ── 启动 ──────────────────────────────────────────────────────────────

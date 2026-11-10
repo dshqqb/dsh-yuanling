@@ -25,7 +25,6 @@ import {
   readGroupIdentity,
   findGidByNative,
   computeGroupWeight,
-  setGroupWeight,
 } from '../src/core/groups.js'
 import { legacySceneIdentity } from '../src/core/channels.js'
 
@@ -244,16 +243,13 @@ test('权重：公式和 computeGroupWeight 一致', () => {
   assert.equal(g.weight, expect)
 })
 
-test('权重：手改过的优先，读时不再覆盖它', () => {
+test('权重：没有手改入口（群体也只能由互动/名次决定）', () => {
   const root = tmpRoot()
   seedRaw(root, { channel: 'group:555', ts: '2026-11-01T10:00:00+08:00' })
   backfillGroups(root, PID)
-  const gid = gidOf(root, 'group:555')
-  setGroupWeight(root, PID, gid, 88)
-
   const g = listGroups(root, PID)[0]
-  assert.equal(g.weight, 88)
-  assert.equal(g.weightSource, 'manual')
+  assert.equal(g.weightKind, 'auto')
+  assert.ok(g.weight >= 0 && g.weight <= 100, '普通名单 0–100')
 })
 
 test('readGroupLive 带实时权重，readGroup 保持落盘值', () => {

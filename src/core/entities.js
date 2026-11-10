@@ -10,6 +10,7 @@ import path from 'node:path'
 import { exists, isDir, readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
+import { effectivePersonWeight } from './weights.js'
 
 // 账号平台清单：解析器认得的与绑定层接受的**必须是同一张表**，
 // 否则会出现"描述写对了、绑定报不认识"这种漂移（p15 就是这么挂的）。
@@ -52,9 +53,44 @@ export function findByIdentity(root, platform, id) {
 }
 
 /** 建一个人物（不建主观档案；那是每个人格自己的事）。 */
+/** 名字的规范形：全角半角统一、空白压成一个、大小写不敏感。 */
+function nameKey(s) {
+  return String(s ?? '')
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * 人物名字只有一个主人（影子卡不算：那只是"见过"，还不是"认识"）。
+ *
+ * 人物是**全库**的实体（换人格还是同一个人），所以名字在整个人物表里唯一。
+ * @returns {object|null} 占用这个名字的人物
+ */
+export function personNameOwner(root, name, { exceptUid = null } = {}) {
+  const key = nameKey(name)
+  if (!key) return null
+  for (const p of Object.values(loadIdentities(root).people ?? {})) {
+    if (p.uid === exceptUid) continue
+    if (p.tier === 'shadow') continue
+    if (nameKey(p.display) === key) return p
+  }
+  return null
+}
+
+/** 名字被占了就抛错，并把"换个什么"说清楚——不静默改名，也不静默建重名。 */
+export function assertPersonNameFree(root, name, opts = {}) {
+  const hit = personNameOwner(root, name, opts)
+  if (!hit) return
+  const n = String(name ?? '').trim()
+  throw new Error(`人物名字「${n}」已经有人用了（${hit.uid}）。换一个：可以按他的特点加个区分，例如「${n}（B站）」`)
+}
+
 export function createPerson(root, { uid = newUid(), display = '', aliases = [] } = {}) {
   const data = loadIdentities(root)
   if (data.people[uid]) throw new Error(`人物已存在：${uid}`)
+  assertPersonNameFree(root, display || uid)
   data.people[uid] = { uid, display: display || uid, aliases: [...new Set(aliases)], identities: [], created: localIso() }
   saveIdentities(root, data)
   return data.people[uid]
@@ -203,6 +239,19 @@ export function writeProfile(root, pid, uid, patch = {}, { actor = 'system:entit
     created: localIso(),
   }
   const { __reason, ...rest } = patch
+  // 改名要查重：重名会让人物页和注入都分不清谁是谁。
+  // 只查"真的变了"的情况（把名字原样写回来不算改）。
+  const renaming = rest.display !== undefined && nameKey(rest.display) !== nameKey(cur.display)
+  if (renaming) {
+    assertPersonNameFree(root, rest.display, { exceptUid: uid })
+    // 名字只有一份：人物档案里的显示名就是 identities 里的显示名。
+    // 不两处各存一份，否则查重和页面会各说各话。
+    const data = loadIdentities(root)
+    if (data.people?.[uid]) {
+      data.people[uid].display = String(rest.display).trim()
+      writeJsonAtomic(identitiesPath(root), data)
+    }
+  }
   // 新建档案时把显示名带上——否则注入时只能显示 uid，人会看不出这是谁
   const seedDisplay = fresh && !rest.display ? loadIdentities(root).people[uid]?.display ?? '' : undefined
   const next = { ...cur, ...(seedDisplay ? { display: seedDisplay } : {}), ...rest, uid, updated_at: localIso() }
@@ -399,16 +448,99 @@ export function reparseIdentityTexts(root, { autoLink = false } = {}) {
 }
 
 /**
- * 重要人物：这是"她多在意他"的判断，所以存在人格档案里（pinned 布尔）。
- * 不做人数上限——重要人物是你的判断，不是系统配额。
+ * 重点人物（pinned）：名单内的**顺序**就是权重（越靠前越高，见 weights.js）。
+ *
+ * 所以置顶要同时分配一个名次，取消置顶要把后面的人往前挪——否则名次会留空洞，
+ * 权重就会跳级（例如 120 → 110 → 100 之间突然空一档）。
  */
 export function setPinned(root, pid, uid, pinned = true) {
   if (!readProfile(root, pid, uid)) throw new Error('这个人还没有档案，先让她认识他')
-  return writeProfile(root, pid, uid, {
-    pinned: Boolean(pinned),
-    __reason: pinned ? '标为重要人物' : '取消重要人物',
+  const list = pinnedPeople(root, pid)
+  const already = list.includes(uid)
+
+  if (pinned && !already) {
+    return writeProfile(root, pid, uid, { pinned: true, pin_rank: list.length }, { __reason: '设为重点人物' })
+  }
+  if (!pinned && already) {
+    const next = list.filter((x) => x !== uid)
+    const prof = writeProfile(root, pid, uid, { pinned: false, pin_rank: null }, { __reason: '取消重点人物' })
+    renumberPinned(root, pid, next)
+    return prof
+  }
+  return readProfile(root, pid, uid)
+}
+
+/** 重点人物名单（按名次），返回 uid 数组。 */
+export function pinnedPeople(root, pid) {
+  const data = loadIdentities(root)
+  return Object.values(data.people)
+    .map((person) => ({ uid: person.uid, prof: readProfile(root, pid, person.uid) }))
+    .filter((x) => x.prof?.pinned)
+    .sort((a, b) => Number(a.prof.pin_rank ?? 999) - Number(b.prof.pin_rank ?? 999))
+    .map((x) => x.uid)
+}
+
+/** 把名单里的名次重排成 0..n-1（去掉空洞）。 */
+export function renumberPinned(root, pid, uids) {
+  uids.forEach((uid, i) => {
+    const prof = readProfile(root, pid, uid)
+    if (Number(prof?.pin_rank) === i) return
+    writeProfile(root, pid, uid, { pin_rank: i }, { __reason: '重点人物重新排序' })
   })
 }
+
+/**
+ * 在重点名单里往上/下挪一格。
+ * @param {'up'|'down'} direction
+ */
+export function movePinned(root, pid, uid, direction) {
+  const list = pinnedPeople(root, pid)
+  const i = list.indexOf(uid)
+  if (i < 0) throw new Error('不在重点名单里')
+  const j = direction === 'up' ? i - 1 : i + 1
+  if (j < 0 || j >= list.length) return { moved: false, rank: i }
+  const next = [...list]
+  ;[next[i], next[j]] = [next[j], next[i]]
+  renumberPinned(root, pid, next)
+  return { moved: true, rank: j }
+}
+
+/**
+ * 新建人物：建卡 + 认领账户 + 写素描，一步到位（管理台的「新增」按钮用）。
+ *
+ * 账户必填：一个既没有名字来源、也没有账号的人，等于一个纯字符串，建了也没用。
+ */
+export function createPersonWithCard(root, pid, { display, identityText, sketch = '', actor = 'human:editor' } = {}) {
+  const name = String(display ?? '').trim()
+  if (!name) throw new Error('名字不能为空')
+  const text = String(identityText ?? '').trim()
+  if (!text) throw new Error('账户不能为空：用自然语言写清他/她在哪个平台叫什么')
+  if (!parseIdentityText(text).items.length) {
+    throw new Error(`账户里没认出任何账号：${text}。写成"QQ 号是 12345"或"b站叫老张"这样`)
+  }
+  const person = createPerson(root, { display: name })
+  const r = setIdentityText(root, person.uid, text, { autoLink: true })
+  if (!r.linked.length) {
+    const why = r.conflicts.length
+      ? `这些账号已经属于别人了：${r.conflicts.map((c) => `${c.platform}:${c.id}`).join('、')}`
+      : '账户里没认出可以绑定的号'
+    throw new Error(why)
+  }
+  if (String(sketch).trim()) {
+    writeProfile(root, pid, person.uid, { sketch: String(sketch).trim(), weight: NEW_PERSON_WEIGHT }, { actor })
+  } else {
+    // 建卡 = 认识；哪怕没写素描也要有一份档案，否则她"认识"这件事不落地
+    writeProfile(root, pid, person.uid, { weight: NEW_PERSON_WEIGHT }, { actor })
+  }
+  return { person: r.person, linked: r.linked, conflicts: r.conflicts }
+}
+
+/**
+ * 新建人物的默认权重（普通名单的中值）。
+ * 和 `weights.SEED_WEIGHT` 是同一个数；这里另写一份是为了避免
+ * entities ↔ weights 的循环 import（weights 依赖 entities 读写档案）。
+ */
+const NEW_PERSON_WEIGHT = 50
 
 /**
  * 管理员：这是"谁是主人"的客观事实，全库唯一，存在 identities 里。
@@ -438,37 +570,45 @@ export function currentAdmin(root) {
 }
 
 /**
- * 人物页列表：管理员 → 重要人物 → 其余（按权重或按时间）。
+ * 人物页列表：管理员 → 重点人物（按名次）→ 其余（按权重）。
+ *
+ * 权重口径见 weights.js：普通名单是互动分（0–100），重点名单按名次给分（110 起）。
+ * 列表里的 `weight` 是**生效值**；`storedWeight` 是落盘值（取消重点后会给生效值用）。
  */
-export function listPeopleForUi(root, pid, { sort = 'weight', includeShadow = false } = {}) {
+export function listPeopleForUi(root, pid, { includeShadow = false } = {}) {
   const data = loadIdentities(root)
+  const totalPinned = Object.values(data.people).filter((person) => readProfile(root, pid, person.uid)?.pinned).length
+
   const rows = Object.values(data.people)
     // 影子卡（只见过、没认识过）默认不显示：人物页是"她认识谁"，不是"谁发过言"。
     // 没写过档案的影子也一定没有 sketch/pinned/weight，藏起来不丢信息。
     .filter((person) => includeShadow || person.tier !== 'shadow')
     .map((person) => {
-    const profile = readProfile(root, pid, person.uid)
-    return {
-      uid: person.uid,
-      display: profile?.display || person.display || person.uid,
-      admin: person.tier === 'admin',
-      pinned: Boolean(profile?.pinned),
-      weight: Number(profile?.weight ?? 0),
-      weightSource: profile?.weight_source ?? 'auto',
-      sketch: profile?.sketch ?? '',
-      firstMet: profile?.first_met ?? null,
-      lastMet: profile?.last_met ?? null,
-      hasProfile: Boolean(profile),
-      identities: person.identities ?? [],
-    }
-  })
+      const profile = readProfile(root, pid, person.uid)
+      const eff = effectivePersonWeight(profile, { totalPinned })
+      return {
+        uid: person.uid,
+        display: profile?.display || person.display || person.uid,
+        admin: person.tier === 'admin',
+        pinned: Boolean(profile?.pinned),
+        rank: eff.rank,
+        weight: eff.weight,
+        storedWeight: eff.stored,
+        weightKind: eff.kind,
+        sketch: profile?.sketch ?? '',
+        firstMet: profile?.first_met ?? null,
+        lastMet: profile?.last_met ?? null,
+        hasProfile: Boolean(profile),
+        identities: person.identities ?? [],
+      }
+    })
 
   const timeOf = (r) => String(r.lastMet ?? r.firstMet ?? '')
   rows.sort(
     (a, b) =>
       Number(b.admin) - Number(a.admin) ||
       Number(b.pinned) - Number(a.pinned) ||
-      (sort === 'time' ? timeOf(b).localeCompare(timeOf(a)) : b.weight - a.weight) ||
+      (a.pinned ? Number(a.rank ?? 0) - Number(b.rank ?? 0) : b.weight - a.weight) ||
       timeOf(b).localeCompare(timeOf(a)),
   )
   return rows

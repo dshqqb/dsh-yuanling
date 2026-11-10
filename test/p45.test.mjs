@@ -257,6 +257,7 @@ test('tools/list 里有 yuanling_observe', async () => {
   const names = res.result.tools.map((t) => t.name).sort()
   assert.deepEqual(names, [
     'yuanling_context',
+    'yuanling_drive',
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',

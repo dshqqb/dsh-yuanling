@@ -8,6 +8,7 @@
 import path from 'node:path'
 import { readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
+import { matchDrive } from './drives.js'
 
 export const PURPOSES_VERSION = 1
 export const PURPOSE_TTL_DAYS = 14
@@ -67,7 +68,7 @@ function clipBytes(text, maxBytes = PURPOSE_MAX_BYTES) {
  * @param {Array} facts 记忆事实（需带 topic）
  * @returns {{items:Array, added:Array}}
  */
-export function minePurposes(doc, facts, { now = Date.now(), maxAgeDays = 7, minAgeHours = 6 } = {}) {
+export function minePurposes(doc, facts, { now = Date.now(), maxAgeDays = 7, minAgeHours = 6, customDrives = [] } = {}) {
   const items = Array.isArray(doc.items) ? doc.items.slice() : []
   const added = []
 
@@ -83,9 +84,12 @@ export function minePurposes(doc, facts, { now = Date.now(), maxAgeDays = 7, min
     if (ageMs > maxAgeDays * DAY) continue               // 太久远的别翻旧账
 
     const emotional = Number(f.emotional ?? 0)
-    if (emotional < 8 && !f.slot) continue                // 平淡的闲聊不惦记
+    // 自定义动机的关键词撞上就算数：哪怕这句话本身很平淡——
+    // "她自己在意的方向"比"这句话情绪有多强"更该决定惦记什么。
+    const hitDrive = matchDrive(f.text, customDrives)
+    if (emotional < 8 && !f.slot && !hitDrive) continue    // 平淡的闲聊不惦记
 
-    const need = emotional >= 16 ? 'care' : f.slot ? 'curiosity' : 'share'
+    const need = hitDrive ? hitDrive.id : emotional >= 16 ? 'care' : f.slot ? 'curiosity' : 'share'
     const text = clipBytes(`你上次说「${f.text}」，后来怎么样了？`)
 
     // 同一个原始记录只惦记一次；措辞相近的不重复

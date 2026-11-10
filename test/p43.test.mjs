@@ -108,17 +108,17 @@ test('写：只给 channel 就能定位到群并建档案', async () => {
 })
 
 test('写：只给数字的 gid 按 QQ 群理解', async () => {
-  toolText(await tool('yuanling_group', { gid: '777', topics: '主要在聊数码和键盘', reason: '看了一会儿，话题集中在键盘' }))
+  toolText(await tool('yuanling_group', { gid: '777', name: '数码群', reason: '见面记下名字' }))
   const g = groupByNative('qq', '777')
   assert.ok(g, '数字该被补成 QQ 群的号')
-  assert.match(g.topics, /键盘/)
+  assert.equal(g.name, '数码群')
 })
 
-test('写：第二次写是合并，不是覆盖', async () => {
-  toolText(await tool('yuanling_group', { gid: 'qq:12345', topics: '最近在聊孩子上学', reason: '话题变了' }))
+test('写：描述是整段覆盖（印象语义），不会把卡写没', async () => {
+  toolText(await tool('yuanling_group', { gid: 'qq:12345', feature: '最近在聊孩子上学', reason: '描述变了' }))
   const g = groupByNative('qq', '12345')
-  assert.match(g.feature, /老同学/, '原来写下的特征不能被冲掉')
-  assert.match(g.topics, /孩子上学/)
+  assert.ok(g, '卡还在')
+  assert.match(g.feature, /孩子上学/, '描述整段覆盖')
 })
 
 test('读：没有任何写入参数时是只读，不会凭空建档', async () => {
@@ -131,7 +131,7 @@ test('读：没有任何写入参数时是只读，不会凭空建档', async ()
 test('读：读到的是自然语言描述，成员带名字不带 uid', async () => {
   const text = toolText(await tool('yuanling_group', { channel: 'group:12345' }))
   assert.match(text, /grp_/)
-  assert.match(text, /老同学/)
+  assert.match(text, /孩子上学/, '读到的应该是当前的群体描述')
   assert.ok(text.includes('权重'), '应该报权重，管理台和 CLI 用的是同一套数')
 })
 
@@ -141,8 +141,10 @@ test('两个参数都不给 → 报错而不是瞎猜一个群', async () => {
   assert.match(res.result.content.map((c) => c.text).join('\n'), /gid/)
 })
 
-test('写：别名数组会去空、截断', async () => {
-  toolText(await tool('yuanling_group', { gid: 'qq:777', aliases: ['  七群 ', '', '777'] }))
+test('写：群体卡没有别名/话题这两栏（工具不再接受它们）', async () => {
+  const r = await tool('yuanling_group', { gid: 'qq:777', aliases: ['七群'], topics: '聊数码', reason: 'x' })
   const g = groupByNative('qq', '777')
-  assert.deepEqual(g.aliases, ['七群', '777'])
+  assert.equal(g.aliases, undefined)
+  assert.equal(g.topics, undefined)
+  void r
 })
