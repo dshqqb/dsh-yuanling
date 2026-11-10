@@ -32,6 +32,7 @@ import {
 } from './src/core/settingsapi.js'
 import { findProfiles, installMcp } from './src/core/mcpinstall.js'
 import { startEvolution, EVOLVE_EVERY_HOURS } from './src/core/evolve.js'
+import { startProactive, PROACTIVE_EVERY_MINUTES } from './src/core/proactive.js'
 
 // ⚠️ 不能用 `import z from '@deepseek-ai/schemastery'`：
 //    这个包只发布了 lib/index.cjs，package.json 的 import 条件指向不存在的
@@ -81,6 +82,10 @@ export const Config = z.object({
     .number()
     .default(EVOLVE_EVERY_HOURS)
     .description('多久自动跑一次"扫描提案 + 到期采纳"（小时；默认 6，0 = 关闭，只保留手动扫描）。'),
+  proactiveEveryMinutes: z
+    .number()
+    .default(PROACTIVE_EVERY_MINUTES)
+    .description('多久算一次"她想不想主动说话"（分钟；默认 15，0 = 关闭）。只产出待发队列，不真发送。'),
   logLevel: z.string().default('info').description('debug | info | warn | error'),
 })
 
@@ -511,6 +516,20 @@ export function apply(ctx, config) {
     },
   })
   if (typeof ctx?.on === 'function') ctx.on('dispose', () => evolve.stop())
+
+  // ── 主动开口（只算不发送）────────────────────────────────────────────
+  // 动机 + 到期目的 + rules.action 闸门 → 待发队列；真发送留给模块。
+  const proactive = startProactive(root, {
+    everyMinutes: config.proactiveEveryMinutes,
+    onRun: (r) => {
+      if (r?.queued?.length) log('info', config, `想出 ${r.queued.length} 句主动的话（进待发队列，未发送）`)
+      const reasons = r?.reasons ?? {}
+      for (const [why, n] of Object.entries(reasons)) {
+        if (why === 'error') log('warn', config, `主动开口计算失败：${n}`)
+      }
+    },
+  })
+  if (typeof ctx?.on === 'function') ctx.on('dispose', () => proactive.stop())
 
   // ── 模块 ───────────────────────────────────────────────────────────────
   // 只在宿主活着的时候拉起 enabled 的模块。**注册表里的 enabled 是持久意图**：

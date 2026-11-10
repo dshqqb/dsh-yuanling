@@ -749,6 +749,42 @@ const NEED_LABELS = {
   identity: '想被记住',
 }
 
+/** 主动开口的待发队列：她"想说、还没说出口"的话。 */
+async function loadOutbox() {
+  const d = await api('/api/outbox')
+  $('outbox-count').textContent =
+    `待发 ${d.counts.pending} · 压着 ${d.counts.held} · 已发 ${d.counts.sent} · 取消 ${d.counts.dropped}`
+
+  const box = $('outbox-out')
+  box.innerHTML = ''
+  const live = d.items.filter((x) => x.status === 'pending' || x.status === 'held')
+  if (!live.length) {
+    box.append(el('div', 'muted small', '现在没有待发的话。她只在"有到期的事 + 相关动机够强"时才会想开口。'))
+    return
+  }
+  for (const it of live) {
+    const n = el('div', 'item')
+    const body = el('div', 'body')
+    const t = el('div', 't')
+    const tags = el('span')
+    tags.append(el('span', 'tag', it.needName))
+    tags.append(el('span', it.status === 'pending' ? 'tag ok' : 'tag warn', it.status === 'pending' ? '待发' : '压着'))
+    // 发在哪、要不要 @ 谁，一眼要能看出来
+    const where = it.scene.startsWith('group:') ? `群 ${it.scene.slice(6, 14)}…` : `私聊 ${it.scene.slice(8, 16)}…`
+    if (it.target?.name) tags.append(el('span', 'tag purple', `@${it.target.name}`))
+    t.append(tags, document.createTextNode(it.text))
+    body.append(t, el('div', 's', `${where} · 因为 ${it.why} · ${it.created}`))
+    n.append(body)
+    n.append(
+      el('div', 'actions').appendChild(mkBtn('不要她说这句', 'small ghost', async () => {
+        await postApi('/api/outbox/drop', { id: it.id, reason: '人为取消' })
+        await loadOutbox()
+      })).parentNode,
+    )
+    box.append(n)
+  }
+}
+
 async function loadMotive() {
   const d = await api('/api/motive')
 
@@ -822,6 +858,8 @@ async function loadMotive() {
     }
     out.append(n)
   }
+
+  await loadOutbox()
 }
 
 async function loadMemory() {
@@ -1076,6 +1114,18 @@ function personCard(p, { onMove } = {}) {
         await postApi('/api/person/pin', { uid: p.uid, pinned: true })
         await loadPeople()
       }),
+      // 白/黑名单只对"其余"人物开放：管理员和重要人物永远在白名单里。
+      // 已经在某个名单里的人，对应那个按钮就不再显示（用名单里的 × 移出）。
+      ...(p.audience === 'allow' ? [] : [mkBtn('设为白名单', 'small ghost', async () => {
+        await setAudienceMember('people', p.uid, 'allow')
+        await loadPeople()
+        flash(`已把「${p.display}」加入白名单`)
+      })]),
+      ...(p.audience === 'deny' ? [] : [mkBtn('设为黑名单', 'small danger', async () => {
+        await setAudienceMember('people', p.uid, 'deny')
+        await loadPeople()
+        flash(`已把「${p.display}」加入黑名单`)
+      })]),
     )
   }
   acts.append(mkBtn('编辑', 'small ghost', () => openPersonEditor(p)))
@@ -1168,6 +1218,8 @@ async function loadPeople() {
   box.innerHTML = ''
   if (!rest.length) box.append(el('div', 'muted small', '没有其他人物了。'))
   for (const p of rest) box.append(personCard(p))
+
+  await loadAudience('people')
 }
 
 // ── 群体 ──────────────────────────────────────────────────────────────
@@ -1175,6 +1227,98 @@ async function loadPeople() {
 // 群体和人物是并列的实体，但**不跨平台合并**：QQ 群和贴吧永远不是同一个地方。
 // 描述全是自然语言（她自己总结、人也可以改），成员是事实，由核心从原始层归集。
 const PLATFORM_LABELS = { qq: 'QQ 群', wechat: '微信群', tieba: '贴吧', bili: 'B 站' }
+
+/**
+ * 黑白名单的两个栏位（人物页 / 群体页共用）。
+ *
+ * 规矩（用户定）：只影响她**回不回话**，不影响接收；两开关互斥（都关 = 不限制）；
+ * 管理员/重要人物、重点群体**永远在白名单里**，不能被设成黑名单——所以它们出现在
+ * 「自动」那一组，而不是让人手动加。
+ */
+function renderAudience(kind, d) {
+  const allowOn = $(`${kind}-allow-on`)
+  const denyOn = $(`${kind}-deny-on`)
+  allowOn.checked = d.mode === 'allow'
+  denyOn.checked = d.mode === 'deny'
+  $(`${kind}-allow-label`).textContent = d.mode === 'allow' ? '开' : '关'
+  $(`${kind}-deny-label`).textContent = d.mode === 'deny' ? '开' : '关'
+
+  // 横排胶囊：一个名字一个 chip，同名后面跟一个 ×（自动豁免的那组没有 ×，因为它删不掉）
+  const chip = (r, { removable, auto }) => {
+    const c = el('span', 'chip' + (auto ? ' is-auto' : ''))
+    if (r.why) c.append(el('span', 'chip-why', r.why))
+    c.append(el('span', 'chip-name', r.name || r.id))
+    if (removable) {
+      const x = document.createElement('button')
+      x.type = 'button'
+      x.className = 'chip-x'
+      x.title = '移出名单'
+      x.textContent = '×'
+      x.addEventListener('click', async () => {
+        x.disabled = true
+        try {
+          await postApi('/api/audience', { kind, action: 'remove', id: r.id })
+          await loadAudience(kind)
+        } catch (err) {
+          x.disabled = false
+          alert(`移出失败：${err.message}`)
+        }
+      })
+      c.append(x)
+    }
+    return c
+  }
+
+  const fill = (box, chips, emptyText) => {
+    box.innerHTML = ''
+    if (!chips.length) {
+      box.append(el('div', 'zone-empty', emptyText))
+      return
+    }
+    for (const c of chips) box.append(c)
+  }
+
+  const allowChips = [
+    ...(d.auto ?? []).map((r) => chip(r, { removable: false, auto: true })),
+    // 兜底：万一后端把豁免的人漏进 allow（旧数据/竞态），前端也不给它 ×
+    ...d.allow.map((r) => chip(r, { removable: !r.exempt, auto: Boolean(r.exempt) })),
+  ]
+  fill($(`${kind}-allow-list`), allowChips, '白名单是空的。')
+
+  fill(
+    $(`${kind}-deny-list`),
+    d.deny.map((r) => chip(r, { removable: !r.exempt, auto: Boolean(r.exempt) })),
+    '黑名单是空的。',
+  )
+}
+
+async function loadAudience(kind) {
+  const d = await api(`/api/audience?kind=${kind}`)
+  renderAudience(kind, d)
+  return d
+}
+
+async function setAudienceMode(kind, mode) {
+  await postApi('/api/audience', { kind, action: 'mode', mode })
+  await loadAudience(kind)
+}
+
+async function setAudienceMember(kind, id, list) {
+  await postApi('/api/audience', { kind, action: 'add', id, list })
+  await loadAudience(kind)
+}
+
+/** 开关事件绑定（人物页 / 群体页各一套）。 */
+function wireAudience(kind) {
+  $(`${kind}-allow-on`).addEventListener('change', (e) => {
+    const on = e.target.checked
+    setAudienceMode(kind, on ? 'allow' : 'off').catch((err) => alert(`切换失败：${err.message}`))
+  })
+  $(`${kind}-deny-on`).addEventListener('change', (e) => {
+    const on = e.target.checked
+    setAudienceMode(kind, on ? 'deny' : 'off').catch((err) => alert(`切换失败：${err.message}`))
+  })
+}
 
 function flash(text) {
   const t = el('div', 'toast', text)
@@ -1216,6 +1360,18 @@ function groupCard(g) {
         await postApi('/api/group/tier', { gid: g.gid, important: true })
         await loadGroups()
       }),
+      // 白/黑名单只对"其余"群体开放：重点群体永远在白名单里。
+      // 已经在某个名单里的群，对应那个按钮不再显示（用名单里的 × 移出）。
+      ...(g.audience === 'allow' ? [] : [mkBtn('设为白名单', 'small ghost', async () => {
+        await setAudienceMember('groups', g.gid, 'allow')
+        await loadGroups()
+        flash(`已把「${g.name || g.gid}」加入白名单`)
+      })]),
+      ...(g.audience === 'deny' ? [] : [mkBtn('设为黑名单', 'small danger', async () => {
+        await setAudienceMember('groups', g.gid, 'deny')
+        await loadGroups()
+        flash(`已把「${g.name || g.gid}」加入黑名单`)
+      })]),
     )
   }
   acts.append(mkBtn('编辑', 'small ghost', () => openGroupEditor(g)))
@@ -1249,6 +1405,8 @@ async function loadGroups() {
     )
   }
   for (const g of d.groups) box.append(groupCard(g))
+
+  await loadAudience('groups')
 }
 
 async function openGroupEditor(g) {
@@ -3021,6 +3179,23 @@ $('gentle-admin').addEventListener('change', async (e) => {
 
 // ── 群体事件 ──────────────────────────────────────────────────────────
 $('group-new').addEventListener('click', () => openGroupCreate().catch((err) => alert(`打不开新增窗口：${err.message}`)))
+
+// 黑白名单的开关（两页各一套，互斥由后端保证）
+wireAudience('people')
+wireAudience('groups')
+
+$('outbox-plan').addEventListener('click', async () => {
+  try {
+    const r = await postApi('/api/outbox/plan', {})
+    await loadOutbox()
+    const bits = [`想出 ${r.queued} 句`]
+    if (r.held?.length) bits.push(`压着 ${r.held.length} 条（${[...new Set(r.held.map((h) => h.reason))].join('、')}）`)
+    if (r.skipped?.length) bits.push(`跳过 ${r.skipped.length} 条`)
+    flash(bits.join('；'))
+  } catch (err) {
+    alert(`算失败：${err.message}`)
+  }
+})
 
 $('log-lens').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-lens]')

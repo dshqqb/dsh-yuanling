@@ -22,6 +22,8 @@ import { readRegistry, grantedOf, moduleDir, listIds } from './modules/registry.
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { eventsHealth } from './events.js'
 import { tailModuleLog } from './modules/manage.js'
+import { today, prevDate, verifyDay, relDayDir } from './raw.js'
+import fsSync from 'node:fs'
 
 export const DIAG_LEVELS = {
   pass: 'info',
@@ -108,6 +110,51 @@ function coreChecks(root, { fast = false, onlyProblems = true } = {}) {
         stage: meta.stage,
         hint: c.status === 'pass' ? '正常' : c.status === 'skip' ? `没查：${c.reason ?? '未说明'}` : meta.hint,
         detail: c.detail ?? null,
+      }),
+    )
+  }
+
+  // 原始层的完整性：日链 sha256 对不上，说明**盘上的 raw 被改过**。
+  // 这条不做"自动修复"——raw 只追加，hash 不对就是被人动过，该让看见的人自己判断。
+  out.push(...rawChainChecks(root, { fast }))
+  return out
+}
+
+/**
+ * 原始层日链校验（最近两天）。
+ *
+ * 为什么只查两天：一天一条 sha256 链，越久越贵；而"有人动了昨天的盘"是最该被发现的。
+ * 为什么需要这条：raw 没有改/删代码，但"没有代码会改"不等于"盘上没被改"——
+ * 没有校验就没人能发现，这跟"不可改"是两个概念。
+ */
+function rawChainChecks(root, { fast = false } = {}) {
+  const out = []
+  const todayStr = today(new Date())
+  const days = [todayStr, prevDate(todayStr)].filter(Boolean)
+  const span = fast ? days.slice(0, 1) : days
+
+  for (const d of span) {
+    // 这天一条 raw 都没有：没东西可校验，别报一条"没封存"的假警报
+    const dir = path.join(root, relDayDir(d))
+    const hasData =
+      isDir(dir) &&
+      fsSync.readdirSync(dir).some((f) => f.endsWith('.ndjson'))
+    if (!hasData) continue
+
+    const r = verifyDay(root, d)
+    if (r.ok) continue
+
+    // 有数据但没封存 → 可能是还没跑封存（提示即可）；哈希对不上 → 真的被改过（error）
+    const unsealed = (r.errors ?? []).some((e) => e.code === 'NO_DAY_JSON')
+    out.push(
+      item({
+        code: unsealed ? 'raw.not-sealed' : 'raw.chain-broken',
+        level: unsealed ? 'warn' : 'error',
+        stage: 'raw',
+        hint: unsealed
+          ? `这天有原始数据但还没封存（${d}）：跑 yuanling seal ${d} 生成日链；未封存期间没有完整性凭据`
+          : `原始层日链对不上（${d}）：盘上的 raw 被改过。raw 只追加，这条不该出现——先备份，再对 ${d} 逐条核对`,
+        detail: r,
       }),
     )
   }

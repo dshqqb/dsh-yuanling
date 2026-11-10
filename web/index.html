@@ -203,6 +203,17 @@
           </div>
 
           <div class="card">
+            <div class="card-head">
+              <h3>待发的主动消息</h3>
+              <span class="muted small" id="outbox-count">她想说、但还没说出口的话（不会自动发送，由模块来取）</span>
+            </div>
+            <div class="field-row">
+              <button id="outbox-plan" class="btn ghost small">现在算一轮</button>
+            </div>
+            <div id="outbox-out" class="list"></div>
+          </div>
+
+          <div class="card">
             <div class="card-head"><h3>什么时候会被摆到面前</h3></div>
             <div id="motive-rules" class="muted small"></div>
           </div>
@@ -226,6 +237,38 @@
             </p>
             <div class="field-row">
               <button id="person-new" class="btn">新增人物</button>
+            </div>
+          </div>
+
+          <div class="audience">
+            <p class="muted small">
+              名单**只影响她回不回话**，不影响她接收信息（照常记录、照常进记忆）。
+              白名单开启后，她只跟名单上的人私聊；黑名单开启后，她可以跟名单之外的所有人私聊。
+              两个开关互斥，都关 = 不限制。<b>管理员与重要人物永远在白名单里，不能被设为黑名单。</b>
+            </p>
+            <div class="audience-cols">
+              <div class="audience-col">
+                <div class="audience-head">
+                  <h4>白名单</h4>
+                  <label class="switch-row small">
+                    <input type="checkbox" id="people-allow-on" />
+                    <span class="switch-track"><span class="switch-knob"></span></span>
+                    <span class="small" id="people-allow-label">关</span>
+                  </label>
+                </div>
+                <div id="people-allow-list" class="list"></div>
+              </div>
+              <div class="audience-col">
+                <div class="audience-head">
+                  <h4>黑名单</h4>
+                  <label class="switch-row small">
+                    <input type="checkbox" id="people-deny-on" />
+                    <span class="switch-track"><span class="switch-knob"></span></span>
+                    <span class="small" id="people-deny-label">关</span>
+                  </label>
+                </div>
+                <div id="people-deny-list" class="list"></div>
+              </div>
             </div>
           </div>
 
@@ -265,6 +308,38 @@
             </p>
             <div class="field-row">
               <button id="group-new" class="btn">新增群体</button>
+            </div>
+          </div>
+
+          <div class="audience">
+            <p class="muted small">
+              名单**只影响她在群里回不回话**，不影响她读到什么（照常记录、照常进记忆）。
+              白名单开启后，她只在名单上的群里说话；黑名单开启后，除名单外都可以。
+              两个开关互斥，都关 = 不限制。<b>重点群体永远在白名单里，不能被设为黑名单。</b>
+            </p>
+            <div class="audience-cols">
+              <div class="audience-col">
+                <div class="audience-head">
+                  <h4>白名单</h4>
+                  <label class="switch-row small">
+                    <input type="checkbox" id="groups-allow-on" />
+                    <span class="switch-track"><span class="switch-knob"></span></span>
+                    <span class="small" id="groups-allow-label">关</span>
+                  </label>
+                </div>
+                <div id="groups-allow-list" class="list"></div>
+              </div>
+              <div class="audience-col">
+                <div class="audience-head">
+                  <h4>黑名单</h4>
+                  <label class="switch-row small">
+                    <input type="checkbox" id="groups-deny-on" />
+                    <span class="switch-track"><span class="switch-knob"></span></span>
+                    <span class="small" id="groups-deny-label">关</span>
+                  </label>
+                </div>
+                <div id="groups-deny-list" class="list"></div>
+              </div>
             </div>
           </div>
 

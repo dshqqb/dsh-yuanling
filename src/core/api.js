@@ -24,6 +24,8 @@ import {
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
 import { writePrefs, readPrefs } from './prefs.js'
+import { readOutbox, dropOutbox, planProactive } from './proactive.js'
+import { readAudience, audienceView, setAudienceMode, setAudienceMember, removeAudienceMember } from './audience.js'
 import { refreshWeights } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -196,6 +198,46 @@ export function handleApi(root, url) {
   // 两样都来自同一套函数，页面上不放近似示意。
   if (pathname === '/api/persona') {
     return { status: 200, body: { ok: true, ...readCard(root, pid) } }
+  }
+
+  // 黑白名单：她跟谁说话（只影响回话，不影响收信息）
+  if (pathname === '/api/audience') {
+    const kind = searchParams.get('kind') === 'groups' ? 'groups' : 'people'
+    return { status: 200, body: { ok: true, kind, ...audienceView(root, pid, kind) } }
+  }
+
+  // 主动开口的待发队列：只读 + 取消（人不要她说这句）。
+  // 这一层只算不发送——真发送由模块来取，所以页面上看到的是"她本来想说什么"。
+  if (pathname === '/api/outbox') {
+    const box = readOutbox(root, pid)
+    const items = box.items.slice().sort((a, b) => String(b.created).localeCompare(String(a.created)))
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        items: items.map((it) => ({
+          id: it.id,
+          scene: it.scene,
+          target: it.target ?? null,
+          text: it.text,
+          need: it.need,
+          needName: it.needName ?? it.need,
+          why: it.why,
+          origin: it.origin ?? null,
+          status: it.status,
+          created: it.created,
+          sentAt: it.sent_at ?? null,
+          droppedAt: it.dropped_at ?? null,
+          dropReason: it.drop_reason ?? null,
+        })),
+        counts: {
+          pending: items.filter((x) => x.status === 'pending').length,
+          held: items.filter((x) => x.status === 'held').length,
+          sent: items.filter((x) => x.status === 'sent').length,
+          dropped: items.filter((x) => x.status === 'dropped').length,
+        },
+      },
+    }
   }
 
   // 动机：五股劲 + 攒着还没说的事。只读——刷新强度会写盘，那件事只该由
@@ -528,14 +570,19 @@ export function handleApi(root, url) {
   // 和人物页并列：一群人也是一个实体，但它**不跨平台合并**（QQ群 ≠ 贴吧）。
   if (pathname === '/api/groups') {
     const list = listGroups(root, pid)
+    const aud = readAudience(root, pid).groups
     const important = list.filter((g) => g.tier === 'important')
     const rest = list.filter((g) => g.tier !== 'important')
+    const withAudience = (g) => ({
+      ...groupRow(g),
+      audience: aud.allow.includes(g.gid) ? 'allow' : aud.deny.includes(g.gid) ? 'deny' : null,
+    })
     return {
       status: 200,
       body: {
         ok: true,
-        important: important.map(groupRow),
-        groups: rest.map(groupRow),
+        important: important.map(withAudience),
+        groups: rest.map(withAudience),
         total: list.length,
       },
     }
@@ -563,6 +610,11 @@ export function handleApi(root, url) {
     }
     const data = loadIdentities(root)
     const all = Object.values(data.people ?? {})
+    const aud = readAudience(root, pid).people
+    const people = listPeopleForUi(root, pid).map((p) => ({
+      ...p,
+      audience: aud.allow.includes(p.uid) ? 'allow' : aud.deny.includes(p.uid) ? 'deny' : null,
+    }))
     // 影子卡（只见过、没认识过）不进列表，但要让人知道"还有这些人"——
     // 藏起来不等于不存在，否则会出现"我明明在群里见到过他，人物页却没有"。
     const shadow = all.filter((p) => p.tier === 'shadow')
@@ -571,7 +623,7 @@ export function handleApi(root, url) {
       body: {
         ok: true,
         admin: currentAdmin(root),
-        people: listPeopleForUi(root, pid),
+        people,
         pending: data.pending ?? [],
         shadowCount: shadow.length,
         prefs: readPrefs(root, pid),
@@ -815,6 +867,34 @@ export function handleApiWrite(root, url, body) {
           conflicts: r.conflicts,
         },
       }
+    }
+
+    // 主动开口：手动算一轮（调试/演示用），以及"不要她说这句"
+    if (pathname === '/api/outbox/plan') {
+      const r = planProactive(root, pid)
+      return { status: 200, body: { ok: true, queued: r.queued.length, held: r.held, skipped: r.skipped } }
+    }
+
+    if (pathname === '/api/outbox/drop') {
+      const id = String(b.id ?? '')
+      if (!id) return { status: 400, body: { ok: false, error: '缺少 id' } }
+      const it = dropOutbox(root, pid, id, { reason: String(b.reason ?? '人为取消') })
+      return { status: 200, body: { ok: true, item: { id: it.id, status: it.status } } }
+    }
+
+    // 黑白名单（写）：切模式 / 加人 / 移出
+    if (pathname === '/api/audience') {
+      const kind = b.kind === 'groups' ? 'groups' : 'people'
+      if (b.action === 'mode') {
+        setAudienceMode(root, pid, kind, String(b.mode ?? 'off'))
+      } else if (b.action === 'add') {
+        setAudienceMember(root, pid, kind, String(b.id ?? ''), b.list === 'deny' ? 'deny' : 'allow')
+      } else if (b.action === 'remove') {
+        removeAudienceMember(root, pid, kind, String(b.id ?? ''))
+      } else {
+        return { status: 400, body: { ok: false, error: 'action 只有 mode / add / remove' } }
+      }
+      return { status: 200, body: { ok: true, kind, ...audienceView(root, pid, kind) } }
     }
 
     if (pathname === '/api/person/pin') {

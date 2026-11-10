@@ -454,7 +454,8 @@ export function reparseIdentityTexts(root, { autoLink = false } = {}) {
  * 权重就会跳级（例如 120 → 110 → 100 之间突然空一档）。
  */
 export function setPinned(root, pid, uid, pinned = true) {
-  if (!readProfile(root, pid, uid)) throw new Error('这个人还没有档案，先让她认识他')
+  // 还没有档案 = 她"还没认识"这个人。但人点「设为重点」就是在替她做判断：
+  // 那就顺势建一份最小档案（writeProfile 会建），而不是甩一句"先让她认识他"。
   const list = pinnedPeople(root, pid)
   const already = list.includes(uid)
 
