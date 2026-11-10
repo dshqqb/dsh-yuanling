@@ -13,7 +13,7 @@ import path from 'node:path'
 
 import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
-import { contextFor, recall } from './src/core/memory.js'
+import { contextFor, recall, addFact } from './src/core/memory.js'
 import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
 import { resolveChannel } from './src/core/channels.js'
@@ -121,6 +121,26 @@ const TOOLS = [
         name: { type: 'string', description: '群名（只在写入时用）' },
         feature: { type: 'string', description: '这个群是什么地方、什么氛围——自然语言，≤2000 字' },
       },
+    },
+  },
+  {
+    name: 'yuanling_remember',
+    description:
+      '**写一条事实**进记忆层（她"记住"的东西），用于规则提炼抓不到、但值得长期记住的事。\n' +
+      '**必须给 src 指针** —— 指向 raw 里真实存在的那条记录（形如 `raw/2026-11/10/qq.ndjson#01J...`，' +
+      '可以用 yuanling_context / yuanling_recall 里看到的 @指针，或 CLI `yuanling last`）。' +
+      '没有指针的事实一律拒绝：她记得的事必须能翻回原话。\n' +
+      '重复的表述不会写第二条，只会让原事实的「重复次数」+1（那正是人格演化的原料）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '事实本身，一句话，≤120 字' },
+        topic: { type: 'string', description: '归到哪个主题（记忆页按主题分文件），例如「喜好」「工作」' },
+        src: { type: 'string', description: '证据指针 raw/…ndjson#ULID —— 必填' },
+        slot: { type: 'string', description: '可选槽位：同槽位的新事实会关闭旧事实（例如「住处」）' },
+        imp: { type: 'number', description: '可选重要度 1–100；不填由核心估' },
+      },
+      required: ['text', 'topic', 'src'],
     },
   },
   {
@@ -535,6 +555,28 @@ async function callTool(root, name, args = {}) {
 
     const g = readGroupLive(root, pid, gid)
     return { text: `✓ 已写入群体 ${g.gid}\n\n${formatGroupDetail(root, pid, g)}` }
+  }
+
+  if (name === 'yuanling_remember') {
+    const text = String(args.text ?? '').trim()
+    const topic = String(args.topic ?? '').trim()
+    const src = String(args.src ?? '').trim()
+    if (!text) throw new Error('text 不能为空：要记住的那句话')
+    if (!topic) throw new Error('topic 不能为空：归到哪个主题（例如「喜好」）')
+    if (!src) throw new Error('src 必填：指向 raw 里那条原话（没有指针的事实不写）')
+    if ([...text].length > 120) throw new Error(`事实太长（${[...text].length} 字 > 120），摘一句就够`)
+
+    const r = addFact(root, pid, {
+      topic,
+      text,
+      src,
+      slot: typeof args.slot === 'string' && args.slot.trim() ? args.slot.trim() : null,
+      imp: Number.isFinite(Number(args.imp)) ? Number(args.imp) : null,
+    })
+    if (r.repeated) {
+      return { text: `· 这句话已经记过了（累计 ${r.fact.repeat} 次）：${r.fact.text}\n  重复本身就是信号，不用再写一条` }
+    }
+    return { text: `✓ 已记住：${r.fact.text}\n  主题：${topic}｜重要度 ${r.fact.imp}｜出处 ${src}` }
   }
 
   if (name === 'yuanling_drive') {

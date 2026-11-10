@@ -844,6 +844,8 @@ async function loadMemory() {
 
     const tags = el('span')
     tags.append(el('span', 'tag', h.topic))
+    // 规则提炼出来的事实：误报总是有的，标出来人才能一眼筛掉
+    if (h.kind === 'extracted') tags.append(el('span', 'tag', '提炼'))
     if (h.band) tags.append(el('span', 'tag purple', h.band))
     if (h.until) tags.append(el('span', 'tag warn', '已失效'))
     if (h.shielded) tags.append(el('span', 'tag bad', '已隔离'))

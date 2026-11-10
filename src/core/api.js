@@ -400,6 +400,7 @@ export function handleApi(root, url) {
           topic: h.topic,
           space: h.space,
           text: h.fact.text,
+          kind: h.fact.kind ?? 'fact',
           score: h.score,
           imp: h.fact.imp,
           clarity: h.clarity,

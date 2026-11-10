@@ -264,6 +264,7 @@ test('tools/list 里有 yuanling_observe', async () => {
     'yuanling_person_identity',
     'yuanling_purpose',
     'yuanling_recall',
+    'yuanling_remember',
     'yuanling_sources',
     'yuanling_style',
   ])

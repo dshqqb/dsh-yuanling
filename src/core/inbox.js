@@ -15,6 +15,57 @@ import { ensureGroup, gidForChannel } from './groups.js'
 import { canonicalChannelForIngest } from './channels.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
+import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
+import { noteGroupMessage, herNames } from './engage.js'
+import { addFact } from './memory.js'
+import { parseChannel } from './channels.js'
+
+/**
+ * 从一条刚入库的消息里提炼事实。
+ *
+ * 判据（用户定）：
+ *   · 私聊：**所有**私聊都提炼——不管说话的是不是管理员，私聊本身就是跟她说话；
+ *   · 群聊：只有"跟她有关"的才提炼。她没被提到、也没开口，那这个群聊跟她无关，
+ *     不记（哪怕说话的是管理员）；
+ *   · 她自己的话不是事实（role=bot 跳过），但她说话会开启"在场"。
+ */
+function extractFromRecord(root, pid, { text, role, channel, actorId = '', source, pointer, now }) {
+  const isBot = String(role ?? 'user') === 'bot'
+  const { kind, id } = parseChannel(channel)
+  let allowed = false
+
+  if (kind === 'private') {
+    allowed = !isBot
+  } else if (kind === 'group') {
+    // 群里说话的人：用 `<平台>:<原生号>` 当键。**不用 person uid**——
+    // 群里大多数成员没有人物卡，硬查要么查不到、要么逼着给每个群友建影子卡。
+    const actorKey = actorId ? `${source || 'qq'}:${String(actorId)}` : ''
+    const r = noteGroupMessage(root, { gid: id, text, actorKey, isBot, now, names: herNames(root, pid) })
+    allowed = r.engaged
+  }
+
+  if (!allowed) return []
+  if (!shouldExtract({ role, text })) return []
+
+  const facts = extractFacts(text)
+  const written = []
+  for (const f of facts) {
+    try {
+      addFact(root, pid, {
+        topic: f.topic,
+        text: f.text,
+        src: pointer,
+        kind: 'extracted',
+        imp: EXTRACT_IMPORTANCE,
+        person: null,
+      })
+      written.push(f)
+    } catch {
+      /* 单条失败不拖垮整批 */
+    }
+  }
+  return written
+}
 
 export const INBOX_VERSION = 1
 
@@ -130,6 +181,27 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
       // 只记"谁在这个群说过话"这件事本身，正文照旧只走 raw。
       if (!r.deduped) touchGroup(root, channel, item.ts ? String(item.ts) : null)
+
+      // ── 记忆自动成长：从这条消息里提炼事实 ──────────────────────────────
+      // 私聊：全部提炼（谁说的都算，私聊天然是跟她说话）。
+      // 群聊：只提炼"跟她有关"的（见 engage.js 的 4 分钟滑动 / 20 分钟封顶）。
+      // 事实必须挂 raw 指针——没有指针的事实不写（addFact 里强制的）。
+      if (!r.deduped) {
+        try {
+          const pid = readMarker(root)?.active
+          if (pid) extractFromRecord(root, pid, {
+            text: policy.text,
+            role: item.role ?? 'user',
+            channel,
+            actorId: item.actor?.id ?? '',
+            source,
+            pointer: `${r.file}#${r.id}`,
+            now: item.ts ? Date.parse(String(item.ts)) : Date.now(),
+          })
+        } catch {
+          /* 提炼失败不该让入库失败 */
+        }
+      }
       if (withRecords) {
         out.records.push({
           id: r.id,
