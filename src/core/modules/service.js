@@ -70,10 +70,10 @@ export const writeModuleConfig = writeModuleConfigFromManage
  *   · 崩溃到上限后标 crashed，不再自动拉起，等人工处理。
  */
 export class ModuleService {
-  constructor({ root, pid = null, onIngest = null, onSend = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, spawnImpl = undefined } = {}) {
+  constructor({ root, pid = null, onIngest = null, onSend = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, onEgress = null, spawnImpl = undefined } = {}) {
     this.root = root
     this.pid = pid
-    this.handlers = { onIngest, onSend, onPropose, onOutboxFetch, onOutboxAck }
+    this.handlers = { onIngest, onSend, onPropose, onOutboxFetch, onOutboxAck, onEgress }
     this.spawnImpl = spawnImpl
     this.procs = new Map() // id -> ModuleProcess
     this.logs = new Map() // id -> string[] 最近若干行（内存里，页面即时看）
@@ -260,6 +260,9 @@ export class ModuleService {
       // 但单独一个词：只做投递的模块可以只申请 send，不申请 outbox。
       'outbox.fetch': 'outbox',
       'outbox.ack': 'outbox',
+      // v1.6：模块要替她发消息，必须先过核心的闸门（rules/action + 名单 + 配额）。
+      // 用的是 send 这份权利：能发消息的模块才需要它。
+      'egress.request': 'send',
     }[op]
 
     if (need && !granted.includes(need)) {
@@ -318,6 +321,13 @@ export class ModuleService {
     if (op === 'outbox.ack') {
       if (!this.handlers.onOutboxAck) throw new Error('核心未配置 outbox 处理器')
       return this.handlers.onOutboxAck({ id, data })
+    }
+
+    // v1.6：出站准入。模块**不得自己决定发什么**——先把要发的内容交给核心，
+    // 核心跑完闸门才回 ok；模块拿到 ok 才去投递。被拒时核心不落正文、只记原因。
+    if (op === 'egress.request') {
+      if (!this.handlers.onEgress) throw new Error('核心未配置 egress 处理器')
+      return this.handlers.onEgress({ id, data })
     }
 
     // v1.4：模块回报自己的健康项（诊断页把它们并进核心那份清单）。

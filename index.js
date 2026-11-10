@@ -553,6 +553,8 @@ function startModules(ctx, config, root, pid) {
         // 少接一个，模块就是"装上了但干不了活"——而且报错是"核心未配置处理器"，很难查。
         onIngest: core.onIngest,
         onPropose: core.onPropose,
+        // v1.6：模块要发消息前必须先问过核心（规则 + 名单 + 配额），通过才允许投递
+        onEgress: core.onEgress,
         // v1.5：模块来取"她想说的话"，并回报说没说出来。
         // 队列由核心算（动机 + 目的 + 闸门），模块只负责投递——和 send 的分工一致。
         onOutboxFetch: ({ id: moduleId, data }) => ({

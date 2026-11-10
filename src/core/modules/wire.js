@@ -8,6 +8,7 @@
 import { ingest } from '../inbox.js'
 import { addFact } from '../memory.js'
 import { readMarker } from '../persona.js'
+import { requestEgress } from '../egress.js'
 
 /**
  * 造一组 handler 交给 ModuleService。
@@ -47,6 +48,21 @@ export function moduleHandlers({ root, pid = null } = {}) {
         status: r.added ? 'accepted' : r.repeated ? 'deduped' : 'rejected',
         factId: r.fact?.id ?? null,
       }
+    },
+
+    /**
+     * `egress.request`：模块要替她发消息——**先说给核心听，拿到 ok 才允许投递**。
+     * 拒绝时核心不落正文（只记原因），所以模块拿不到"被拒内容的副本"。
+     */
+    onEgress: ({ id, data }) => {
+      const p = activePid()
+      if (!p) return { ok: false, code: 'E_NO_PERSONA', reason: '还没有激活人格' }
+      return requestEgress(root, p, {
+        moduleId: id,
+        channel: data?.channel,
+        text: data?.text,
+        media: Array.isArray(data?.media) ? data.media : [],
+      })
     },
   }
 }

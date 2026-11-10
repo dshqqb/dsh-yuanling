@@ -3,7 +3,7 @@
 // 纯函数，不碰文件系统：给它一个已解析的对象，回 {ok, errors[]}。
 // 校验规则逐条对应 §3.3，宁可拒装，也不让一个坏的 manifest 进注册表。
 export const API_MAJOR = 1
-export const API_MINOR = 5
+export const API_MINOR = 6
 
 /** §3.2 id 保留字：模块 id 会成为 raw 的来源名，撞名会污染原始层。 */
 export const RESERVED_IDS = [

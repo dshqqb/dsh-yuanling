@@ -1,6 +1,7 @@
-# PROTOCOL · 原灵模块协议（v1.5）
+# PROTOCOL · 原灵模块协议（v1.6）
 
-> 状态：**v1.5 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> 状态：**v1.6 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> v1.6：⑨ `egress.request`——模块要发消息必须**先问过核心**（`rules/action` + 名单 + 配额），通过才投递；见 §5.1.4。
 > v1.5：⑧ `outbox` 能力 + `outbox.fetch` / `outbox.ack`——把她主动想说的话交给模块，并听它回报结果（见 §5.1.3）。
 > v1.1：① `sources` 声明、`provide.source` 能力、安装即空授权；② `source.fetch` 与模型工具 `yuanling_sources` / `yuanling_fetch`。
 > v1.2：③ manifest 增 `ui.tabs`，新增只读 op `ui.get`——模块能给管理台加标签页，但**只能给数据，不能给标记**（见 §3.5 / §5.2.3）。
@@ -367,6 +368,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | `diag.report` | `{items:[{code, level, hint, detail?}]}` | `{accepted, truncated}` | **v1.4**：让核心的「诊断」页带上模块的专业判断。见 §5.1.2 |
 | `outbox.fetch` | `{limit?}` | `{version:1, items:[{id, channel, target, text, need, why, created}]}` | **v1.5**：取"她主动想说的话"。需 `outbox`；取出即 `claimed`；见 §5.1.3 |
 | `outbox.ack` | `{id, ok, code?, message?}` | `{id, status:'sent'\|'pending'\|'dropped'}` | **v1.5**：回报说没说出来。`ok:false` 会重试，连续失败到上限自动放弃 |
+| `egress.request` | `{channel, text, media?, trace?}` | `{ok:true, id, channel}` \| `{ok:false, code, reason}` | **v1.6**：要发消息先问核心。需 `send`；被拒时**正文不落盘**。见 §5.1.4 |
 
 #### 5.1.3 `outbox.*`：把她"主动想说的话"交给模块（v1.5）
 
@@ -397,6 +399,39 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 4. **领了不 ack 会超时回收**（5 分钟）：模块崩了，队列不能永久卡在 `claimed`。
 
 `target` 是平台侧投递地址的原始字符串（群号/QQ 号），语义与 `send` 的 `target` 完全一致。
+
+#### 5.1.4 `egress.request`：出站必须问过核心（v1.6）
+
+§1 第 4 条说"模块不能自己决定发什么"。v1.5 之前这条**没有执行点**——回复内容是模型产生的，
+模块拿到就直接发，于是静默时段、配额、黑白名单全被绕过去了。`egress.request` 就是那个执行点。
+
+```jsonc
+// 模块 → 核心：我要发这条
+{ "op":"egress.request", "id":"…", "data":{
+    "channel":"private:person_x",
+    "text":"嗯，我在。",
+    "media":[], "trace":"01JCV…"
+} }
+// 通过
+{ "ok":true, "result":{ "ok":true, "id":"eg_…", "channel":"private:person_x" } }
+// 拒绝（正文不落盘、不回显）
+{ "ok":true, "result":{ "ok":false, "code":"E_REFUSED", "reason":"quiet_hours" } }
+```
+
+核心依次检查四条：
+
+1. **场景必须是内部编号**（`private:person_…` / `group:grp_…`）——外部号码当场景就是回到"频道属于某个 App"；
+2. **`rules/action`**：`deny` 里的 `send`、静默时段；
+3. **黑白名单**：这个对象现在允许她回话吗（与"只影响回话、不影响接收"同一条口径）；
+4. **配额**：每小时/每天上限（`per_target` 决定按人还是全局），和主动开口**共用同一本账**——
+   她一天说多少句，不该有两本账。
+
+账本：`personas/<p>/self/egress.ndjson` 只记 `{id, ts, module, channel, bytes, chars, hash, media}`，
+**不记正文**——留哈希是为了"能不能对账"，不是为了"留着她说过什么"。
+被拒时记一条 refusal（同样不含正文），管理台「拒绝记录」里能看到原因。
+
+> 通过之后由**模块自己投递**（而不是核心再调 `send`）：这就是"核心决定、模块投递"。
+> 多一跳只会让"到底谁发的"更难答。
 
 #### 5.1.2 `diag.report`：让模块的专业判断进同一张诊断清单（v1.4）
 
