@@ -11,6 +11,8 @@ const html = fs.readFileSync(path.join(REPO, 'web', 'index.html'), 'utf8')
 const js = fs.readFileSync(path.join(REPO, 'web', 'app.js'), 'utf8')
 
 const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]))
+// 有些元素是 app.js 运行时建的（例如昵称卡跟着「名称」后面），也要算"存在"
+for (const m of js.matchAll(/\.id\s*=\s*'([^']+)'/g)) ids.add(m[1])
 const used = new Set([...js.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]))
 
 const missing = [...used].filter((u) => !ids.has(u))

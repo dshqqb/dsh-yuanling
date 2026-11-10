@@ -206,6 +206,11 @@ export function handleApi(root, url) {
     return { status: 200, body: { ok: true, kind, ...audienceView(root, pid, kind) } }
   }
 
+  // 人格偏好（昵称 / 对管理员更温柔）：切人格就变的那部分设置
+  if (pathname === '/api/prefs') {
+    return { status: 200, body: { ok: true, prefs: readPrefs(root, pid) } }
+  }
+
   // 主动开口的待发队列：只读 + 取消（人不要她说这句）。
   // 这一层只算不发送——真发送由模块来取，所以页面上看到的是"她本来想说什么"。
   if (pathname === '/api/outbox') {

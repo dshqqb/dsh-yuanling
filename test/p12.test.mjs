@@ -51,8 +51,8 @@ test('card：buildCard 不含人物——人物卡由 contextFor 按在场者追
   assert.ok(!card.includes('[人物]'), '卡片不该有全局人物榜')
 })
 
-test('card：预算常量仍是 8KB，裁剪顺序只剩 最新 → 最深刻', () => {
-  assert.equal(CARD_BUDGET_BYTES, 8192)
+test('card：预算常量是 32KB，裁剪顺序只剩 最新 → 最深刻', () => {
+  assert.equal(CARD_BUDGET_BYTES, 32768)
 
   const root = tmpRoot()
   const r = say(root, { id: '10001', channel: 'private:10001' })

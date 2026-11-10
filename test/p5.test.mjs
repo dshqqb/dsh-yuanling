@@ -235,7 +235,7 @@ test('card：预算不够时先砍「最新」，再砍「最深刻」，「最�
   assert.ok(!/\[最新\]/.test(card), '预算不够时应该先砍「最新」')
 })
 
-test('card：「最新」最多 10 条', () => {
+test('card：「最新」最多 12 条', () => {
   const root = tmpRoot()
   const { ptr } = seedRaw(root)
   for (let i = 0; i < 14; i += 1) {
@@ -244,7 +244,7 @@ test('card：「最新」最多 10 条', () => {
   const card = buildCard(root, PID, { budget: 4000 })
   const line = card.split('\n').find((l) => l.startsWith('[最新]'))
   assert.ok(line, '应该有「最新」段')
-  assert.equal(line.split('；').length, 10, '「最新」配额是 10 条')
+  assert.equal(line.split('；').length, 12, '「最新」配额是 12 条')
 })
 
 test('card：gone 的事实不进卡片', () => {

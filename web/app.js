@@ -540,6 +540,77 @@ function fileBlock(f, form) {
   return wrap
 }
 
+/**
+ * 昵称那张卡。它在「名称」之后、骨架之前——先是谁，再是怎么叫。
+ *
+ * 它**单独保存**（存的是人格偏好，不是底稿）：所以不要和下面那个大的「保存」按钮绑在一起，
+ * 否则人会以为改了名字也把昵称存了。
+ */
+function nicknameCard() {
+  const c = el('div', 'card')
+  const head = el('div', 'card-head')
+  head.append(el('h3', undefined, '昵称'))
+  head.append(el('span', 'muted small', '她可以被怎么叫：用户能填，她自己也会从记忆里归纳（空格分隔多个）'))
+  c.append(head)
+
+  const row = el('div', 'field-row')
+  const input = document.createElement('input')
+  input.id = 'nicknames'
+  input.placeholder = '例如：小灵 灵灵 阿原'
+  const btn = document.createElement('button')
+  btn.id = 'nicknames-save'
+  btn.className = 'btn small'
+  btn.textContent = '保存昵称'
+  const msg = el('span', 'muted small')
+  msg.id = 'nicknames-msg'
+  row.append(input, btn, msg)
+  c.append(row)
+
+  c.append(
+    el(
+      'div',
+      'muted small',
+      '昵称会和名字一起用于"群里是不是在叫她"的判定；填进来的每一条都会进注入（[称呼]），' +
+        '所以别填太多——最多 8 个、每个 12 字。它跟人格走，换人格就是另一组。',
+    ),
+  )
+
+  btn.addEventListener('click', () => saveNicknames().catch(() => {}))
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      saveNicknames().catch(() => {})
+    }
+  })
+  return c
+}
+
+async function loadNicknames() {
+  const d = await api('/api/prefs')
+  const nicks = d.prefs?.nicknames ?? []
+  $('nicknames').value = nicks.join(' ')
+  $('nicknames-msg').textContent = nicks.length
+    ? `${nicks.length} 个（会进注入，也用于判断群里是不是在叫她）`
+    : '还没有昵称。'
+}
+
+async function saveNicknames() {
+  const raw = $('nicknames').value
+  const say = $('nicknames-msg')
+  try {
+    const d = await postApi('/api/prefs', { nicknames: raw })
+    $('nicknames').value = (d.prefs?.nicknames ?? []).join(' ')
+    say.textContent = d.prefs?.nicknames?.length
+      ? `已保存 ${d.prefs.nicknames.length} 个昵称`
+      : '已清空昵称'
+    say.classList.remove('dirty')
+  } catch (err) {
+    // 超长 / 超量要在这里说清楚，而不是悄悄截断
+    say.textContent = `保存失败：${err.message}`
+    say.classList.add('dirty')
+  }
+}
+
 async function loadOverview() {
   hidePageError()
   const say = $('persona-save-msg')
@@ -564,6 +635,8 @@ async function loadOverview() {
   $('persona-active-tag').textContent = `● ${card.name}`
   $('persona-meta').textContent = `（${card.id}）· personas/${card.id} · 建于 ${String(card.created_at ?? '').replace('T', ' ').slice(0, 19)}`
 
+  // 昵称：和名字放得很近，但它不是"名字"——名字只有人能改（在 SELF.md 里），
+  // 昵称是叫法，她自己也会往里加。
   // 名称是卡的一部分：单独一张，放在卡最上面
   const nameCard = el('div', 'card')
   const nh = el('div', 'card-head')
@@ -579,6 +652,9 @@ async function loadOverview() {
   row.append(nameIn)
   nameCard.append(row)
   box.append(nameCard)
+  // 昵称紧跟在「名称」后面：先是谁，再是怎么叫。
+  box.append(nicknameCard())
+  loadNicknames().catch(() => {})
 
   for (const f of card.files) box.append(fileBlock(f, form))
 
@@ -1560,15 +1636,9 @@ function ruleGroup(g, own, effective) {
 }
 
 async function loadRules() {
-  await loadRuleScenes()
-
-  const ch = $('rule-scene').value
-  const q = ch ? `?channel=${encodeURIComponent(ch)}` : ''
-  const d = await api(`/api/rules${q}`)
-
-  $('rule-src').textContent = d.sources.length
-    ? `这条继承链上实际读了：${d.sources.map((s) => s.split('/').slice(-1)[0] || s).join(' → ')}`
-    : '（没有任何规则文件，全部取默认值）'
+  // 规则页只管"当前人格的底层规则"。场景继承链的选择器已经删了：
+  // 它只在"三层都能在页面上编辑"时才有意义，而群体/人物规则以后挪到各自页面。
+  const d = await api('/api/rules')
 
   const box = $('rule-form')
   box.innerHTML = ''
@@ -1583,9 +1653,9 @@ async function loadRules() {
   gbox.innerHTML = ''
   const gr = d.guardrails ?? {}
   const rows = [
-    ['永不入库（连计数都不留）', gr.never_record],
-    ['永不注入', gr.never_inject],
-    ['永不执行的动作', gr.never_do],
+    ['永不记录（连原始层都不写）', gr.never_record],
+    ['永不注入（记下来，但不进上下文）', gr.never_inject],
+    ['永不执行（宣言）', gr.never_do],
   ]
   for (const [label, list] of rows) {
     const n = el('div', 'item')
@@ -1607,7 +1677,7 @@ async function saveRules() {
   for (const [pathKey, io] of RULE_INPUTS.fields) patch[pathKey] = io.get()
 
   try {
-    const r = await postApi('/api/rules', { patch, channel: $('rule-scene').value || null })
+    const r = await postApi('/api/rules', { patch })
     await loadRules()
     msg.textContent = r.changed
       ? `✓ 已保存${r.dropped?.length ? `（${r.dropped.length} 个未知字段被忽略：${r.dropped.join('、')}）` : ''}`
@@ -1618,36 +1688,6 @@ async function saveRules() {
   } finally {
     btn.disabled = false
   }
-}
-
-/** 规则页的场景下拉和注入预览共用一份清单，但用途不同：这里选的是"按哪条继承链算有效值"。 */
-async function loadRuleScenes() {
-  const sel = $('rule-scene')
-  let scenes = []
-  try {
-    scenes = (await api('/api/scenes?days=90')).scenes ?? []
-  } catch {
-    scenes = []
-  }
-  const keep = sel.value
-  sel.innerHTML = ''
-
-  const none = document.createElement('option')
-  none.value = ''
-  none.textContent = '（只看全局层）'
-  sel.append(none)
-
-  for (const c of scenes) {
-    const o = document.createElement('option')
-    o.value = c.scene
-    o.textContent = sceneLabel(c.scene)
-    sel.append(o)
-  }
-  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep
-
-  $('rule-scene-hint').textContent = scenes.length
-    ? '换个场景，页面显示的"有效值"就换一条继承链（群体/人物的覆盖层目前只能改文件）。'
-    : '原始层里还没有任何场景记录，所以现在只能看全局层。'
 }
 
 async function loadUsage() {
@@ -3135,7 +3175,6 @@ $('card-scene').addEventListener('change', () => loadCard().catch((err) => showP
 $('mem-go').addEventListener('click', () => loadMemory().catch(() => {}))
 $('mem-q').addEventListener('keydown', (e) => e.key === 'Enter' && loadMemory().catch(() => {}))
 $('mem-all').addEventListener('change', () => loadMemory().catch(() => {}))
-$('rule-scene').addEventListener('change', () => loadRules().catch((err) => showPageError(err)))
 $('rule-save').addEventListener('click', () => {
   saveRules().catch((err) => {
     $('rule-msg').textContent = `保存失败：${err.message}`

@@ -25,8 +25,8 @@ before(() => {
 })
 
 test('预算与上限是同一个数：写入上限不能大于注入预算', () => {
-  // 如果写入允许 400 字节、注入只给 240，就会出现"写进去了但没生效"——最难查的那种
-  assert.equal(EXPRESSION_BYTES, 240)
+  // 如果写入允许 400 字节、注入只给 320，就会出现"写进去了但没生效"——最难查的那种
+  assert.equal(EXPRESSION_BYTES, 320)
   assert.equal(readStyle(root, PID).budget, EXPRESSION_BYTES)
 })
 

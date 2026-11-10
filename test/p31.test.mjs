@@ -145,10 +145,14 @@ test('样式：模块页要用的类都有定义', () => {
   }
 })
 
-test('一致性：app.js 里引用的 id 在 HTML 里都存在', () => {
+test('一致性：app.js 里引用的 id 都存在（静态 HTML 或 app.js 自己创建）', () => {
   // 这条是白屏的常见根因。**不用 execFileSync**：受限环境里同步管道会 EPERM，
   // 直接在这里算一遍即可（逻辑与 scripts/check-web-ids.mjs 相同）。
+  //
+  // 有些元素是 app.js 运行时建的（例如跟进「名称」后面的昵称卡），
+  // 所以"存在"要算上 `el.id = 'x'` 这种动态创建，否则会误报。
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]))
+  for (const m of app.matchAll(/\.id\s*=\s*'([^']+)'/g)) ids.add(m[1])
   const used = new Set([...app.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]))
   const missing = [...used].filter((u) => !ids.has(u))
   assert.deepEqual(missing, [], `app.js 引用了不存在的元素：${missing.join(', ')}`)

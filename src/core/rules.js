@@ -109,9 +109,12 @@ function mergeLayer(acc, layer) {
 
 const DEFAULTS = {
   schema: 1,
-  recall: { max_inject: 800, hidden_kinds: [], min_importance: 0 },
+  // 记忆召回：只管"哪些事实能进上下文"；总量由注入预算管（不再有 max_inject 这种重复旋钮）
+  recall: { hidden_kinds: [], min_importance: 0 },
   action: { proactive: 'on', quiet_hours: [], max_per_hour: 3, max_per_day: 20, per_target: true, group_proactive: false },
   persona: { evolve: true, auto_adopt: true, daily_auto_limit: 1, auto_approve_days: 3, rollback_days: 7 },
+  // deny/allow 不再有页面入口（与主动开口的总开关重复），但合并逻辑保留：
+  // 老规则文件里写了也不该被静默忽略——CLI `rule check` 仍会用。
   deny: [],
   allow: [],
 }
@@ -270,9 +273,8 @@ export const RULE_FIELDS = [
   },
   {
     group: '开口意愿',
-    desc: '她能不能主动说话、几点之后闭嘴、一小时说几句。这是"意愿"，和模块的"能力上限"取更严的那个。',
-    honored: false,
-    why: '运行时代码还没接（要等能真发消息的适配器）；现在只有 `yuanling rule check` 会读它',
+    desc: '她能不能主动说话、几点之后闭嘴、一小时说几句。**这是主动开口的闸门**（管"什么时候说、说多少"），和黑白名单（管"跟谁说"）是两回事。',
+    honored: true,
     fields: [
       { path: 'action.proactive', label: '主动开口', type: 'enum', options: [['on', '允许'], ['off', '不许']], def: 'on' },
       { path: 'action.group_proactive', label: '群里主动插话', type: 'bool', def: false },
@@ -284,23 +286,25 @@ export const RULE_FIELDS = [
   },
   {
     group: '记忆召回',
-    desc: '一条事实够不够格进上下文。',
-    honored: false,
-    why: '这块是死代码：`checkRecall` / `checkRecallKind` 没有任何调用者。改它不会有任何效果',
+    desc: '一条事实够不够格进上下文。**它管的是"哪些记忆能进"，不是"能进多少"**——总量由注入预算管。',
+    honored: true,
     fields: [
-      { path: 'recall.max_inject', label: '一次最多注入多少字', type: 'int', min: 100, max: 8000, def: 800 },
-      { path: 'recall.min_importance', label: '最低重要度', type: 'int', min: 0, max: 100, def: 0 },
-      { path: 'recall.hidden_kinds', label: '永不注入的事实类型', type: 'list', def: [], hint: '例如 identity-claim' },
-    ],
-  },
-  {
-    group: '黑名单',
-    desc: '按动作名拉黑。',
-    honored: false,
-    why: '只有 CLI 读；运行时执行的是 `action.*` 和根级 guardrails',
-    fields: [
-      { path: 'deny', label: '禁止的动作', type: 'list', def: [], hint: '例如 proactive' },
-      { path: 'allow', label: '允许的动作（可解除上层 deny）', type: 'list', def: [] },
+      {
+        path: 'recall.min_importance',
+        label: '最低重要度',
+        type: 'int',
+        min: 0,
+        max: 100,
+        def: 0,
+        hint: '低于这个分数的事实不往上下文里放（0 = 不过滤）。适合把"随口一提"挡在外面',
+      },
+      {
+        path: 'recall.hidden_kinds',
+        label: '永不注入的事实类型',
+        type: 'list',
+        def: [],
+        hint: '例如 identity-claim：她的账号归属不该每轮都摆到面前。类型见记忆里的 kind 字段',
+      },
     ],
   },
 ]

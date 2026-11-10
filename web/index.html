@@ -360,19 +360,10 @@
         <section id="tab-rules" class="page" hidden>
           <div class="page-head">
             <h2>规则</h2>
-            <p class="muted">只对<b>当前人格</b>生效。新建人格会自带一份默认值，各自可以不一样。</p>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <h3>这些规则从哪来</h3>
-              <span class="muted small">越具体越优先：全局 → 群 → 私聊</span>
-            </div>
-            <div class="field-row">
-              <select id="rule-scene"></select>
-            </div>
-            <div class="muted small" id="rule-scene-hint"></div>
-            <div id="rule-src" class="muted small"></div>
+            <p class="muted">
+              这是人格的<b>底层规则</b>：只对<b>当前人格</b>生效，新建人格会自带一份默认值。
+              针对某个人、某个群体的规则以后放到各自页面。
+            </p>
           </div>
 
           <div id="rule-form"></div>
@@ -380,7 +371,14 @@
           <div class="card">
             <div class="card-head">
               <h3>根级硬线（不参与合并，谁都改不动）</h3>
-              <span class="muted small">guardrails.json</span>
+              <span class="muted small">guardrails.json · 写在数据目录根上，所有人格共用</span>
+            </div>
+            <div class="muted small">
+              <b>永不记录</b>：命中关键词的内容<u>连原始层都不写</u>（入库前就拦掉）。<br />
+              <b>永不注入</b>：内容照常记进原始层，但<u>不放进她的上下文</u>——"记下来但不让她说"，
+              和删除是两件事。<br />
+              <b>永不执行</b>：一份宣言。核心本来就没有"改自己规则 / 读写数据目录以外的文件 / 自主付费"这些能力，
+              这条写给人看，也写给将来的模块看。
             </div>
             <div id="rule-guardrails" class="list"></div>
           </div>
@@ -393,9 +391,7 @@
             </div>
             <div class="muted small">
               保存只写<b>当前人格</b>的规则（<code>personas/&lt;人格&gt;/rules/global.json</code>）——
-              换人格就是另一份，新建人格拿的是默认值。群与私聊的覆盖层故意不做页面编辑，
-              那是"越具体越优先"的继承，压平写回某一层等于把继承改掉。
-              模块自己的能力上限在「模块」页里。
+              换人格就是另一份，新建人格拿的是默认值。模块自己的能力上限在「模块」页里。
             </div>
           </div>
         </section>

@@ -65,13 +65,13 @@ test('字段表：每项都有中文标签、类型和默认值（页面照着�
 })
 
 test('字段表：生效与否是事实，不是愿望', () => {
-  // persona.* 真的被 proposals.js 读；action/recall/deny 目前只有 CLI 读者。
-  // 这条测试是在盯"别把未生效的字段标成生效"——那是最容易骗人的地方。
+  // persona.* 被 proposals.js 读；action.* 被 proactive.js 读；recall.* 被 memory.buildCard 读。
+  // 这条测试盯的是"别把未生效的字段标成生效"——那是最容易骗人的地方。
   const byGroup = Object.fromEntries(ruleFieldSpec().map((g) => [g.group, g]))
   assert.equal(byGroup['提案演化'].honored, true)
-  assert.equal(byGroup['开口意愿'].honored, false)
-  assert.ok(byGroup['开口意愿'].why, '未生效的组必须说明为什么')
-  assert.equal(byGroup['记忆召回'].honored, false)
+  assert.equal(byGroup['开口意愿'].honored, true, '主动开口真的读这些闸门')
+  assert.equal(byGroup['记忆召回'].honored, true, 'hidden_kinds / min_importance 真的在过滤注入')
+  assert.equal(byGroup['黑名单'], undefined, '动作名黑名单已删除（与主动开关重复）')
 })
 
 test('字段表：每个 path 在 DEFAULTS 里都有对应位置', () => {
@@ -115,7 +115,7 @@ test('writeGlobalRules：白名单之外的键被丢掉并列出来，不静默�
 test('writeGlobalRules：非法值抛错，不留半截写入', () => {
   const before = fs.readFileSync(path.join(root, personaPaths(PID).globalRule), 'utf8')
   assert.throws(
-    () => writeGlobalRules(root, PID, { 'persona.auto_approve_days': 5, 'recall.max_inject': 'abc' }),
+    () => writeGlobalRules(root, PID, { 'persona.auto_approve_days': 5, 'recall.min_importance': 'abc' }),
     /要的是数字/,
   )
   assert.equal(fs.readFileSync(path.join(root, personaPaths(PID).globalRule), 'utf8'), before)

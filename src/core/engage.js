@@ -14,10 +14,12 @@ import fs from 'node:fs'
 import { exists, readJson, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 
+import { readPrefs } from './prefs.js'
+
 export const ENGAGE_WINDOW_MS = 4 * 60 * 1000
 export const ENGAGE_MAX_MS = 20 * 60 * 1000
 
-/** 她可能被怎么称呼：SELF.md 的名字 + 兜底词。 */
+/** 她说不出名字时的兜底叫法（SELF.md 读不到时不至于判定失败）。 */
 const FALLBACK_NAMES = ['原灵']
 
 function engagePath(root) {
@@ -25,8 +27,8 @@ function engagePath(root) {
 }
 
 /**
- * 读她自己的名字（SELF.md 的「名字：xxx」）。
- * 读不到就用兜底词——判定"有没有提到她"不能因为这个挂掉。
+ * 她可能被怎么称呼：SELF.md 的名字 + 昵称（用户填的或她自己在记忆里归纳的）+ 兜底词。
+ * 昵称也算"叫她"——否则群里喊"灵灵"她不会有反应。
  */
 export function herNames(root, pid) {
   const names = new Set(FALLBACK_NAMES)
@@ -40,6 +42,12 @@ export function herNames(root, pid) {
     }
   } catch {
     /* 名字读不到不算错 */
+  }
+  try {
+    const prefs = readPrefs(root, pid)
+    for (const n of prefs.nicknames ?? []) if (n) names.add(String(n))
+  } catch {
+    /* 偏好读坏了就当没有昵称 */
   }
   return [...names]
 }

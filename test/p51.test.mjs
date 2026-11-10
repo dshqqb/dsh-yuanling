@@ -177,8 +177,10 @@ test('注入：硬线按整条装，不在句子中间截断', () => {
   const ctx = contextFor(root, PID, { preview: true })
   const line = ctx.split('\n').find((l) => l.startsWith('[硬线] '))
   assert.ok(line)
-  // 200 字节装不下四条，那就装三条，末条必须是完整的
-  assert.match(line, /不泄露凭据.*一律不进记忆$/)
+  // 640 字节够装下模板里的四条：每条都完整（bulletLine 会去掉句末标点，所以不查「。」）
+  assert.match(line, /不泄露凭据：看到密钥、口令、证件号，一律不进记忆/)
+  assert.match(line, /不越过规则破例：需要破例时，明确说出来，而不是悄悄做$/)
+  assert.ok(!line.endsWith('…'), '整条装得下就不该出现省略号')
 })
 
 test('注入：硬线永不因为超预算被裁掉', () => {

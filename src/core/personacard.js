@@ -245,12 +245,57 @@ export function saveCardFile(root, pid, { file, sections, text, expect, reason }
     throw new Error('需要 sections（分节）或 text（整篇）')
   }
 
+  // 预算校验：**超了就拒绝保存**，而不是写进去再静默截断。
+  //
+  // 硬线与表达层是"必须进上下文"的两样东西：写进去却被裁掉，等于人以为改了、她其实没读到。
+  // 以前硬线就是这么被砍的（278 字节 > 200 的预算，被 clipBytes 悄悄截掉一截）。
+  if (spec.key === 'lines') {
+    const bytes = hardLineBytes(next)
+    if (bytes > HARD_LINE_BYTES) {
+      throw new Error(
+        `硬线超出预算：${bytes} 字节 > ${HARD_LINE_BYTES} 字节（约 ${Math.floor(HARD_LINE_BYTES / 3)} 汉字）。` +
+          ' 硬线永不被裁剪，所以写超了不会生效——请删短一点再保存',
+      )
+    }
+  }
+  if (spec.key === 'style') {
+    const bytes = styleItemsBytes(next)
+    if (bytes > EXPRESSION_BYTES) {
+      throw new Error(
+        `表达层超出预算：${bytes} 字节 > ${EXPRESSION_BYTES} 字节（约 ${Math.floor(EXPRESSION_BYTES / 3)} 汉字）。` +
+          ' 写超了不会生效——删一条或写短点',
+      )
+    }
+  }
+
   const written = writeTracked(root, rel, next, {
     actor: 'human:editor',
     reason: reason || `管理台编辑人格底稿：${spec.label}`,
   })
 
   return { file: spec.key, path: rel, changed: written.changed, hash: written.hash, touched }
+}
+
+/**
+ * 硬线文件里"真正会进注入"的字节数（只看 `- ` 开头的条目，和 memory.bulletLine 同一口径）。
+ */
+function hardLineBytes(text) {
+  const items = []
+  for (const line of String(text ?? '').split('\n')) {
+    const m = /^\s*-\s+(.+?)\s*$/.exec(line)
+    if (m && !/^<.*>$/.test(m[1].trim())) items.push(m[1].trim())
+  }
+  return Buffer.byteLength(items.join('；'), 'utf8')
+}
+
+/** 表达层同口径：只算条目，不算标题与说明。 */
+function styleItemsBytes(text) {
+  const items = []
+  for (const line of String(text ?? '').split('\n')) {
+    const m = /^\s*-\s+(.+?)\s*$/.exec(line)
+    if (m && !/^<.*>$/.test(m[1].trim())) items.push(m[1].trim())
+  }
+  return Buffer.byteLength(items.join('；'), 'utf8')
 }
 
 /**

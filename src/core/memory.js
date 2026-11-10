@@ -20,6 +20,7 @@ import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readPro
 import { groupsForContext, groupCardLine } from './groups.js'
 import { readPrefs } from './prefs.js'
 import { nativeChannelsFor } from './channels.js'
+import { loadEffectiveRules, loadGuardrails } from './rules.js'
 import {
   ageDays,
   clarityOf,
@@ -34,11 +35,11 @@ import {
 
 export const DEFAULT_SPACE = '日常'
 // 1M 上下文下 8KB 只占 0.5%，放得下；但预算的作用是逼出取舍，不是省钱。
-export const CARD_BUDGET_BYTES = 8192
+export const CARD_BUDGET_BYTES = 32768
 export const RECENT_DAYS = 14
 
 // 各段配额：宁少勿滥——一条对的记忆胜过十条平庸的。
-export const QUOTA = { first: 3, deep: 6, recent: 10 }
+export const QUOTA = { first: 6, deep: 16, recent: 12 }
 // 单张人物卡的字节上限。人物卡是按对话对象检索的档案，不是全局榜单，所以没有人数配额。
 export const PERSON_BUDGET_BYTES = 600
 // 一次上下文里最多带几张人物卡（群聊里在说话的那几个人）
@@ -445,7 +446,14 @@ export function why(root, pid, factId) {
  * 为什么要把「说话方式」也注入：语气是最直接影响输出的东西，不进去等于白写。
  * 为什么不全篇注入：骨架会抢记忆的预算，「最初 3 条」是更硬的底线。
  */
-export const SKELETON_BYTES = { core: 120, speak: 200, values: 160 }
+/**
+ * 骨架三段的预算（字节）。
+ *
+ * 用户 2026-11-10 定的：320 / 520 / 400。按中文 3 字节/字算，合计约 410 个汉字——
+ * 三段分开管，是因为裁剪优先级不同（预算紧时先砍「在乎」，不砍「骨架」）。
+ * 单位是**字节**，页面上的"字节"标签就是这个数；描述里会同时给"约等于多少汉字"。
+ */
+export const SKELETON_BYTES = { core: 320, speak: 520, values: 400 }
 
 /**
  * 两份"不是记忆，但每轮都该在她眼前"的底稿：
@@ -454,14 +462,15 @@ export const SKELETON_BYTES = { core: 120, speak: 200, values: 160 }
  *
  * "关于你"那类东西不在这里：它由记忆事实 + 人物卡提供，不再有第三份 markdown。
  */
-export const HARD_LINE_BYTES = 200
+/** 硬线预算（字节）。用户定：640。硬线**永不被裁剪**，所以写超了必须拒绝保存，不能静默截断。 */
+export const HARD_LINE_BYTES = 640
 /**
  * 表达层注入预算。
  *
  * 这个数字和 `style.js` 的写入上限是**同一个**：写进 style.md 的每一条都必须进上下文，
  * 所以写入时按这个预算卡住。调大它，她会能记住更多习惯；调小，写入会先被拒。
  */
-export const EXPRESSION_BYTES = 240
+export const EXPRESSION_BYTES = 320
 
 /** 按 `## 标题` 切段，返回 { 标题: 正文 }。 */
 function splitSections(text) {
@@ -578,6 +587,16 @@ export function personaExtraLines(root, pid) {
     }
   } catch {
     /* 偏好读坏了就当没勾：少一行要求，比注入失败好 */
+  }
+
+  // 昵称：她可以被怎么叫。和名字一起用于"群里是不是在叫她"的判定（engage.js），
+  // 所以这里也要让她看得见——否则她不知道自己被叫过什么。
+  try {
+    const prefs = readPrefs(root, pid)
+    const nicks = Array.isArray(prefs.nicknames) ? prefs.nicknames.filter(Boolean) : []
+    if (nicks.length) out.push(`[称呼] 她也可以被叫作：${clipBytes(nicks.join('、'), 160)}`)
+  } catch {
+    /* 偏好读坏了就不显示 */
   }
 
   // 动机：她自己"最想要什么"。只在真的偏高时才说——恒定的那几行是噪音。
@@ -786,11 +805,21 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
   const entries = listEntries(root, pid)
   const counts = recallCounts(root, pid, { now })
 
+  // 记忆召回的规则（`recall.*`）和根级硬线（`guardrails.never_inject`）：
+  //   · hidden_kinds / min_importance → **这条事实要不要进上下文**
+  //   · never_inject → 命中关键词的一律不进（但 raw 里还在，屏蔽是"出口"的事，不是"删除"）
+  // 总量（能进多少）由 budget 与 QUOTA 管，这两项只管"准不准进"。
+  const { rules } = loadEffectiveRules(root, pid)
+  const hiddenKinds = new Set((rules.recall?.hidden_kinds ?? []).map(String))
+  const minImportance = Number(rules.recall?.min_importance ?? 0) || 0
+  const neverInject = (loadGuardrails(root).never_inject ?? []).map(String).filter(Boolean)
+
   const first = []
   const deep = []
   const recent = []
   let shielded = 0
   let active = 0
+  let filtered = 0
 
   for (const e of entries) {
     for (const f of e.facts) {
@@ -800,6 +829,19 @@ export function buildCard(root, pid, { budget = CARD_BUDGET_BYTES, now = Date.no
         continue
       }
       active += 1
+      // 召回规则的三个闸门
+      if (hiddenKinds.has(String(f.kind ?? 'fact'))) {
+        filtered += 1
+        continue
+      }
+      if (Number(f.imp ?? 0) < minImportance) {
+        filtered += 1
+        continue
+      }
+      if (neverInject.some((kw) => kw && String(f.text ?? '').includes(kw))) {
+        filtered += 1
+        continue
+      }
       const recallN = counts.get(f.id) ?? 0
       const retention = retentionOf(f, { recall: recallN, now })
       if (clarityOf(retention) === 'gone') continue
