@@ -277,7 +277,9 @@ D:\yuanling\
 │     ├─ spaces\<空间>\entries\<主题>.json   记忆条目：facts[] + summary
 │     ├─ self\
 │     │  ├─ purposes.json        目的账本（"没说完的话"，每条带 raw 指针）
-│     │  └─ interests.json       兴趣信号
+│     │  ├─ drives.json          动机强度（内置五维 + 她自加的最多 3 个）
+│     │  ├─ interests.json       兴趣信号
+│     │  └─ actions.ndjson       她做过的动作（预留，当前主要是主动开口的记录）
 │     ├─ journal\                每日小结（可选生成）
 │     ├─ rules\
 │     │  ├─ global.json          人格级默认（recall / action / persona）
