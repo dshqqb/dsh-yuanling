@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import { resolveRoot, validateRoot, P } from './paths.js'
 import { scaffold } from './scaffold.js'
 import { readMarker, listPersonas, createPersona, switchPersona, appendChange, reconcilePersonas } from './persona.js'
+import { listMedia, mediaStats, planArchive, applyArchive, ARCHIVE_AFTER_MS } from './media.js'
 import { checkFormat } from './manifest.js'
 import { doctor, doctorExitCode } from './doctor.js'
 import { exists, localIso } from './fsx.js'
@@ -271,6 +272,11 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling rule check <action> [--channel c]
   yuanling rule guardrails            看根级硬线
   yuanling rule refusals [--limit n]  最近的拒绝记录
+  yuanling media stats               媒体层：热库 / 归档 各多少文件、多大
+  yuanling media list [--limit n]    列出热库里的媒体（指针 / 大小 / 时间）
+  yuanling media archive [--days n] [--apply]
+                                      归档计划：超过 n 天（默认 365）没动过的文件搬去 media-archive/
+                                      默认只给清单不动手；加 --apply 才真的搬（指针不会失效）
   yuanling card                      打印本轮会注入的卡片
   yuanling verify [--root <path>] [--json] [--all]
   yuanling doctor [--root <path>] [--json] [--fast]
@@ -657,6 +663,64 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
 
       err(`未知子命令：memory ${sub}`)
       return EXIT.CONFIG
+    }
+
+    if (cmd === 'media') {
+      const sub = String(_[1] ?? 'stats')
+
+      if (sub === 'stats') {
+        const s = mediaStats(root)
+        out(`热库    ${s.files} 个 / ${(s.bytes / 1048576).toFixed(1)} MB`)
+        out(`归档    ${s.archivedFiles} 个 / ${(s.archivedBytes / 1048576).toFixed(1)} MB（归档仍可被指针读到）`)
+        return EXIT.OK
+      }
+
+      if (sub === 'list') {
+        const limit = Math.max(1, Math.min(500, Number(flags.limit ?? 50)))
+        const rows = listMedia(root)
+          .sort((a, b) => b.mtimeMs - a.mtimeMs)
+          .slice(0, limit)
+        if (!rows.length) {
+          out('（热库里还没有媒体）')
+          return EXIT.OK
+        }
+        for (const r of rows) {
+          out(`${localIso(new Date(r.mtimeMs)).slice(0, 19)}  ${(r.size / 1024).toFixed(0).padStart(7)} KB  ${r.ptr}`)
+        }
+        return EXIT.OK
+      }
+
+      if (sub === 'archive') {
+        const days = Number(flags.days ?? 365)
+        const olderThanMs = Number.isFinite(days) && days >= 0 ? days * 86_400_000 : ARCHIVE_AFTER_MS
+        const plan = planArchive(root, { olderThanMs })
+        out(`热库 ${plan.hotFiles} 个 / ${(plan.hotBytes / 1048576).toFixed(1)} MB；超过 ${days} 天没动过的：${plan.files.length} 个 / ${(plan.totalBytes / 1048576).toFixed(1)} MB`)
+        if (!plan.files.length) {
+          out('没有要搬的（全部还在活跃期内）。')
+          return EXIT.OK
+        }
+        out(`最老的：${plan.oldest}`)
+        out('')
+        out('指针                                           大小      最后写入            raw 引用')
+        for (const f of plan.files.slice(0, 100)) {
+          out(`${f.ptr}  ${(f.size / 1024).toFixed(0).padStart(7)} KB  ${String(f.mtime).slice(0, 19)}  ${String(f.refs).padStart(3)} 条`)
+        }
+        if (plan.files.length > 100) out(`… 还有 ${plan.files.length - 100} 个`)
+
+        if (!flags.apply) {
+          out('')
+          out('这只是清单，没有动文件。要真的搬：加 --apply（指针不会失效，读得到）')
+          return EXIT.OK
+        }
+        const r = applyArchive(root, plan)
+        out('')
+        out(`✓ 已搬走 ${r.moved.length} 个；跳过 ${r.skipped.length} 个（热库里已经没有了）；失败 ${r.failed.length} 个`)
+        for (const f of r.failed) err(`  ✗ ${f.ptr}：${f.error}`)
+        return r.failed.length ? EXIT.GENERAL : EXIT.OK
+      }
+
+      err('用法：yuanling media stats | list | archive [--days n] [--apply]')
+      return EXIT.GENERAL
     }
 
     if (cmd === 'card') {

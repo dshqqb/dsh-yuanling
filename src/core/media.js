@@ -242,6 +242,165 @@ export function cleanupTmp(root, moduleId, { now = Date.now(), ttlMs = MEDIA_TMP
   return removed
 }
 
+/**
+ * 列出热库里所有媒体文件（按 hash 布局扫）。
+ *
+ * @returns {Array<{ptr:string, rel:string, abs:string, hash:string, ext:string, size:number, mtimeMs:number}>}
+ */
+export function listMedia(root) {
+  const base = path.join(root, 'media', 'sha256')
+  const out = []
+  const walk = (dir, relPrefix) => {
+    let list = []
+    try {
+      list = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const it of list) {
+      const abs = path.join(dir, it.name)
+      const rel = relPrefix ? `${relPrefix}/${it.name}` : it.name
+      if (it.isDirectory()) {
+        walk(abs, rel)
+        continue
+      }
+      const m = /^([a-f0-9]{64})\.([a-z0-9]{1,8})$/i.exec(it.name)
+      if (!m) continue
+      let st
+      try {
+        st = fs.statSync(abs)
+      } catch {
+        continue
+      }
+      out.push({
+        ptr: mediaPointer(m[1].toLowerCase(), m[2].toLowerCase()),
+        rel: `media/sha256/${rel}`,
+        abs,
+        hash: m[1].toLowerCase(),
+        ext: m[2].toLowerCase(),
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+      })
+    }
+  }
+  walk(base, '')
+  return out
+}
+
+/**
+ * 数一数 raw 里有多少条记录引用了这些指针。
+ *
+ * **只用于清单展示**：归档不按引用做判断——指针永不过期（`get` 会去归档找），
+ * 所以"这条还有没有人用"是给人看的，不是拦截条件。
+ *
+ * @param {Map<string, number>} counts 会被就地累加
+ */
+export function countMediaRefs(root, counts, { limitFiles = 5000 } = {}) {
+  const rawBase = path.join(root, 'raw')
+  let scanned = 0
+  const walk = (dir) => {
+    if (scanned >= limitFiles) return
+    let list = []
+    try {
+      list = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const it of list) {
+      if (scanned >= limitFiles) return
+      const abs = path.join(dir, it.name)
+      if (it.isDirectory()) {
+        walk(abs)
+        continue
+      }
+      if (!it.name.endsWith('.ndjson')) continue
+      scanned += 1
+      let text = ''
+      try {
+        text = fs.readFileSync(abs, 'utf8')
+      } catch {
+        continue
+      }
+      for (const ptr of counts.keys()) {
+        if (!text.includes(ptr)) continue
+        // 一条记录一行；同一行里出现多次也只算一条
+        for (const line of text.split('\n')) {
+          if (line.includes(ptr)) counts.set(ptr, counts.get(ptr) + 1)
+        }
+      }
+    }
+  }
+  walk(rawBase)
+  return { scannedFiles: scanned }
+}
+
+/** 默认归档年龄：一年。 */
+export const ARCHIVE_AFTER_MS = 365 * 86_400_000
+
+/**
+ * 归档计划：热库里**超过 `olderThanMs` 没被动过**的文件。
+ *
+ * 默认只算计划、不动文件——"删不删由人决定"是同一条原则：**先给清单，再动手**。
+ *
+ * @returns {{files:Array, totalBytes:number, oldest:number|null, hotFiles:number, hotBytes:number}}
+ */
+export function planArchive(root, { olderThanMs = ARCHIVE_AFTER_MS, now = Date.now(), withRefs = true } = {}) {
+  const all = listMedia(root)
+  const cutoff = now - olderThanMs
+  const files = all
+    .filter((f) => f.mtimeMs <= cutoff)
+    .sort((a, b) => a.mtimeMs - b.mtimeMs)
+
+  const counts = new Map(files.map((f) => [f.ptr, 0]))
+  if (withRefs && files.length) countMediaRefs(root, counts)
+
+  const rows = files.map((f) => ({
+    ptr: f.ptr,
+    from: f.rel,
+    to: `media-archive/sha256/${f.hash.slice(0, 2)}/${f.hash.slice(2, 4)}/${f.hash}.${f.ext}`,
+    size: f.size,
+    mtime: localIso(new Date(f.mtimeMs)),
+    refs: counts.get(f.ptr) ?? 0,
+  }))
+
+  const hotBytes = all.reduce((n, f) => n + f.size, 0)
+  return {
+    files: rows,
+    totalBytes: rows.reduce((n, f) => n + f.size, 0),
+    oldest: rows.length ? rows[0].mtime : null,
+    hotFiles: all.length,
+    hotBytes,
+  }
+}
+
+/**
+ * 执行归档：把计划里的文件搬进 `media-archive/`（同 hash 布局），索引记一条 `archive`。
+ *
+ * 幂等：已经搬过的（热库没有、归档有）会跳过；搬失败只记在返回结果里，不中断其它文件。
+ */
+export function applyArchive(root, plan, { now = Date.now() } = {}) {
+  const moved = []
+  const skipped = []
+  const failed = []
+  for (const row of plan?.files ?? []) {
+    const hot = path.join(root, row.from)
+    const cold = path.join(root, row.to)
+    if (!exists(hot)) {
+      skipped.push(row.ptr)
+      continue
+    }
+    try {
+      ensureDir(path.dirname(cold))
+      fs.renameSync(hot, cold)
+      appendIndex(root, { ts: localIso(new Date(now)), kind: 'archive', ptr: row.ptr, size: row.size })
+      moved.push(row.ptr)
+    } catch (error) {
+      failed.push({ ptr: row.ptr, error: String(error?.message ?? error) })
+    }
+  }
+  return { moved, skipped, failed }
+}
+
 /** 统计（管理台/诊断用）：热库多少文件、多大。 */
 export function mediaStats(root) {
   const base = path.join(root, 'media', 'sha256')
@@ -268,5 +427,28 @@ export function mediaStats(root) {
     }
   }
   walk(base)
-  return { files, bytes }
+  let archivedFiles = 0
+  let archivedBytes = 0
+  const walkCold = (dir) => {
+    let list = []
+    try {
+      list = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const it of list) {
+      const abs = path.join(dir, it.name)
+      if (it.isDirectory()) walkCold(abs)
+      else {
+        archivedFiles += 1
+        try {
+          archivedBytes += fs.statSync(abs).size
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  walkCold(path.join(root, 'media-archive', 'sha256'))
+  return { files, bytes, archivedFiles, archivedBytes }
 }

@@ -675,8 +675,9 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 
 ## §13 媒体
 
-> **状态（2026-11-11）**：`media.put.file` / `media.get` 的 handler **已实现**（`src/core/media.js`）。
-> 归档搬迁与归档清单还没做——归档目录只被 `get` 读取。
+> **状态（2026-11-11）**：`media.put.file` / `media.get` 的 handler **已实现**（`src/core/media.js`）；
+> 归档搬迁也已实现（`yuanling media archive [--days n] [--apply]`，默认只出清单）。
+> 还没做的是 `egress.request` 里 `media[]` 的解析（发图）。
 
 - **入站**：模块写进 `$YUANLING_TMP/`（就是它自己的临时目录，别再拼 `<id>`）→ `media.put.file {path, mime}` → 核心校验路径/大小/类型 → 存 `media/sha256/ab/cd/<hash>.<ext>` → 追加 `media/index.ndjson` → 返回 `ptr`；核心随即收走源文件（复制后删除；删不掉只记日志，不阻断——媒体已入库，临时文件清理不是正确性问题）。
 - **出站**：核心把指针解析为临时文件，`egress.request` 的 `media[]` 给 `{path, mime, size, expires_at}`，帧里不出现 ptr。
