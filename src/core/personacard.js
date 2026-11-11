@@ -23,7 +23,8 @@ import { identityLines, personaExtraLines, SKELETON_BYTES, HARD_LINE_BYTES, EXPR
 import { readMarker, writeMarker } from './persona.js'
 
 /** 名字上限：注入里它是第一行，太长会把别的挤掉。 */
-export const CARD_NAME_MAX = 24
+// 名称可以**有多个**（空格分隔），所以上限按"整串"放宽；单个名称的长度由 UI/校验各自管。
+export const CARD_NAME_MAX = 64
 /** 小节正文上限：底稿是散文，不是账本。超了几乎一定是贴错了地方。 */
 export const CARD_SECTION_MAX = 8000
 
@@ -386,6 +387,24 @@ export function renameCard(root, pid, name, { expect } = {}) {
         reason: `管理台改人格名：标题同步为「${next}」`,
       })
       if (w.changed) changed.push(selfRel)
+    }
+  }
+
+  // 骨架里的「名字：」那一行也要跟着改——她判断"是不是在叫我"读的就是这一行，
+  // 只改标题不改这一行，改名之后她会认不出自己的新名字。
+  // 注意：要**重新读一次**文件——上面刚改过标题，用旧文本覆盖会把标题改回去（踩过）
+  const freshSelf = selfText === null ? null : readTextOrNull(selfAbs)
+  if (freshSelf !== null) {
+    const bullet = /^(\s*-\s*名字\s*[:：]\s*)(.*)$/m
+    if (bullet.test(freshSelf)) {
+      const nextText = freshSelf.replace(bullet, `$1${next}`)
+      if (nextText !== freshSelf) {
+        const w = writeTracked(root, selfRel, nextText, {
+          actor: 'human:editor',
+          reason: `管理台改人格名：骨架里的名字同步为「${next}」`,
+        })
+        if (w.changed) changed.push(selfRel)
+      }
     }
   }
 

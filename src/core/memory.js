@@ -594,16 +594,6 @@ export function personaExtraLines(root, pid) {
     /* 偏好读坏了就当没勾：少一行要求，比注入失败好 */
   }
 
-  // 昵称：她可以被怎么叫。和名字一起用于"群里是不是在叫她"的判定（engage.js），
-  // 所以这里也要让她看得见——否则她不知道自己被叫过什么。
-  try {
-    const prefs = readPrefs(root, pid)
-    const nicks = Array.isArray(prefs.nicknames) ? prefs.nicknames.filter(Boolean) : []
-    if (nicks.length) out.push(`[称呼] 她也可以被叫作：${clipBytes(nicks.join('、'), 160)}`)
-  } catch {
-    /* 偏好读坏了就不显示 */
-  }
-
   // 动机：她自己"最想要什么"。只在真的偏高时才说——恒定的那几行是噪音。
   try {
     const drv = readDrives(root, pid)

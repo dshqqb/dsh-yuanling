@@ -207,7 +207,7 @@ export function handleApi(root, url) {
     return { status: 200, body: { ok: true, kind, ...audienceView(root, pid, kind) } }
   }
 
-  // 人格偏好（昵称 / 对管理员更温柔）：切人格就变的那部分设置
+  // 人格偏好（对管理员更温柔）：切人格就变的那部分设置。人格名称不在这里——它属于人格卡。
   if (pathname === '/api/prefs') {
     return { status: 200, body: { ok: true, prefs: readPrefs(root, pid) } }
   }

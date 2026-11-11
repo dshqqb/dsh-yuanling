@@ -18,7 +18,6 @@ import { loadIdentities, createPerson, setIdentityText } from './src/core/entiti
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
 import { resolveChannel } from './src/core/channels.js'
 import { readStyle, addStyleLine, removeStyleLine } from './src/core/style.js'
-import { readPrefs, writePrefs } from './src/core/prefs.js'
 import { setImpression, renderImpression, IMPRESSION_MAX_BYTES } from './src/core/impressions.js'
 import { readPurposes, writePurposes, markHit, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './src/core/purposes.js'
 import { refreshDrives, readDrives, driveName, addDrive, adjustDrive, removeDrive } from './src/core/drives.js'
@@ -142,24 +141,6 @@ const TOOLS = [
         imp: { type: 'number', description: '可选重要度 1–100；不填由核心估' },
       },
       required: ['text', 'topic', 'src'],
-    },
-  },
-  {
-    name: 'yuanling_nickname',
-    description:
-      '看 / 改**她可以被怎么叫**（昵称）。名字在骨架里、只有人能改；昵称是叫法，**你自己也可以加**——\n' +
-      '比如你发现别人怎么称呼她、或者她更认哪个叫法。\n' +
-      '昵称有两个作用：① 每一条都进注入（`[称呼]`）；② **参与"群里是不是在叫她"的判定**——\n' +
-      '所以不要为了"更亲切"乱加，加得太多，一段普通对话天天都会命中她。\n' +
-      '上限：最多 8 个、每个 12 字；每次改动要写 reason，进版本历史、可回滚。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['list', 'add', 'remove', 'set'], description: 'list 只读（默认）；add 加一个；remove 删一个；set 整组覆盖' },
-        name: { type: 'string', description: 'add/remove 用的昵称' },
-        names: { type: 'array', items: { type: 'string' }, description: 'set 用的完整列表' },
-        reason: { type: 'string', description: 'add/remove/set 必填：为什么改' },
-      },
     },
   },
   {
@@ -433,17 +414,6 @@ function formatDrives(root, pid) {
 }
 
 /**
- * 昵称渲染：连同"它会影响什么"一起说，避免被当成纯装饰。
- */
-function formatNicknames(prefs) {
-  const nicks = prefs?.nicknames ?? []
-  if (!nicks.length) {
-    return '昵称：（还没有）\n\n昵称每一条都会进注入（[称呼]），也参与"群里是不是在叫她"的判定。'
-  }
-  return `昵称（${nicks.length}/8）：${nicks.join('、')}\n\n每一条都会进注入（[称呼]），也参与"群里是不是在叫她"的判定。`
-}
-
-/**
  * 表达层的渲染。故意把"预算用了多少"摆在最前面：她要知道还剩多少空间，
  * 才能决定是加一条还是先删一条。
  */
@@ -607,36 +577,6 @@ async function callTool(root, name, args = {}) {
       return { text: `· 这句话已经记过了（累计 ${r.fact.repeat} 次）：${r.fact.text}\n  重复本身就是信号，不用再写一条` }
     }
     return { text: `✓ 已记住：${r.fact.text}\n  主题：${topic}｜重要度 ${r.fact.imp}｜出处 ${src}` }
-  }
-
-  if (name === 'yuanling_nickname') {
-    const action = String(args.action ?? 'list').trim() || 'list'
-    const prefs = readPrefs(root, pid)
-
-    if (action === 'list') return { text: formatNicknames(prefs) }
-
-    const reason = String(args.reason ?? '').trim()
-    if (!reason) throw new Error('reason 必填：为什么改叫法')
-
-    if (action === 'add') {
-      const one = String(args.name ?? '').trim()
-      if (!one) throw new Error('add 需要 name')
-      const next = [...(prefs.nicknames ?? []), one]
-      writePrefs(root, pid, { nicknames: next }, { actor: 'model:nickname', reason: String(reason).slice(0, 200) })
-      return { text: `✓ 加了昵称「${one}」\n\n${formatNicknames(readPrefs(root, pid))}` }
-    }
-    if (action === 'remove') {
-      const one = String(args.name ?? '').trim()
-      const next = (prefs.nicknames ?? []).filter((x) => x !== one)
-      if (next.length === (prefs.nicknames ?? []).length) throw new Error(`没有这个昵称：${one}`)
-      writePrefs(root, pid, { nicknames: next }, { actor: 'model:nickname', reason: String(reason).slice(0, 200) })
-      return { text: `✓ 去掉了昵称「${one}」\n\n${formatNicknames(readPrefs(root, pid))}` }
-    }
-    if (action === 'set') {
-      writePrefs(root, pid, { nicknames: Array.isArray(args.names) ? args.names : [] }, { actor: 'model:nickname', reason: String(reason).slice(0, 200) })
-      return { text: `✓ 已整组覆盖\n\n${formatNicknames(readPrefs(root, pid))}` }
-    }
-    throw new Error(`不认识的 action：${action}（list / add / remove / set）`)
   }
 
   if (name === 'yuanling_drive') {

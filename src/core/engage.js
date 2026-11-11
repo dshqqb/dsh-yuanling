@@ -14,7 +14,6 @@ import fs from 'node:fs'
 import { exists, readJson, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 
-import { readPrefs } from './prefs.js'
 import { listDays, readDay } from './raw.js'
 
 export const ENGAGE_WINDOW_MS = 4 * 60 * 1000
@@ -28,8 +27,10 @@ function engagePath(root) {
 }
 
 /**
- * 她可能被怎么称呼：SELF.md 的名字 + 昵称（用户填的或她自己在记忆里归纳的）+ 兜底词。
- * 昵称也算"叫她"——否则群里喊"灵灵"她不会有反应。
+ * 她可能被怎么称呼：SELF.md 里「名字：」那一行，**空格分隔的多个名称都算**。
+ *
+ * 人格可以有多个名称（一个名字写上几个叫法），每一个都应该能把她叫醒；
+ * 兜底词保证名字读不到时判定不至于整条失效。
  */
 export function herNames(root, pid) {
   const names = new Set(FALLBACK_NAMES)
@@ -38,19 +39,25 @@ export function herNames(root, pid) {
     if (exists(abs)) {
       const text = fs.readFileSync(abs, 'utf8')
       const m = /^\s*-\s*名字\s*[:：]\s*(.+)$/m.exec(text)
-      const name = m?.[1]?.trim()
-      if (name && name.length >= 1 && name.length <= 20 && !/^<.*>$/.test(name)) names.add(name)
+      for (const part of personaNameList(m?.[1] ?? '')) names.add(part)
     }
   } catch {
     /* 名字读不到不算错 */
   }
-  try {
-    const prefs = readPrefs(root, pid)
-    for (const n of prefs.nicknames ?? []) if (n) names.add(String(n))
-  } catch {
-    /* 偏好读坏了就当没有昵称 */
-  }
   return [...names]
+}
+
+/**
+ * 人格名称 → 名称列表。人格的"名称"是一串可以是多个的叫法（空格分隔）：
+ * 「原灵 小灵」= 两个名称，任一个都算在叫她。
+ */
+export function personaNameList(raw) {
+  return [...new Set(
+    String(raw ?? '')
+      .split(/\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 1 && s.length <= 20 && !/^<.*>$/.test(s)),
+  )]
 }
 
 /** 这句话里有没有提到她。 */

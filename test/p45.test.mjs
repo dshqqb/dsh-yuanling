@@ -260,7 +260,6 @@ test('tools/list 里有 yuanling_observe', async () => {
     'yuanling_drive',
     'yuanling_fetch',
     'yuanling_group',
-    'yuanling_nickname',
     'yuanling_observe',
     'yuanling_person_identity',
     'yuanling_purpose',

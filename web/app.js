@@ -540,77 +540,6 @@ function fileBlock(f, form) {
   return wrap
 }
 
-/**
- * 昵称那张卡。它在「名称」之后、骨架之前——先是谁，再是怎么叫。
- *
- * 它**单独保存**（存的是人格偏好，不是底稿）：所以不要和下面那个大的「保存」按钮绑在一起，
- * 否则人会以为改了名字也把昵称存了。
- */
-function nicknameCard() {
-  const c = el('div', 'card')
-  const head = el('div', 'card-head')
-  head.append(el('h3', undefined, '昵称'))
-  head.append(el('span', 'muted small', '她可以被怎么叫：用户能填，她自己也会从记忆里归纳（空格分隔多个）'))
-  c.append(head)
-
-  const row = el('div', 'field-row')
-  const input = document.createElement('input')
-  input.id = 'nicknames'
-  input.placeholder = '例如：小灵 灵灵 阿原'
-  const btn = document.createElement('button')
-  btn.id = 'nicknames-save'
-  btn.className = 'btn small'
-  btn.textContent = '保存昵称'
-  const msg = el('span', 'muted small')
-  msg.id = 'nicknames-msg'
-  row.append(input, btn, msg)
-  c.append(row)
-
-  c.append(
-    el(
-      'div',
-      'muted small',
-      '昵称会和名字一起用于"群里是不是在叫她"的判定；填进来的每一条都会进注入（[称呼]），' +
-        '所以别填太多——最多 8 个、每个 12 字。它跟人格走，换人格就是另一组。',
-    ),
-  )
-
-  btn.addEventListener('click', () => saveNicknames().catch(() => {}))
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      saveNicknames().catch(() => {})
-    }
-  })
-  return c
-}
-
-async function loadNicknames() {
-  const d = await api('/api/prefs')
-  const nicks = d.prefs?.nicknames ?? []
-  $('nicknames').value = nicks.join(' ')
-  $('nicknames-msg').textContent = nicks.length
-    ? `${nicks.length} 个（会进注入，也用于判断群里是不是在叫她）`
-    : '还没有昵称。'
-}
-
-async function saveNicknames() {
-  const raw = $('nicknames').value
-  const say = $('nicknames-msg')
-  try {
-    const d = await postApi('/api/prefs', { nicknames: raw })
-    $('nicknames').value = (d.prefs?.nicknames ?? []).join(' ')
-    say.textContent = d.prefs?.nicknames?.length
-      ? `已保存 ${d.prefs.nicknames.length} 个昵称`
-      : '已清空昵称'
-    say.classList.remove('dirty')
-  } catch (err) {
-    // 超长 / 超量要在这里说清楚，而不是悄悄截断
-    say.textContent = `保存失败：${err.message}`
-    say.classList.add('dirty')
-  }
-}
-
 async function loadOverview() {
   hidePageError()
   const say = $('persona-save-msg')
@@ -635,16 +564,15 @@ async function loadOverview() {
   $('persona-active-tag').textContent = `● ${card.name}`
   $('persona-meta').textContent = `（${card.id}）· personas/${card.id} · 建于 ${String(card.created_at ?? '').replace('T', ' ').slice(0, 19)}`
 
-  // 昵称：和名字放得很近，但它不是"名字"——名字只有人能改（在 SELF.md 里），
-  // 昵称是叫法，她自己也会往里加。
-  // 名称是卡的一部分：单独一张，放在卡最上面
+  // 名称是卡的一部分：单独一张，放在卡最上面。
+  // 名称可以**有多个**（空格分隔），任一个都能把她叫醒；人格 id 才是唯一标识。
   const nameCard = el('div', 'card')
   const nh = el('div', 'card-head')
   nh.append(el('h3', undefined, '名称'))
-  nh.append(el('span', 'muted small', '保存时会一起改：persona.json、人格清单、骨架标题'))
+  nh.append(el('span', 'muted small', '可以有多个名称，用空格分开（例：原灵 小灵）；保存时会一起改 persona.json、人格清单、骨架标题'))
   nameCard.append(nh)
   const nameIn = document.createElement('input')
-  nameIn.placeholder = '名字'
+  nameIn.placeholder = '名称（多个用空格分开）'
   nameIn.value = card.name
   nameIn.addEventListener('input', markDirty)
   form.nameEl = nameIn
@@ -652,9 +580,6 @@ async function loadOverview() {
   row.append(nameIn)
   nameCard.append(row)
   box.append(nameCard)
-  // 昵称紧跟在「名称」后面：先是谁，再是怎么叫。
-  box.append(nicknameCard())
-  loadNicknames().catch(() => {})
 
   for (const f of card.files) box.append(fileBlock(f, form))
 

@@ -17,6 +17,7 @@ import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
 import { noteGroupMessage, herNames, isReplyToHer } from './engage.js'
+import { noteSelfNameCandidate, herPlatformIds } from './selfname.js'
 import { addFact } from './memory.js'
 import { parseChannel } from './channels.js'
 import { findByIdentity } from './entities.js'
@@ -190,6 +191,23 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       // 只记"谁在这个群说过话"这件事本身，正文照旧只走 raw。
       if (!r.deduped) {
         touchGroup(root, channel, item.ts ? String(item.ts) : null)
+        // 有人用**新称呼**叫她（@她 / 喊了个没见过的名字）：攒够了写进她自己的名称。
+        // 只写"名称"，不另建昵称字段——见 selfname.js 的三道闸门。
+        try {
+          const pid = readMarker(root)?.active
+          if (pid && parseChannel(channel).kind === 'group') {
+            const actorKey = item.actor?.id ? (source || 'qq') + ':' + String(item.actor.id) : ''
+            noteSelfNameCandidate(root, pid, {
+              text: policy.text,
+              actorKey,
+              names: herNames(root, pid),
+              selfIds: herPlatformIds(root),
+              now: item.ts ? Date.parse(String(item.ts)) || Date.now() : Date.now(),
+            })
+          }
+        } catch {
+          /* 名称发现失败不该让一条消息丢掉 */
+        }
         // 顺手记"这个人在这个群里"：提及时用成员名单裁决重名昵称，不能等页面点一次归集
         try {
           const pid = readMarker(root)?.active
