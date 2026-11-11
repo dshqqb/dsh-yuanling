@@ -17,8 +17,9 @@ import { listDays, readDay } from './raw.js'
 import { refreshDrives, readDrives, driveName } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
 import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile, currentAdmin } from './entities.js'
-import { groupsForContext, groupCardLine } from './groups.js'
+import { groupsForContext, groupCardLine, readGroup, gidForChannel } from './groups.js'
 import { readPrefs } from './prefs.js'
+import { mentionedPeople } from './aliases.js'
 import { nativeChannelsFor } from './channels.js'
 import { loadEffectiveRules, loadGuardrails } from './rules.js'
 import {
@@ -991,12 +992,16 @@ export function contextFor(
   const remember = rememberLine(root, pid, { now, preview })
   if (remember) lines.push(remember)
 
+  // 这一轮"在聊什么"：群体提及、人物提及都从这段文本里找
+  const recentText = channel
+    ? recentChannelRecords(root, channel, 12)
+        .map((r) => String(r.text ?? ''))
+        .join('\n')
+    : ''
+
   if (channel) {
     // 群体：当前频道对应的那个一定带；这一轮文本里提到的别的群体也带（"群里聊到另一个群"是真事）。
     // 只在群聊里做：私聊没有"群体"这回事，gidForChannel 会直接返回 null。
-    const recentText = recentChannelRecords(root, channel, 12)
-      .map((r) => String(r.text ?? ''))
-      .join('\n')
     const groups = groupsForContext(root, pid, { channel, text: recentText })
     for (const g of groups) {
       const line = groupCardLine(root, pid, g)
@@ -1010,6 +1015,36 @@ export function contextFor(
     const trial = [...lines, ...kept, line].join('\n')
     if (byteLen(trial) > budget) break
     kept.push(line)
+  }
+
+  // 提到的（但不在场）的人：3.5「涉及到该人物时」。排在场者之后，最多 2 张。
+  // 昵称撞车时用"这个群里的人"裁决；裁决不了就跳过——宁可不给，也不给错人。
+  if (recentText) {
+    try {
+      const presentUids = people.map((p) => p.uid)
+      const gid = channel ? gidForChannel(root, channel) : null
+      const members = gid ? readGroup(root, pid, gid)?.members ?? null : null
+      const uids = mentionedPeople(root, pid, {
+        text: recentText,
+        exclude: presentUids,
+        groupMembers: members,
+        limit: 2,
+      })
+      if (uids.length) {
+        const data = loadIdentities(root)
+        for (const uid of uids) {
+          const person = data.people?.[uid]
+          const profile = readProfile(root, pid, uid)
+          if (!person || !profile) continue // 没认识的人不硬编
+          const line = personCardLine({ uid, person, profile })
+          const trial = [...lines, ...kept, line].join('\n')
+          if (byteLen(trial) > budget) break
+          kept.push(line)
+        }
+      }
+    } catch {
+      /* 提及检索失败不该让这一轮没有上下文 */
+    }
   }
 
   return [...lines, ...kept].filter(Boolean).join('\n')

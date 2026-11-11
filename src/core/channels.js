@@ -199,6 +199,12 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
   }
 
   if (GROUP_KINDS.has(kind)) {
+    // 已经是内部编号（`group:grp_xxx`）：直接用。
+    // 不做这一步会把内部编号当成"外部群号"，再建一张 nativeId = "grp_xxx" 的新群——
+    // 群档案一分为二，成员和提及全部对不上（踩过）。
+    if (/^grp_/.test(id)) {
+      return { channel: raw, native: null, personUid: null, gid: id }
+    }
     const platform = platformOfKind(kind) ?? platformFromSource(source)
     const nativeId = id.includes(':') ? id.split(':').slice(1).join(':') : id
     const gid = ensureGroupScene(root, { platform, nativeId })

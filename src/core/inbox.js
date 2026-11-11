@@ -11,14 +11,15 @@ import { appendRecord } from './raw.js'
 import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
-import { ensureGroup, gidForChannel } from './groups.js'
-import { canonicalChannelForIngest } from './channels.js'
+import { ensureGroup, gidForChannel, noteGroupMember } from './groups.js'
+import { canonicalChannelForIngest, platformFromSource } from './channels.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
 import { noteGroupMessage, herNames, isReplyToHer } from './engage.js'
 import { addFact } from './memory.js'
 import { parseChannel } from './channels.js'
+import { findByIdentity } from './entities.js'
 
 /**
  * 从一条刚入库的消息里提炼事实。
@@ -187,7 +188,22 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
 
       // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
       // 只记"谁在这个群说过话"这件事本身，正文照旧只走 raw。
-      if (!r.deduped) touchGroup(root, channel, item.ts ? String(item.ts) : null)
+      if (!r.deduped) {
+        touchGroup(root, channel, item.ts ? String(item.ts) : null)
+        // 顺手记"这个人在这个群里"：提及时用成员名单裁决重名昵称，不能等页面点一次归集
+        try {
+          const pid = readMarker(root)?.active
+          const gid = gidForChannel(root, channel)
+          const actorId = item.actor?.id
+          if (pid && gid && actorId) {
+            const platform = platformFromSource(source) ?? 'qq'
+            const hit = findByIdentity(root, platform, String(actorId))
+            if (hit) noteGroupMember(root, pid, gid, hit.uid)
+          }
+        } catch {
+          /* 记成员失败不该让一条消息丢掉 */
+        }
+      }
 
       // ── 记忆自动成长：从这条消息里提炼事实 ──────────────────────────────
       // 私聊：全部提炼（谁说的都算，私聊天然是跟她说话）。

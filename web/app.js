@@ -1488,7 +1488,15 @@ async function loadGroups() {
 async function openGroupEditor(g) {
   const d = await api(`/api/group?gid=${encodeURIComponent(g.gid)}`)
   const gg = d.group
-  const names = d.members.slice(0, 12).map((m) => m.display)
+  // 成员名单：名字 + 账号（看名单时最想知道"这个 QQ 是谁"）
+  const memberText = d.members.length
+    ? d.members
+        .map((m) => {
+          const acc = (m.identities ?? [])[0]
+          return acc ? `${m.display}（${acc.platform}:${acc.id}）` : m.display
+        })
+        .join('\n')
+    : '还没归集成员（只收有档案的人；群消息进来会自动记）'
   openModal({
     title: `${gg.name || gg.gid}（${gg.gid}）`,
     fields: [
@@ -1496,11 +1504,7 @@ async function openGroupEditor(g) {
       { label: '平台与号码', type: 'static', value: `${PLATFORM_LABELS[gg.platform] ?? gg.platform} · ${gg.nativeId ?? gg.id}` },
       { key: 'feature', label: '群体描述', type: 'textarea', rows: 5, value: gg.feature || '' },
       weightField(gg),
-      {
-        label: '成员',
-        type: 'static',
-        value: names.length ? `${names.join('、')}${d.members.length > names.length ? ' …' : ''}` : '还没归集成员（只收有档案的人）',
-      },
+      { label: `成员名单（${d.members.length}${gg.memberCount ? ` / 共 ${gg.memberCount}` : ''}）`, type: 'static', value: memberText },
     ],
     onSubmit: async (v) => {
       await postApi('/api/group', { gid: g.gid, name: v.name, feature: v.feature })

@@ -12,6 +12,7 @@ import { localIso } from './fsx.js'
 import {
   addCandidate,
   createPerson,
+  createPersonAuto,
   findByIdentity,
   linkIdentity,
   loadIdentities,
@@ -72,7 +73,8 @@ export function claimIdentity(
   const speakerId = String(channel).split(':')[1]
   let uid = personForChannel(root, channel)
   if (!uid) {
-    const person = createPerson(root, { display: '主人' })
+    // 自动建卡：撞名就自动加标识（(QQ) 主人），不把人卡流程卡死
+    const person = createPersonAuto(root, { display: '主人', platform: 'qq', nativeId: speakerId })
     uid = person.uid
     if (speakerId) linkIdentity(root, uid, { platform: 'qq', id: speakerId })
   }

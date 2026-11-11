@@ -10,6 +10,7 @@ import path from 'node:path'
 import { exists, isDir, readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
+import { autoUniqueName } from './names.js'
 import { effectivePersonWeight } from './weights.js'
 
 // 账号平台清单：解析器认得的与绑定层接受的**必须是同一张表**，
@@ -85,6 +86,28 @@ export function assertPersonNameFree(root, name, opts = {}) {
   if (!hit) return
   const n = String(name ?? '').trim()
   throw new Error(`人物名字「${n}」已经有人用了（${hit.uid}）。换一个：可以按他的特点加个区分，例如「${n}（B站）」`)
+}
+
+/**
+ * 自动建人物（她自己在办事时用）：撞名就自动加标识，**不抛错**。
+ *
+ * 与 createPerson 的区别是"谁来办这件事"：人建卡撞名要失败（让人自己改），
+ * 她自动建卡撞名要能继续（否则一条消息就能把入库流程卡死）。
+ *
+ * @param {{display?:string, platform?:string|null, nativeId?:string|number|null, uid?:string, aliases?:string[]}} opts
+ */
+export function createPersonAuto(root, { display = '', platform = null, nativeId = '', uid = newUid(), aliases = [] } = {}) {
+  const name = uniquePersonName(root, display, { platform, nativeId })
+  return createPerson(root, { uid, display: name, aliases })
+}
+
+/** 自动取名：名字唯一是硬要求，昵称不必。 */
+export function uniquePersonName(root, display, { platform = null, nativeId = '' } = {}) {
+  return autoUniqueName(display, {
+    platform,
+    nativeId,
+    taken: (name) => Boolean(personNameOwner(root, name)),
+  })
 }
 
 export function createPerson(root, { uid = newUid(), display = '', aliases = [] } = {}) {

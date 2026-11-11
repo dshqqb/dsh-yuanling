@@ -24,6 +24,9 @@ import { writeTracked } from './version.js'
 // 放在这里会和它循环 import）。这里 import 进来自己用，并重新导出，老调用方不用改。
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
 import { pinWeight } from './weights.js'
+import { autoUniqueName } from './names.js'
+import { mentionedGroups } from './aliases.js'
+
 export { CHANNEL_PLATFORM, GROUP_KINDS }
 
 // 场景解析、群体身份登记表都在 channels.js。它不 import groups.js（只 import 常量层），
@@ -283,6 +286,22 @@ function shouldAdvance(prev, next) {
 }
 
 /** 确保群体存在（**只在确实见过东西时才调**，比如这个频道有消息了）。 */
+/** 群编号 'qq:123' → 平台 'qq'；认不出就 null。 */
+export function platformFromGid(gid) {
+  const s = String(gid ?? '')
+  const i = s.indexOf(':')
+  return i > 0 ? s.slice(0, i) : null
+}
+
+/** 自动取群名：群名唯一是硬要求（同名群靠名字区分时不能撞）。 */
+export function uniqueGroupName(root, pid, display, { platform = null, nativeId = '' } = {}) {
+  return autoUniqueName(display, {
+    platform,
+    nativeId,
+    taken: (name) => Boolean(groupNameOwner(root, pid, name)),
+  })
+}
+
 export function ensureGroup(root, pid, gid, { name = '', seenAt = null, firstSeen = null } = {}) {
   const cur = readGroup(root, pid, gid)
   if (cur) {
@@ -291,12 +310,38 @@ export function ensureGroup(root, pid, gid, { name = '', seenAt = null, firstSee
     }
     return cur
   }
+  // 自动建卡：群名撞了也自动加标识（(QQ群) 老窝），理由和人物一样——这是她在办事。
+  const uniqueName = name ? uniqueGroupName(root, pid, name, { platform: platformFromGid(gid) }) : ''
   return writeGroup(
     root,
     pid,
     gid,
-    { name: name || '', lastSeen: seenAt, firstSeen: firstSeen ?? localIso() },
-    { reason: '第一次见到这个群体' },
+    { name: uniqueName, lastSeen: seenAt, firstSeen: firstSeen ?? localIso() },
+    { reason: '第一次见到这个群体', skipNameCheck: true },
+  )
+}
+
+/**
+ * 一条消息进来时顺手记一笔"这个人在这个群里"。
+ *
+ * 为什么不只靠 collectMembers（扫 raw）：提及判定要用"谁属于这个群"来裁决重名昵称，
+ * 而扫 raw 只在页面按下按钮时发生——中间这段时间，裁决就没有依据。
+ * 上限沿用 MAX_MEMBERS：成员是"素材"，不是通讯录。
+ */
+export function noteGroupMember(root, pid, gid, uid) {
+  const who = String(uid ?? '').trim()
+  if (!gid || !who) return null
+  const cur = readGroup(root, pid, gid)
+  if (!cur) return null
+  if ((cur.members ?? []).includes(who)) return cur
+  if ((cur.members ?? []).length >= MAX_MEMBERS) return cur
+  const members = [...(cur.members ?? []), who]
+  return writeGroup(
+    root,
+    pid,
+    gid,
+    { members, memberCount: Math.max(Number(cur.memberCount ?? 0) + 1, members.length) },
+    { reason: '见到这个人在群里说话', skipNameCheck: true },
   )
 }
 
@@ -718,12 +763,22 @@ export function groupsForContext(root, pid, { channel = null, text = '', limit =
 
   const hay = String(text ?? '')
   if (hay) {
+    // 名字命中（唯一）走原来的路；**昵称**走 aliases.js（撞车就跳过，宁可少给一个群）
     for (const g of listGroups(root, pid)) {
       if (seen.has(g.gid)) continue
       if (!mentionsGroup(hay, g)) continue
       picked.push(g)
       seen.add(g.gid)
       if (picked.length >= limit) break
+    }
+    if (picked.length < limit) {
+      for (const gid of mentionedGroups(root, pid, { text: hay, exclude: [...seen], limit: limit - picked.length })) {
+        const g = readGroup(root, pid, gid)
+        if (!g) continue
+        picked.push(g)
+        seen.add(gid)
+        if (picked.length >= limit) break
+      }
     }
   }
 
