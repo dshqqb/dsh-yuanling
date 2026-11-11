@@ -7,9 +7,90 @@
 //
 // 所以这里只做两件事：**从描述里抽昵称**、**把一段文本对到卡片**。
 // 抽取是启发式的，宁可少抽（抽错会让一张卡被随便一句话激活，比漏抽糟）。
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { loadIdentities, readProfile } from './entities.js'
+import { P } from './paths.js'
 import { readImpression } from './impressions.js'
 import { listGroups } from './groups.js'
+
+/**
+ * 称呼索引的缓存（按人格维度 + 文件指纹失效）。
+ *
+ * 为什么要缓存：算一次上下文就要读**所有人**的人物档案、抽一遍昵称；
+ * 几十个人还能忍，上百人每轮都这么干就是白白烧 CPU 和磁盘。
+ *
+ * 失效方式：把"索引依赖的文件"的 `mtime + size` 拼成指纹；指纹变了重建，没变直接复用。
+ * 只读 stat、不读内容——所以命中的代价是 O(文件数) 次 stat，而不是 O(文件数) 次读取 + 正则。
+ * **不设 TTL**：这里没有"时间到了就过期"的语义，只有"文件变了才失效"。
+ */
+const mentionCache = new Map() // key: root|pid -> { stamp, index }
+const groupCache = new Map() // key: root|pid -> { stamp, index }
+
+/** 测试用：看缓存命中/重建情况。 */
+export function mentionCacheStats() {
+  return {
+    size: mentionCache.size + groupCache.size,
+    keys: [...mentionCache.keys(), ...groupCache.keys()],
+    invalidated: cacheInvalidations,
+  }
+}
+let cacheInvalidations = 0
+
+/** 清缓存（测试/切换数据目录时用）。 */
+export function clearMentionCache() {
+  mentionCache.clear()
+  groupCache.clear()
+  cacheInvalidations = 0
+}
+
+function statSignature(files) {
+  const h = crypto.createHash('sha1')
+  for (const f of files.sort()) {
+    let st
+    try {
+      st = fs.statSync(f)
+    } catch {
+      h.update(`${f}:missing;`)
+      continue
+    }
+    h.update(`${f}:${Math.round(st.mtimeMs)}:${st.size};`)
+  }
+  return h.digest('hex')
+}
+
+function listFiles(dir, ext = '.json') {
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((n) => n.endsWith(ext))
+      .map((n) => path.join(dir, n))
+  } catch (err) {
+    // 只有"目录还不存在"才当空；别的错误必须冒出来——
+    // 这里曾经把 ReferenceError 吞成"没有文件"，缓存于是永远不失效（踩过）
+    if (err?.code === 'ENOENT') return []
+    throw err
+  }
+}
+
+/** 人物索引依赖的文件：身份登记 + 每个人物档案。 */
+function personStamp(root, pid) {
+  const base = path.join(root, P.personas, pid)
+  return statSignature([
+    path.join(base, 'entities', 'identities.json'),
+    ...listFiles(path.join(base, 'entities', 'people')),
+  ])
+}
+
+/** 群体索引依赖的文件：群体身份登记 + 每个群体档案。 */
+function groupStamp(root, pid) {
+  const base = path.join(root, P.personas, pid)
+  return statSignature([
+    path.join(base, 'entities', 'group-identities.json'),
+    ...listFiles(path.join(base, 'entities', 'groups')),
+  ])
+}
 
 /** 昵称最多 8 个字：再长就不是"称呼"了，是句子。 */
 export const ALIAS_MAX_CHARS = 8
@@ -76,6 +157,11 @@ function personAliases(root, pid, uid) {
  * @returns {Map<string, {key:string, uids:string[], kind:'name'|'alias'}>}
  */
 export function personMentionIndex(root, pid) {
+  const key = `${path.resolve(root)}|${pid}`
+  const stamp = personStamp(root, pid)
+  const hit = mentionCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.index
+
   const data = loadIdentities(root)
   const map = new Map()
   const add = (key, uid, kind) => {
@@ -94,6 +180,8 @@ export function personMentionIndex(root, pid) {
     for (const n of names) add(n, person.uid, 'name')
     for (const a of aliases) add(a, person.uid, 'alias')
   }
+  if (hit) cacheInvalidations += 1
+  mentionCache.set(key, { stamp, index: map })
   return map
 }
 
@@ -135,6 +223,11 @@ export function mentionedPeople(root, pid, { text = '', exclude = [], groupMembe
 
 /** 群体这边：名字 + 描述里认出的昵称（与人物同一套抽取规则）。 */
 export function groupAliasIndex(root, pid) {
+  const key = `${path.resolve(root)}|${pid}`
+  const stamp = groupStamp(root, pid)
+  const hit = groupCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.index
+
   const map = new Map()
   const add = (key, gid, kind) => {
     const k = String(key ?? '').trim()
@@ -158,6 +251,8 @@ export function groupAliasIndex(root, pid) {
       for (const a of extractAliases(t)) if (a !== g.name) add(a, g.gid, 'alias')
     }
   }
+  if (hit) cacheInvalidations += 1
+  groupCache.set(key, { stamp, index: map })
   return map
 }
 
