@@ -243,82 +243,90 @@ D:\yuanling\
 ├─ rules\
 │  └─ ingest.json                入库策略：软黑名单、跳过频道（raw 共享，只有一份）
 │
-├─ raw\                          ① 原始层（只追加，永不改写）
+├─ raw\                          ① 原始层（只追加，永不改写；所有人格共用）
 │  └─ 2026-11\07\
-│     ├─ qq.ndjson               一条消息一行 JSON（v/id/h/ts/channel/actor/text…）
-│     ├─ qq-p2.ndjson            超过 32MB 自动分片
+│     ├─ qq.ndjson / qq-p2.ndjson   消息（超 32MB 自动分片）
 │     ├─ bili.ndjson             同一套格式，不同来源各一个文件
 │     ├─ system.ndjson           系统事件：墓碑、纠错（也进链）
 │     └─ day.json                封存：行数 / 字节 / sha256 / prev（日链）
 │
-├─ media\                        ② 媒体层（与 raw 平级：内容不可重建，所以不进 system）
-│  ├─ sha256\ab\cd\<hash>.png    二进制本体，按内容寻址，天然去重
-│  ├─ thumbs\ab\cd\<hash>.webp   派生缩略图（可随时删、可重建）
-│  └─ index\2026-11.ndjson       按月只追加：put / archive / delete 事件
+├─ media\                        ② 媒体层（内容寻址。**当前只有目录与索引，上传接口尚未实现**）
+│  ├─ index.ndjson               按月只追加：put / archive / delete
+│  └─ sha256\ab\cd\<hash>.png    二进制本体（为 media.put.file 预留）
 │
-├─ media-archive\                一年以上的媒体，同样的 hash 布局，可整体删除
-│
-├─ personas\                     ③ 人格层（多个人格，共用上面那份 raw）
+├─ personas\                     ③ 人格层（多个人格，共用上面那份 raw；**除 raw 外的人格数据都在这里**）
 │  └─ yuanling\
-│     ├─ persona.json            人格标记（id / 名字 / 创建时间）
+│     ├─ persona.json            人格标记（id / 名称（可多个，空格分隔）/ 创建时间）
 │     ├─ persona\
-│     │  ├─ SELF.md              骨架：名字、存在的原因（**永不自动修改**）
+│     │  ├─ SELF.md              骨架：名称、存在的原因（**永不自动修改**）
 │     │  └─ lines.md             硬线：绝对不做的事（进注入，640 字节，超了拒绝保存）
+│     ├─ style.md                表达层（演化提案只落这里，进注入，320 字节）
 │     ├─ core.json               核心档案预留位（当前没被读取）
-│     ├─ style.md                表达层（演化提案只落这里，进注入，160 字节）
 │     ├─ entities\
 │     │  ├─ identities.json      **她认知里的**「哪个号是谁」（人格之间各一份，不共用）
 │     │  ├─ group-identities.json **她认知里的**「哪个群是哪个群」（grp_xxx ↔ 平台群号）
-│     │  ├─ people\person_x.json 她对这个人的认识：素描、weight、first_met、身份描述原文
-│     │  └─ groups\grp_xxxx.json 她对这个地方的印象：name、feature、members
-│     ├─ spaces\
-│     │  └─ 日常\
-│     │     └─ entries\备份.json   一个主题一个文件：facts[] + summary（space 与 entries 都是目录层）
+│     │  ├─ people\person_x.json 人物卡：素描、weight、first_met
+│     │  └─ groups\grp_xxxx.json 群体卡：name、feature、members
+│     ├─ spaces\<空间>\entries\<主题>.json   记忆条目：facts[] + summary
+│     ├─ self\
+│     │  ├─ purposes.json        目的账本（"没说完的话"，每条带 raw 指针）
+│     │  └─ interests.json       兴趣信号
+│     ├─ journal\                每日小结（可选生成）
 │     ├─ rules\
 │     │  ├─ global.json          人格级默认（recall / action / persona）
-│     │  ├─ qq\group-123.json    群覆盖（20）
-│     │  └─ private-10001.json   私聊覆盖（30，最具体）
+│     │  ├─ qq\group-qq_123456.json  群覆盖（按 gid）
+│     │  └─ private-person_xxx.json  私聊覆盖（最具体）
 │     ├─ proposals\prop_x.json   演化提案：主张、证据、状态、回滚锚点
 │     ├─ state\
-│     │  ├─ access.ndjson        召回流水（只追加，用于算"被想起过几次"）
+│     │  ├─ weights.json         权重落底（读时现算，写入才算涨）
+│     │  ├─ access.ndjson        召回流水（"被想起过几次"）
+│     │  ├─ sessions.json        会话断点
+│     │  ├─ cursor.json          切入补跑游标
+│     │  ├─ prefs.json           人格偏好（对管理员更温柔）
+│     │  ├─ audience.json        人物/群体黑白名单
 │     │  ├─ engage.json          在场状态（4 分钟滑动 / 20 分钟封顶）
 │     │  ├─ names.json           攒着的新称呼（够门槛才写进名称）
-│     │  └─ cursor.json          切入补跑游标
+│     │  ├─ outbox.json          待发的主动消息（核心算、模块取）
+│     │  └─ egress.ndjson        出站账本（只记 hash/字节，不记正文）
 │     ├─ versions\               人格自己的版本库（blobs + journal，可随人格拷走）
 │     └─ snapshots\              导出用的快照
 │
 ├─ raw-archive\                  冷归档：raw 的早期分片按月移入，链仍可校验
 ├─ web\                          管理台静态页（仓库自带一份；这里可放覆盖版，预留）
 │
-└─ system\                       ④ 机器自有（人可以读，但不该手改）
+└─ system\                       ④ 机器自有（可以读，但不该手改）
    ├─ manifest.json              格式版本（太新就拒绝启动）
-   ├─ （身份登记已按人格：见 personas/<p>/entities/identities.json）
-   ├─ shields.json              墓碑登记簿（可从 raw 重建，不是真相）
-   ├─ policy.json                **运行设置的唯一真值**（端口 / 周期 / 日志级别 / 到期天数…，见「设置」一节）
+   ├─ shields.json               墓碑登记簿（可从 raw 重建，不是真相）
+   ├─ policy.json                **运行设置的唯一真值**（端口 / 周期 / 日志级别 / 到期天数）
    ├─ secrets\console.token      管理台令牌（64 位 hex）
+   ├─ console.json               管理台运行时自述（url / port / pid，供同机其他进程找它）
    ├─ inbox\                     文件投递（<source>.ndjson + .health 心跳）
    ├─ versions\                  根级文件的版本库（blobs + journal）
    ├─ log\
    │  ├─ changes.ndjson          变更、拒绝、纠错、身份主张——一条流水账
-   │  ├─ events.ndjson           统一事件流（日志页读它；1MB × 5 轮转、留 90 天；可删，不是正本）
-   │  └─ modules\qq.log          每个模块一个日志文件（核心代写：stderr + 关键事件）
-   ├─ modules\                   已安装的模块（独立子进程，每模块一目录；装在数据目录内）
-   │  └─ qq\                     index.mjs / yuanling.module.json / VERSION / config.json
+   │  ├─ events.ndjson           统一事件流（1MB × 5 轮转、留 90 天；可删，不是正本）
+   │  └─ modules\<id>.log        每个模块一个日志文件（核心代写）
+   ├─ modules\<id>\              已安装的模块（独立子进程，每模块一目录）
+   ├─ modules.json               模块注册表：id / version / api / enabled / granted / last_crash
    ├─ exports\                   导出的模块 tgz（换机器时拷一个文件）
-   ├─ modules.json               模块注册表：id / repo / version / api / enabled / granted / last_crash
-   ├─ candidates\  index\  backups\  imports\  trash\   预留
-   └─ （其余按需出现，核心不依赖）
-```
+   └─ candidates\  index\  backups\  imports\  trash\   预留
+
+**迁移一个人格**：把 `personas/<id>/` 整个复制到目标数据目录的 `personas/` 下就行——
+启动（或跑任意 CLI 命令）时会自动认领：目录里有、根标记里没有的人格会被补登记，然后就能在人格列表里切过去。
+认领**只增不删**：登记里有、目录暂时没挂载的，不会被删掉；没有 `persona.json` 的半截目录不会被当成人格。
+原始层（`raw/`）是所有人格共用的，不跟着人格搬。
 
 **哪些能删**：`system/shields.json` 删了可以从 raw 重建；`system/modules.json` 删了重扫 `modules/` 就能还原；`personas/*/versions` 删了只是丢掉回滚能力；`media/index.ndjson` 删了能从 `media/` 与 raw 里的引用重建。
 **不能删**：`raw/` 和 `media/`——删了就没有任何东西能证明事实从哪来、那句话长什么样。`raw/` 是文本的真相，`media/` 是二进制的真相。
 
-**媒体的生命周期**（`media/` 唯一的清理规则）：
+**媒体的生命周期**（`media/` 的清理规则；归档部分尚未实现，见下）：
 
 - **全留。** 不按年龄删、不按配额删——几十 G 的空间换"她记得的那张图还在"，值。
 - **去重是自动的**：同内容同 hash 同路径，群里转发的重复文件不占第二份空间。
-- **满一年移入 `media-archive/`**：同样的 hash 布局，位置变了但指针不变（核心按指针解析时两处都找）。
-- **删不删由人决定**：`media-archive/` 是一个可以整体删掉的目录，删之前会先给你一份"多少文件、多大、最老到哪年"的清单。
+- 归档（`media-archive/`）是**设计目标，还没实现**：目前没有搬迁代码，也没有"多少文件、多大、最老到哪年"的清单命令。
+
+> ⚠️ **现状**：`media.put.file` / `media.read` 两个接口**还没有 handler**——模块交不进图片/文件，
+> 她也记不住图。协议、能力词、授权流程都在，缺的是核心这一半；`media/` 目前只有目录与索引。
 
 ---
 
@@ -592,11 +600,16 @@ yuanling purpose close <id>  # 手动放下一件事
 - **闸门**：`rules.action.*` 全生效——`proactive=off` 不产出；`quiet_hours` 压着；
   `max_per_hour` / `max_per_day` 配额（`per_target` 决定按人还是全局）；群里默认不主动插话
   （`group_proactive=false` 时群里那几条进 `held`，你允许了就放出来）；
-- **不真发**：队列只写盘 + 记事件 `proactive.queued`。所以「人格 → 动机 → 待发的主动消息」
+- **核心只算不投递**：队列写盘 + 记事件 `proactive.queued`。所以「人格 → 动机 → 待发的主动消息」
   里看到的是**她本来想说什么**，你可以逐条取消（记为 `dropped`，留着能回看）。
+- **投递闭环（协议 v1.5）**：模块用 `outbox.fetch` 取走（`pending → claimed`），发完用 `outbox.ack` 回执
+  （`ok:true → sent`；失败回 `pending` 重试，连续 3 次放弃；领了 5 分钟不回执自动回收）。
+  **交给模块之前会重新过一遍闸门**（名单 / 主动开关 / 静默时段 / 配额），排队时合法不等于现在合法。
+- **回复也要过核心（协议 v1.6）**：模块要主动发消息必须先 `egress.request`，核心查完
+  `rules/action` + 名单 + 配额才放行；被拒只记原因、**正文不落盘**。
+- **还没有任何模块实现这两步**：QQ 模块（独立仓库）在做，桌宠还没有。所以现在实机上"她算得出、没人送"。
 
 节奏：默认每 **15 分钟**算一轮（`proactiveEveryMinutes`，0 = 关）。
-真发送与"她说完之后回头告诉核心"（`spoken` 回执）留给模块协议 v1.5。
 
 ---
 

@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { resolveRoot, validateRoot, P } from './paths.js'
 import { scaffold } from './scaffold.js'
-import { readMarker, listPersonas, createPersona, switchPersona, appendChange } from './persona.js'
+import { readMarker, listPersonas, createPersona, switchPersona, appendChange, reconcilePersonas } from './persona.js'
 import { checkFormat } from './manifest.js'
 import { doctor, doctorExitCode } from './doctor.js'
 import { exists, localIso } from './fsx.js'
@@ -331,6 +331,9 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.ROOT
       }
     }
+
+    // 任何命令之前先认领磁盘上的人格：复制粘贴进来的新人格不该「看不见」
+    reconcilePersonas(root)
 
     if (cmd === 'status') {
       const marker = readMarker(root)

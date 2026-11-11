@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { resolveRoot, validateRoot } from './src/core/paths.js'
 import { scaffold } from './src/core/scaffold.js'
-import { readMarker } from './src/core/persona.js'
+import { readMarker, reconcilePersonas } from './src/core/persona.js'
 import { checkFormat } from './src/core/manifest.js'
 import { exists, localIso } from './src/core/fsx.js'
 import { listEntries } from './src/core/memory.js'
@@ -358,6 +358,8 @@ export function apply(ctx, config) {
     return
   }
 
+  // 迁移靠「复制粘贴 personas/<id>/」，所以启动时先把目录里有、登记里没有的人格认领回来
+  reconcilePersonas(root)
   const marker = readMarker(root)
 
   // 运行设置的唯一真值在数据目录里（system/policy.json）：

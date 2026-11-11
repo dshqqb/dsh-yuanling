@@ -40,6 +40,71 @@ export function listPersonas(root) {
   }))
 }
 
+/**
+ * 从磁盘认领人格：`personas/<id>/` 里有人格标记、但根标记 yuanling.json 里没登记 → 补进去。
+ *
+ * 为什么需要：用户定的迁移方式是**复制粘贴 personas/<id>/**。如果只认根标记，
+ * 复制进来的新人格会"明明在目录里却看不见"——那等于迁移还是没做成。
+ *
+ * 三条纪律：
+ *   · **只增不删**：标记里有、目录没了的，不动（可能是暂时没挂载，别把人家的登记删了）；
+ *   · **只补登记的**：名字取 persona.json 里的，取不到就用 id；
+ *   · **幂等**：已经登记的原样返回，不制造假版本。
+ *
+ * @returns {{adopted:string[], marker:object|null}}
+ */
+export function reconcilePersonas(root) {
+  const marker = readMarker(root)
+  if (!marker) return { adopted: [], marker: null }
+
+  const base = path.join(root, P.personas)
+  let ids = []
+  try {
+    ids = fs
+      .readdirSync(base, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .filter((id) => PERSONA_ID_RE.test(id))
+  } catch {
+    return { adopted: [], marker }
+  }
+
+  const known = new Set(marker.personas.map((x) => x.id))
+  const adopted = []
+  for (const id of ids) {
+    if (known.has(id)) continue
+    let manifest = null
+    try {
+      manifest = JSON.parse(fs.readFileSync(path.join(base, id, 'persona.json'), 'utf8'))
+    } catch {
+      continue // 没有 persona.json 的目录不是人格（可能是半截拷贝，不猜）
+    }
+    marker.personas.push({
+      id,
+      name: String(manifest?.name ?? id),
+      created_at: manifest?.created_at ?? null,
+    })
+    known.add(id)
+    adopted.push(id)
+  }
+
+  // 没有激活态时回落到第一个（复制粘贴进来的目录同样适用）
+  const needActive = !marker.active && marker.personas.length > 0
+  if (needActive) marker.active = marker.personas[0].id
+
+  if (adopted.length || needActive) {
+    writeMarker(root, marker)
+    try {
+      snapshotCurrent(root, P.marker, { actor: 'system:persona', reason: `从磁盘认领人格：${adopted.join('、')}` })
+    } catch {
+      /* 记不上版本不该让启动失败 */
+    }
+    for (const id of adopted) appendChange(root, { kind: 'persona_adopted', id })
+    if (needActive) appendChange(root, { kind: 'persona_autoset_active', id: marker.active })
+  }
+  return { adopted, marker }
+}
+
 /** 当前激活人格。 */
 export function activePersona(root) {
   const marker = readMarker(root)
