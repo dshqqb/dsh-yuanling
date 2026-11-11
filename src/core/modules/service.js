@@ -70,14 +70,15 @@ export const writeModuleConfig = writeModuleConfigFromManage
  *   · 崩溃到上限后标 crashed，不再自动拉起，等人工处理。
  */
 export class ModuleService {
-  constructor({ root, pid = null, onIngest = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, onEgress = null, spawnImpl = undefined } = {}) {
+  constructor({ root, pid = null, onIngest = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, onEgress = null, onMediaPut = null, onMediaGet = null, spawnImpl = undefined } = {}) {
     this.root = root
     this.pid = pid
-    this.handlers = { onIngest, onPropose, onOutboxFetch, onOutboxAck, onEgress }
+    this.handlers = { onIngest, onPropose, onOutboxFetch, onOutboxAck, onEgress, onMediaPut, onMediaGet }
     this.spawnImpl = spawnImpl
     this.procs = new Map() // id -> ModuleProcess
     this.logs = new Map() // id -> string[] 最近若干行（内存里，页面即时看）
     this.fetchTimes = new Map() // id -> number[] 取数时间戳（限频用）
+    this.mediaTimes = new Map() // id -> number[] 媒体入库时间戳（限频用）
   }
 
   /** 当前注册表快照。 */
@@ -237,7 +238,7 @@ export class ModuleService {
     this.procs.set(id, proc)
     proc.start()
     try {
-      await proc.init({ id, api: manifest.api ?? '1.0', config: readModuleConfig(this.root, id), granted: grantedOf(entry) })
+      await proc.init({ id, api: manifest.api ?? '1.0', config: readModuleConfig(this.root, id), granted: grantedOf(entry), tmp: moduleTmpDir(this.root, id) })
     } catch (error) {
       appendModuleLog(this.root, id, `握手失败：${error?.message ?? error}`)
             throw error
@@ -327,6 +328,26 @@ export class ModuleService {
     if (op === 'egress.request') {
       if (!this.handlers.onEgress) throw new Error('核心未配置 egress 处理器')
       return this.handlers.onEgress({ id, data })
+    }
+
+    // 协议 §13：媒体入库 / 出库。模块只碰自己的临时目录，核心决定存哪。
+    if (op === 'media.put.file') {
+      if (!this.handlers.onMediaPut) throw new Error('核心未配置媒体处理器')
+      const now = Date.now()
+      const times = (this.mediaTimes.get(id) ?? []).filter((x) => now - x < 60_000)
+      if (times.length >= 20) {
+        const e = new Error('media.put.file 太快了（每分钟最多 20 次），稍后再试')
+        e.code = 'E_RATE'
+        e.retry = true
+        throw e
+      }
+      times.push(now)
+      this.mediaTimes.set(id, times)
+      return this.handlers.onMediaPut({ id, data })
+    }
+    if (op === 'media.get') {
+      if (!this.handlers.onMediaGet) throw new Error('核心未配置媒体处理器')
+      return this.handlers.onMediaGet({ id, data })
     }
 
     // v1.4：模块回报自己的健康项（诊断页把它们并进核心那份清单）。

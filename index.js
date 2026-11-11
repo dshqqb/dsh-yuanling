@@ -540,6 +540,9 @@ function startModules(ctx, config, root, pid) {
         onPropose: core.onPropose,
         // v1.6：模块要发消息前必须先问过核心（规则 + 名单 + 配额），通过才允许投递
         onEgress: core.onEgress,
+        // 协议 §13：媒体入库/出库（核心算 hash、决定存哪；模块只碰自己的临时目录）
+        onMediaPut: core.onMediaPut,
+        onMediaGet: core.onMediaGet,
         // v1.5：模块来取"她想说的话"，并回报说没说出来。
         // 队列由核心算（动机 + 目的 + 闸门），模块只负责投递——和 send 的分工一致。
         onOutboxFetch: ({ id: moduleId, data }) => ({

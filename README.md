@@ -250,9 +250,9 @@ D:\yuanling\
 │     ├─ system.ndjson           系统事件：墓碑、纠错（也进链）
 │     └─ day.json                封存：行数 / 字节 / sha256 / prev（日链）
 │
-├─ media\                        ② 媒体层（内容寻址。**当前只有目录与索引，上传接口尚未实现**）
+├─ media\                        ② 媒体层（内容寻址，天然去重）
 │  ├─ index.ndjson               按月只追加：put / archive / delete
-│  └─ sha256\ab\cd\<hash>.png    二进制本体（为 media.put.file 预留）
+│  └─ sha256\ab\cd\<hash>.png    二进制本体（media.put.file 写入；指针永不过期）
 │
 ├─ personas\                     ③ 人格层（多个人格，共用上面那份 raw；**除 raw 外的人格数据都在这里**）
 │  └─ yuanling\
@@ -319,14 +319,18 @@ D:\yuanling\
 **哪些能删**：`system/shields.json` 删了可以从 raw 重建；`system/modules.json` 删了重扫 `modules/` 就能还原；`personas/*/versions` 删了只是丢掉回滚能力；`media/index.ndjson` 删了能从 `media/` 与 raw 里的引用重建。
 **不能删**：`raw/` 和 `media/`——删了就没有任何东西能证明事实从哪来、那句话长什么样。`raw/` 是文本的真相，`media/` 是二进制的真相。
 
-**媒体的生命周期**（`media/` 的清理规则；归档部分尚未实现，见下）：
+**媒体的生命周期**（`media/` 的清理规则）：
 
 - **全留。** 不按年龄删、不按配额删——几十 G 的空间换"她记得的那张图还在"，值。
 - **去重是自动的**：同内容同 hash 同路径，群里转发的重复文件不占第二份空间。
 - 归档（`media-archive/`）是**设计目标，还没实现**：目前没有搬迁代码，也没有"多少文件、多大、最老到哪年"的清单命令。
 
-> ⚠️ **现状**：`media.put.file` / `media.read` 两个接口**还没有 handler**——模块交不进图片/文件，
-> 她也记不住图。协议、能力词、授权流程都在，缺的是核心这一半；`media/` 目前只有目录与索引。
+**现状（2026-11-11 补齐）**：`media.put.file` / `media.get`（能力 `media.read`）两个 handler 已经实现——
+模块把文件写进自己的临时目录（`system/tmp/<id>/`）再交进来，核心校验路径 / 单文件 ≤20MB / mime 白名单 /
+20 次每分钟，算 sha256 落盘、追加索引、收走源文件，返回 `media:sha256:<hash>.<ext>`。
+出站把指针解析成**临时文件**（10 分钟过期）交给模块，帧里不出现内部指针；**热库没有就去归档库找**（指针永不过期）。
+
+**还没做的**：自动归档（把一年以上的媒体搬去 `media-archive/`）和"归档清单"命令——目前归档目录只被读取，没有搬迁代码。
 
 ---
 

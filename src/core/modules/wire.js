@@ -9,6 +9,7 @@ import { ingest } from '../inbox.js'
 import { addFact } from '../memory.js'
 import { readMarker } from '../persona.js'
 import { requestEgress } from '../egress.js'
+import { putMedia, getMedia } from '../media.js'
 
 /**
  * 造一组 handler 交给 ModuleService。
@@ -49,6 +50,18 @@ export function moduleHandlers({ root, pid = null } = {}) {
         factId: r.fact?.id ?? null,
       }
     },
+
+    /**
+     * `media.put.file`：模块把临时目录里的文件交进来。核心算 hash、决定存哪、删源文件。
+     * 路径校验在 media.js 里（必须在 system/tmp/<模块id>/ 下），这里不重复判。
+     */
+    onMediaPut: ({ id, data }) => putMedia(root, { moduleId: id, path: data?.path, mime: data?.mime }),
+
+    /**
+     * `media.get`：把内部指针解析成**临时文件**（帧里不出现指针）。
+     * 过期时间由核心给；模块只要在过期前读完。
+     */
+    onMediaGet: ({ id, data }) => getMedia(root, { moduleId: id, ptr: data?.ptr }),
 
     /**
      * `egress.request`：模块要替她发消息——**先说给核心听，拿到 ok 才允许投递**。
