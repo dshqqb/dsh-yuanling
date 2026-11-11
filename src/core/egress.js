@@ -12,7 +12,7 @@
 //      ② rules/action：deny、静默时段、每小时/每天配额（per_target）
 //      ③ 黑白名单：这个对象现在允许她回话吗（canReply）
 //      ↓ 通过
-//   核心 → 模块：{ ok:true, id }   ← 模块拿到这个才去投递
+//   核心 → 模块：{ ok:true, id, media?:[{path,mime,size,expires_at}] }   ← 模块拿到这个才去投递
 //      ↓ 拒绝
 //   核心 → 模块：{ ok:false, code:'E_REFUSED', reason }  ← **内容不落盘、不回显**
 //
@@ -27,8 +27,11 @@ import { resolveChannel } from './channels.js'
 import { canReply } from './audience.js'
 import { inQuietHours } from './proactive.js'
 import { appendEvent } from './events.js'
+import { getMedia, parseMediaPointer } from './media.js'
 
 export const EGRESS_MAX_TEXT = 4000
+/** 一条消息最多带几张图/文件：再多就不是"顺手发一张"，是灌文件。 */
+export const EGRESS_MAX_MEDIA = 9
 
 function ledgerPath(root, pid) {
   return path.join(root, P.personas, pid, 'self', 'egress.ndjson')
@@ -120,6 +123,26 @@ export function requestEgress(root, pid, { moduleId, channel, text, media = [], 
     return refuse(root, { pid, moduleId, scene, reason: 'max_per_day', code: 'E_REFUSED' })
   }
 
+  // ⑤ 媒体：模块交的是**指针**，核心校验存在、换成临时文件再随放行结果返回。
+  //    帧里不出现内部指针（协议 §13）；出站账本只记张数，不记内容。
+  const mediaList = Array.isArray(media) ? media : []
+  if (mediaList.length > EGRESS_MAX_MEDIA) {
+    return { ok: false, code: 'E_MEDIA', reason: `一条消息最多带 ${EGRESS_MAX_MEDIA} 个媒体（收到 ${mediaList.length}）` }
+  }
+  const resolvedMedia = []
+  for (const item of mediaList) {
+    // 接受字符串指针，也接受 {ptr} 形状（模块两种写法都自然）
+    const ptr = typeof item === 'string' ? item : item?.ptr
+    if (!parseMediaPointer(ptr)) {
+      return { ok: false, code: 'E_MEDIA', reason: `媒体指针格式不认识：${String(ptr ?? '(空)')}` }
+    }
+    const got = getMedia(root, { moduleId, ptr })
+    if (!got.ok) {
+      return { ok: false, code: 'E_MEDIA', reason: `媒体找不到：${ptr}` }
+    }
+    resolvedMedia.push({ path: got.path, mime: got.mime, size: got.size, expires_at: got.expires_at })
+  }
+
   // ⑤ 硬线的 never_do 是"能力声明"，不是正文过滤：正文里出现它也没意义。
   //    这里只把它读一遍，确保数据坏了不会让出站整条挂掉。
   void loadGuardrails(root)
@@ -133,9 +156,9 @@ export function requestEgress(root, pid, { moduleId, channel, text, media = [], 
     bytes: Buffer.byteLength(body, 'utf8'),
     chars: [...body].length,
     hash: sha256(Buffer.from(body, 'utf8')),
-    media: Array.isArray(media) ? media.length : 0,
+    media: resolvedMedia.length,
   })
-  return { ok: true, id, channel: scene }
+  return { ok: true, id, channel: scene, ...(resolvedMedia.length ? { media: resolvedMedia } : {}) }
 }
 
 /** 拒绝：记一条 refusal（**不记正文**），并留事件；返回给模块的是"为什么不行"。 */

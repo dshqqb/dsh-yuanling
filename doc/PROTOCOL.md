@@ -367,7 +367,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | `diag.report` | `{items:[{code, level, hint, detail?}]}` | `{accepted, truncated}` | **v1.4**：让核心的「诊断」页带上模块的专业判断。见 §5.1.2 |
 | `outbox.fetch` | `{limit?}` | `{version:1, items:[{id, channel, target, text, need, why, created}]}` | **v1.5**：取"她主动想说的话"。需 `outbox`；取出即 `claimed`；见 §5.1.3 |
 | `outbox.ack` | `{id, ok, code?, message?}` | `{id, status:'sent'\|'pending'\|'dropped'}` | **v1.5**：回报说没说出来。`ok:false` 会重试，连续失败到上限自动放弃 |
-| `egress.request` | `{channel, text, media?, trace?}` | `{ok:true, id, channel}` \| `{ok:false, code, reason}` | **v1.6**：要发消息先问核心。需 `send`；被拒时**正文不落盘**。见 §5.1.4 |
+| `egress.request` | `{channel, text, media?:[ptr], trace?}` | `{ok:true, id, channel, media?:[{path,mime,size,expires_at}]}` \| `{ok:false, code, reason}` | **v1.6**：要发消息先问核心。需 `send`；被拒时**正文不落盘**。见 §5.1.4 |
 
 #### 5.1.3 `outbox.*`：把她"主动想说的话"交给模块（v1.5）
 
@@ -411,8 +411,9 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
     "text":"嗯，我在。",
     "media":[], "trace":"01JCV…"
 } }
-// 通过
-{ "ok":true, "result":{ "ok":true, "id":"eg_…", "channel":"private:person_x" } }
+// 通过（带图时多一个 media[]：`{path, mime, size, expires_at}`，帧里不出现内部指针）
+{ "ok":true, "result":{ "ok":true, "id":"eg_…", "channel":"private:person_x",
+    "media":[{ "path":"…\\system\\tmp\\qq\\x.png", "mime":"image/png", "size":1234, "expires_at":"…" }] } }
 // 拒绝（正文不落盘、不回显）
 { "ok":true, "result":{ "ok":false, "code":"E_REFUSED", "reason":"quiet_hours" } }
 ```
@@ -677,7 +678,7 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 
 > **状态（2026-11-11）**：`media.put.file` / `media.get` 的 handler **已实现**（`src/core/media.js`）；
 > 归档搬迁也已实现（`yuanling media archive [--days n] [--apply]`，默认只出清单）。
-> 还没做的是 `egress.request` 里 `media[]` 的解析（发图）。
+> `egress.request` 的 `media[]` 解析也已实现（指针在这里换成临时文件，帧里不出现内部指针）。
 
 - **入站**：模块写进 `$YUANLING_TMP/`（就是它自己的临时目录，别再拼 `<id>`）→ `media.put.file {path, mime}` → 核心校验路径/大小/类型 → 存 `media/sha256/ab/cd/<hash>.<ext>` → 追加 `media/index.ndjson` → 返回 `ptr`；核心随即收走源文件（复制后删除；删不掉只记日志，不阻断——媒体已入库，临时文件清理不是正确性问题）。
 - **出站**：核心把指针解析为临时文件，`egress.request` 的 `media[]` 给 `{path, mime, size, expires_at}`，帧里不出现 ptr。
