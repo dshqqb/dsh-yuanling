@@ -41,7 +41,7 @@
 | 1 | 不能直接读 `raw/`，只能 `ingest()` | 落盘、脱敏、分片全在核心；**`source` 由核心按连接身份盖章，模块自报无效** |
 | 2 | 不能直接写记忆，只能 `propose.fact`（需 capability `propose.fact`） | 走查重 / 槽位 / 重要度全流程，事实带 `origin_module` |
 | 3 | 不能决定媒体存哪，只能 `media.put.file`，拿回内容寻址指针 | 路径由核心分配，模块只拿指针 |
-| 4 | **不能自己决定发什么**：发送由核心发起，模块只投递 | 核心在 `send` 之前跑 `rules/action` 与 `guardrails.never_do`；被拒只记 refusal，**内容不透传给模块** |
+| 4 | **不能自己决定发什么**：内容由核心算，模块只投递 | 主动说的走 `outbox`（核心算好才交付）；回复走 `egress.request`（核心跑 `rules/action` + 名单 + 配额才放行）；被拒只记 refusal，**正文不落盘** |
 
 > 第 4 条是 `guardrails.never_do` 的**唯一执行点**。没有它，那条规则只是文档里的装饰。
 
@@ -240,7 +240,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 
 | kind | 含义 | v1 |
 |---|---|---|
-| `gateway` | 收消息 → `ingest`；接收 `send` | ✅ 实现 |
+| `gateway` | 收消息 → `ingest`；取 `outbox`、投递前问 `egress.request` | ✅ 实现 |
 | `actuator` | 由核心触发产出媒体（TTS / 绘图 / 视频） | ⬜ **接口写死，调用返回 `E_UNSUPPORTED`**（§5.2.1） |
 | `enricher` | 加工管道（转写 / 翻译 / 摘要） | ⬜ 只保留类型名，顺序语义未定 |
 | `ui` | 管理台扩展 UI | ❌ 删除。UI 走 v1.2 的 `ui.tabs`——**模块出 JSON，核心渲染**（§3.5） |
@@ -345,9 +345,8 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | 默认（`ping` / `config.get` / `log` 等） | 10s | — |
 | `init`（等 `ready`） | 30s | 冷启动含依赖初始化 |
 | `ingest` / `media.put.file` / `media.get` / `propose.fact` | 10s | 核心侧是本地写 |
-| `send` | 30s | 平台 API 慢是常态；按 10s 误判 undelivered 会真丢回复 |
 | `ui.get`（v1.2） | 15s | 允许模块现查一次自己的状态；比默认 10s 宽一点，又不至于卡住页面 |
-| `source.fetch`（v1.1） | 30s | 模块这一侧会去联网（B 站 / 网页），按 send 那一档，不能套 10s 默认 |
+| `source.fetch`（v1.1） | 30s | 模块这一侧会去联网（B 站 / 网页），按投递那一档，不能套 10s 默认 |
 | `actuate` | 300s | 语音/视频生成轻松超过 10s，一刀切会杀掉正常生成 |
 | `shutdown` | `deadline_ms` 自带 | 核心关停前预告 |
 
@@ -395,10 +394,10 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 1. **取出即 `claimed`，不直接标 `sent`**。核心不知道消息有没有真的出去；只有 `ack` 才算数。
 2. **交给模块之前重新过闸门**：静默时段、黑白名单、主动开关、每小时/每天配额——排队时合法不代表现在合法。
 3. **`ok:false` 不立刻重试**：回 `pending`，由模块按自己的退避再来取；连续失败 **3 次**自动 `dropped`
-   （与 `send` 的 at-most-once 同一个理由：宁可少一条，不能在真人群里复读）。
+   （与核心的重试上限同一个理由：宁可少一条，不能在真人群里复读）。
 4. **领了不 ack 会超时回收**（5 分钟）：模块崩了，队列不能永久卡在 `claimed`。
 
-`target` 是平台侧投递地址的原始字符串（群号/QQ 号），语义与 `send` 的 `target` 完全一致。
+`target` 是平台侧投递地址的原始字符串（群号/QQ 号），语义与 OneBot 的 `user_id` / `group_id` 一致。
 
 #### 5.1.4 `egress.request`：出站必须问过核心（v1.6）
 
@@ -465,7 +464,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 #### 5.1.1 防回环（不可省）
 
 - 平台回流的**机器人自身消息**必须投 `role: "bot"`；核心按 role 不触发候选事实、不计召回。
-- 模块不得把核心 `send` 给它的内容再次 `ingest`——核心在 egress 侧记内容哈希，**10 分钟内命中即丢弃并计 skipped**。
+- 模块不得把自己刚投递出去的内容再次 `ingest`——核心在 egress 账本里记内容哈希，**10 分钟内命中即丢弃并计 skipped**。
 - 这两条是网关上线第一天就会用到的规则，不是可选优化。
 
 > `media.put` 的 base64 版本已取消（20MB base64 = 27MB，撞 256KB 帧上限）。分块方案连同占位一并砍掉。
@@ -475,21 +474,11 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 | op | 入参 | 出参 | 说明 |
 |---|---|---|---|
 | `init` | `{api, coreVersion, config, tmp}` | `{ready:true, api}` | 握手；`tmp` 是**字符串**路径 |
-| `send` | `{channel, target, text, media?, trace}` | `{ok, delivered_at, external_id?}` \| `{ok:false, code, message, retriable?}` | 唯一出站通道；`rules/action` 与 `never_do` 已跑完 |
 | `ping` | `{}` | `{}`（同一 id 的普通响应） | 心跳，见 §8.1 |
 | `actuate` | `{kind, input, trace}` | `{path, mime, size}` | **v1 一律 `E_UNSUPPORTED`**；形状见 §5.2.1 |
 | `source.fetch` | `{source, params, limit, trace}` | 标准 inbox 信封 `{v:1, source, acct, items[]}` | **v1.1 已实现**；需模块声明 `provide.source` + `sources`；见 §5.2.2 |
 | `ui.get` | `{tab}` | `{data}`（按 manifest 声明的 kind） | **v1.2 已实现**；只读；需 manifest 声明 `ui.tabs`；见 §5.2.3 |
 | `shutdown` | `{reason, deadline_ms}` | — | 预告关停；超时强杀 |
-
-**`send` 的字段语义**：
-
-- `channel`：`private:10001` 这种，**只用于路由与规则**；
-- `target`：平台侧投递地址的**原始字符串**（QQ 号 / 群号 / UID），模块直接用它投递；
-- 两者都由核心给出，模块不得改写、不得从 `channel` 反推 `target`（两者恰好相同只是巧合）；
-- `media` 元素是 `{path, mime, size, expires_at}`，**帧里不出现 ptr**——核心已把指针解析为临时文件，模块直接读路径。
-
-**投递语义 at-most-once**：模块崩溃导致响应未回，核心**不重发**，记 refusal（undelivered），管理台可见。显式 `ok:false` 在 v1 **也不自动重试**——重试与否由模块在 `retriable` 里表态，核心只记录。宁可少一条回复，不能在真人群里复读。
 
 配置变更、persona 切换通知等其余方向 **v1 一律不做**：配置变更 = `shutdown` + 重新 `init`（§3.1）。
 
@@ -510,7 +499,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 core ──actuate(speech)──▶ tts 模块（声明 actuate.speech）
      ◀── {path} ─────────┘
 core: 收走产物，入库 media，得 ptr
-core ──send{channel, target, media:[{path,…}]}──▶ qq 模块
+qq 模块 ──egress.request{channel, text, media}──▶ core（放行后才由模块投递）
 ```
 
 v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则现在冻结**，避免三个模块各写一套。
@@ -571,7 +560,7 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 |---|---|
 | `ingest.message` | `ingest` |
 | `propose.fact` | `propose.fact` |
-| `egress.text` / `egress.media` | 接收 `send` 的 text / media 形态 |
+| `send` | `egress.request`：请求核心放行一条出站消息 |
 | `media.read` | `media.get` |
 | `actuate.<kind>`（如 `actuate.speech`） | 接收 `actuate` 的对应 kind；kind 词表：`speech` \| `image` \| `video` |
 | `provide.source`（v1.1） | 接收 `source.fetch`；须同时在 manifest 里声明 `sources` |
@@ -580,7 +569,7 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 
 - 不在表内的 capability → 拒装（§3.3 第 6 条）。
 - `raw.write` 已删除：与 `ingest.message` 重复，一把锁不配两把钥匙。
-- capability 是**声明**不是授权：能不能发，由核心 rules 每次 `send` 时决定；能不能被取数，由 `granted` 里有没有 `provide.source` 决定（**默认没有**，见 §2.1）。
+- capability 是**声明**不是授权：能不能发，由核心每次 `egress.request` 时决定；能不能被取数，由 `granted` 里有没有 `provide.source` 决定（**默认没有**，见 §2.1）。
 
 > ⚠️ 已知不一致（留给 v1.1 第二刀收口）：代码里 `CAPABILITIES` 用的是扁平词 `send` / `actuate`，本文表格写的是 `egress.text` / `egress.media` / `actuate.<kind>`。这是 v1.0 时代"文档先行、实现简化"留下的差口，**本轮不动语义**，只把 `provide.source` 两边都补上；收口要单独一轮改代码 + 迁注册表，不能在补功能时顺手改。
 
@@ -622,14 +611,14 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 
 - 每模块 `ingest` 上限默认 **100 条/分钟**，超限 `E_RATE`（`retry:true`）。
 - 核心侧队列有界（默认 1000）；满时 `E_BUSY`（`retry:true`）。
-- `send` 进队列后不丢；但模块处于 crashed / 停用态时，`send` **直接记 refusal 不排队**——无界队列等死进程是内存炸弹。
+- `egress.request` 被拒时**直接回拒**，不排队；模块处于 crashed / 停用态时，它连请求都发不出来（进程没了）。
 - "不丢"指队列里的不丢；投递中断的处理见 §5.2 的 at-most-once。
 
 ### 8.3 崩溃与重启
 
 - 退出 / 超时 / 假死 → 记 crash（附最后 50 行 stderr），指数退避 1s→2s→4s…封顶 60s，**累计 5 次后停止**，注册表标 `crashed`。
 - **crashed 不会自动恢复**：只能由人在管理台点「启动」或 CLI 触发。核心不得因为"来了新消息"就偷偷重启——否则持续崩溃的模块变成定时炸弹。
-- 重启后重走握手；崩溃前未确认的消息不代为重发（ingest 由模块按幂等自决重试；send 按 at-most-once 记 refusal）。
+- 重启后重走握手；崩溃前未确认的投递不代为重发（ingest 由模块按幂等自决重试；出站由模块自己的 ack 表态，核心只记结果）。
 
 ### 8.4 幂等
 
@@ -664,7 +653,7 @@ v1 里这个 op 直接回 `E_UNSUPPORTED`，但**名字、形状与寻址规则�
 
 ## §11 trace
 
-一条消息从 `ingest` 起携带 `trace`（ULID，**核心生成**，模块自带被忽略），贯穿：raw 记录 → 候选事实 → `send` / `actuate`。
+一条消息从 `ingest` 起携带 `trace`（ULID，**核心生成**，模块自带被忽略），贯穿：raw 记录 → 候选事实 → `egress.request` / `actuate`。
 
 管理台据此回答："这句话她为什么记得 / 这条回复为什么发出去"。协议层不埋，后面补不上。
 
@@ -687,7 +676,7 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 ## §13 媒体
 
 - **入站**：模块写进 `$YUANLING_TMP/`（就是它自己的临时目录，别再拼 `<id>`）→ `media.put.file {path, mime}` → 核心校验路径/大小/类型 → 存 `media/sha256/ab/cd/<hash>.<ext>` → 追加 `media/index.ndjson` → 返回 `ptr`；核心随即收走源文件（复制后删除；删不掉只记日志，不阻断——媒体已入库，临时文件清理不是正确性问题）。
-- **出站**：核心把指针解析为临时文件，`send.media[]` 给 `{path, mime, size, expires_at}`，帧里不出现 ptr。
+- **出站**：核心把指针解析为临时文件，`egress.request` 的 `media[]` 给 `{path, mime, size, expires_at}`，帧里不出现 ptr。
 - 上限：单文件 20MB；mime 取 `media.receive` ∩ 白名单；`media.put.file` 默认 20 次/分钟。
 - 去重：内容哈希天然去重；同内容不同 mime 以 `index` 区分。
 - **临时目录生命周期**：`YUANLING_TMP` 本身就是该模块的独立子目录，落在核心侧的 `system/tmp/<id>/`；核心每 5 分钟清扫，超 `expires_at`（默认 10 分钟）的文件直接删；模块必须在过期前用完，过期后读不到不是错误。

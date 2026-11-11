@@ -133,11 +133,12 @@ test('service：没授予的能力，模块请求被拒（E_NO_CAP）', async ()
 
   // v1.1：装完什么都没授予，所以连 ingest 都该被拒
   await assert.rejects(svc.handleModuleRequest('demo', { op: 'ingest', data: { items: [] } }), (e) => e.code === 'E_NO_CAP')
-  await assert.rejects(svc.handleModuleRequest('demo', { op: 'send', data: {} }), (e) => e.code === 'E_NO_CAP')
+  // send 是核心→模块的方向，模块自己不该发这个 op：不是"能力不够"，而是"没有这个操作"
+  await assert.rejects(svc.handleModuleRequest('demo', { op: 'send', data: {} }), /宿主不支持的操作：send/)
 
-  // 单独授回 ingest，send 仍是拒的
+  // 单独授回 ingest 之后，别的 op 照样只能是"不认识"
   svc.grant('demo', 'ingest.message', true)
-  await assert.rejects(svc.handleModuleRequest('demo', { op: 'send', data: {} }), (e) => e.code === 'E_NO_CAP')
+  await assert.rejects(svc.handleModuleRequest('demo', { op: 'send', data: {} }), /宿主不支持的操作：send/)
 })
 
 test('service：授予了但核心没接处理器时明确报错（不假装成功）', async () => {
@@ -171,9 +172,9 @@ test('service：log op 落盘，不返回错误', async () => {
   assert.ok(tailModuleLog(root, 'demo').some((l) => l.includes('warn')))
 })
 
-test('service：send 在模块没运行时明确报错', async () => {
+test('service：核心不再往模块推 send（主动开口走 outbox，回复走 egress.request）', () => {
   const { svc } = withModule()
-  await assert.rejects(svc.send('demo', { text: 'hi' }), /模块未运行/)
+  assert.equal(typeof svc.send, 'undefined', '这条死路径已经删掉，别再长回来')
 })
 
 // ── 停用是持久的 ────────────────────────────────────────────────────────

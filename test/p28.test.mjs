@@ -70,13 +70,13 @@ test('frame：encode 总是补 \\n；frameKind 能分辨请求与响应', () => 
   assert.equal(frameKind({}), 'unknown')
 })
 
-test('超时表：按 op 分档（send 30s / actuate 300s / 默认 10s）', () => {
-  assert.equal(timeoutFor('send'), 30_000)
+test('超时表：按 op 分档（actuate 300s / source.fetch 30s / 默认 10s）', () => {
   assert.equal(timeoutFor('actuate'), 300_000)
+  assert.equal(timeoutFor('source.fetch'), 30_000)
   assert.equal(timeoutFor('init'), 30_000)
   assert.equal(timeoutFor('ingest'), 10_000)
   assert.equal(timeoutFor('未知op'), OP_TIMEOUTS.default)
-  assert.equal(timeoutFor('send', 5000), 5000, '显式传入优先')
+  assert.equal(timeoutFor('actuate', 5000), 5000, '显式传入优先')
 })
 
 // ── 真起进程（受限环境整体跳过）────────────────────────────────────────

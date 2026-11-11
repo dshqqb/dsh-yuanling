@@ -16,7 +16,7 @@ import { canonicalChannelForIngest } from './channels.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
-import { noteGroupMessage, herNames } from './engage.js'
+import { noteGroupMessage, herNames, isReplyToHer } from './engage.js'
 import { addFact } from './memory.js'
 import { parseChannel } from './channels.js'
 
@@ -29,7 +29,7 @@ import { parseChannel } from './channels.js'
  *     不记（哪怕说话的是管理员）；
  *   · 她自己的话不是事实（role=bot 跳过），但她说话会开启"在场"。
  */
-function extractFromRecord(root, pid, { text, role, channel, actorId = '', source, pointer, now }) {
+function extractFromRecord(root, pid, { text, role, channel, actorId = '', source, pointer, now, replyTo = '' }) {
   const isBot = String(role ?? 'user') === 'bot'
   const { kind, id } = parseChannel(channel)
   let allowed = false
@@ -40,7 +40,9 @@ function extractFromRecord(root, pid, { text, role, channel, actorId = '', sourc
     // 群里说话的人：用 `<平台>:<原生号>` 当键。**不用 person uid**——
     // 群里大多数成员没有人物卡，硬查要么查不到、要么逼着给每个群友建影子卡。
     const actorKey = actorId ? `${source || 'qq'}:${String(actorId)}` : ''
-    const r = noteGroupMessage(root, { gid: id, text, actorKey, isBot, now, names: herNames(root, pid) })
+    // 引用回复她 = 在叫她：正文里往往没有名字（「你觉得呢」），只靠关键词会漏
+    const replyToHer = isReplyToHer(root, replyTo)
+    const r = noteGroupMessage(root, { gid: id, text, actorKey, isBot, replyToHer, now, names: herNames(root, pid) })
     allowed = r.engaged
   }
 
@@ -161,6 +163,11 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
           // 适配器原话（`private:10001` / `group:123555`）。没有它就再也查不回真实号码了。
           channel_native: canonical.native || undefined,
           text: policy.text,
+          // 平台侧消息 id 存在 ext 里：回复判定要靠它把"被引用的那条"认回来
+          ext: {
+            ...(item.ext && typeof item.ext === 'object' ? item.ext : {}),
+            ...(item.ext_id ? { message_id: String(item.ext_id) } : {}),
+          },
           flags: [...new Set([...(Array.isArray(item.flags) ? item.flags : []), ...policy.flags])],
         },
         { now, maxBytes },
@@ -196,6 +203,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
             actorId: item.actor?.id ?? '',
             source,
             pointer: `${r.file}#${r.id}`,
+            replyTo: item.reply_to ?? item.replyTo ?? '',
             now: item.ts ? Date.parse(String(item.ts)) : Date.now(),
           })
         } catch {

@@ -15,6 +15,7 @@ import { exists, readJson, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 
 import { readPrefs } from './prefs.js'
+import { listDays, readDay } from './raw.js'
 
 export const ENGAGE_WINDOW_MS = 4 * 60 * 1000
 export const ENGAGE_MAX_MS = 20 * 60 * 1000
@@ -59,6 +60,35 @@ export function mentionsHer(text, names) {
   return names.some((n) => n && t.includes(n))
 }
 
+/**
+ * 这条消息是不是**在回复她**（引用回复）。
+ *
+ * 为什么要单独判一次：群里有人用"回复"指定她说话时，正文里往往既没有她的名字也没有昵称
+ * （「你觉得呢」），只靠关键词会漏。判定依据是 raw 里那条被引用的消息是不是她发的（`role: "bot"`）。
+ *
+ * 前提：她的**自己消息也要进 raw**（网关的 `reportSelfMessage` 打开，或模块把 `message_sent` 也交上来）。
+ * 不然 raw 里找不到"她说过那句话"，这个判据就永远为假——不猜，也不拿别人的消息冒充。
+ *
+ * @param {string|number} replyTo 被引用消息在平台侧的 id
+ * @returns {boolean}
+ */
+export function isReplyToHer(root, replyTo, { days = 7 } = {}) {
+  const id = String(replyTo ?? '').trim()
+  if (!id) return false
+  try {
+    for (const day of listDays(root).slice(-Math.max(1, days))) {
+      for (const rec of readDay(root, day)) {
+        // 平台侧消息 id 落在 raw 的 ext.message_id（raw 的字段是封闭的，多出来的会被丢掉）
+        if (String(rec.ext?.message_id ?? '') !== id) continue
+        if (String(rec.role ?? '') === 'bot') return true
+      }
+    }
+  } catch {
+    /* raw 读不到就当不是——宁可漏一次，也不猜 */
+  }
+  return false
+}
+
 export function readEngage(root) {
   const j = readJson(engagePath(root), null)
   return { version: 1, scenes: j?.scenes && typeof j.scenes === 'object' ? j.scenes : {} }
@@ -80,7 +110,7 @@ function saveEngage(root, state) {
  * @param {string[]} o.names   她的名字（herNames 的结果）
  * @returns {{engaged:boolean, reason:string, until:number|null, since:number|null}}
  */
-export function noteGroupMessage(root, { gid, text = '', actorKey = '', isBot = false, now = Date.now(), names = FALLBACK_NAMES } = {}) {
+export function noteGroupMessage(root, { gid, text = '', actorKey = '', isBot = false, replyToHer = false, now = Date.now(), names = FALLBACK_NAMES } = {}) {
   const key = String(gid ?? '')
   if (!key) return { engaged: false, reason: 'no-gid', until: null, since: null }
 
@@ -92,15 +122,15 @@ export function noteGroupMessage(root, { gid, text = '', actorKey = '', isBot = 
   let next = null
   let reason = 'not-engaged'
 
-  if (mentioned) {
-    // 被提到 / 她说话：进入或延续在场
+  if (mentioned || replyToHer) {
+    // 被叫到（含"引用回复她"）/ 她说话：进入或延续在场
     next = {
       since: active ? Number(scene.since) : now,
       until: now + ENGAGE_WINDOW_MS,
       participants: active ? [...new Set([...(scene.participants ?? []), actorKey].filter(Boolean))] : [actorKey].filter(Boolean),
       at: localIso(new Date(now)),
     }
-    reason = 'mentioned'
+    reason = mentioned ? 'mentioned' : 'replied-to-her'
   } else if (isBot) {
     // 她开口了：从这里开始算"她在场"（之后别人的话才可能相关）
     next = {

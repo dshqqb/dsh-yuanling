@@ -21,8 +21,11 @@ export const OP_TIMEOUTS = {
   'media.put.file': 10_000,
   'media.get': 10_000,
   'propose.fact': 10_000,
-  send: 30_000,
   actuate: 300_000,
+  // v1.1 起：模块去找要一次数据，它会联网，按投递那一档给
+  'source.fetch': 30_000,
+  // v1.6：模块请求放行一条出站消息（核心侧只是查一遍规则，不投递）
+  'egress.request': 10_000,
 }
 
 /** §8.3 重启退避：1s → 2s → 4s → 8s → 上限 5 次。 */

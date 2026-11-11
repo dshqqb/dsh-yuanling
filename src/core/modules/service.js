@@ -70,10 +70,10 @@ export const writeModuleConfig = writeModuleConfigFromManage
  *   · 崩溃到上限后标 crashed，不再自动拉起，等人工处理。
  */
 export class ModuleService {
-  constructor({ root, pid = null, onIngest = null, onSend = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, onEgress = null, spawnImpl = undefined } = {}) {
+  constructor({ root, pid = null, onIngest = null, onPropose = null, onOutboxFetch = null, onOutboxAck = null, onEgress = null, spawnImpl = undefined } = {}) {
     this.root = root
     this.pid = pid
-    this.handlers = { onIngest, onSend, onPropose, onOutboxFetch, onOutboxAck, onEgress }
+    this.handlers = { onIngest, onPropose, onOutboxFetch, onOutboxAck, onEgress }
     this.spawnImpl = spawnImpl
     this.procs = new Map() // id -> ModuleProcess
     this.logs = new Map() // id -> string[] 最近若干行（内存里，页面即时看）
@@ -254,7 +254,6 @@ export class ModuleService {
       'propose.fact': 'propose.fact',
       'media.put.file': 'media.put.file',
       'media.get': 'media.read',
-      send: 'send',
       actuate: 'actuate',
       // v1.5：取/回执主动开口的待发队列。和 send 同一份权利（都是"往外说话"），
       // 但单独一个词：只做投递的模块可以只申请 send，不申请 outbox。
@@ -436,15 +435,6 @@ export class ModuleService {
     for (const id of [...this.procs.keys()]) {
       await this.stop(id)
     }
-  }
-
-  /** 发出一个 egress 请求（协议 §5.2 的 send）。 */
-  async send(id, payload) {
-    const proc = this.procs.get(id)
-    if (!proc) throw new Error(`模块未运行：${id}`)
-    const granted = grantedOf(readRegistry(this.root).modules[id])
-    if (!granted.includes('send')) throw Object.assign(new Error('能力未授予：send'), { code: 'E_NO_CAP' })
-    return proc.request('send', payload, { timeoutMs: 30_000 })
   }
 
   /**
