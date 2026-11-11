@@ -170,20 +170,27 @@ inbox  →  ② 硬线检查（guardrails.never_record 命中就丢弃，只计�
 想多认几种说法加一行就行。提炼出来的事实带 `kind: extracted`、重要度 30，
 记忆页上标一个「提炼」标签——**误报总是有的，人得能一眼筛掉**。
 
+> **自动提炼只是兜底。** 它只会把原句机械地摘成一条——同一句话，不同人格应该记成不一样的东西。
+> 正途是她**用自己的话写**（`yuanling_remember`）：先看自动提炼写了什么，觉得不准就重写一条，
+> 并把旧那条放进 `supersedes`——旧事实不删、历史仍在，只是不再进上下文。
+> 这就是"虚拟人格按自己的性格去理解同一件事"落到实处的地方：核心不调模型，理解由她自己给。
+
 ### 记成事实（模型或人显式调用）
 
 ```
-addFact({ topic, text, src: "raw/2026-11/07/qq.ndjson#01JCV..." })
+addFact({ topic, text, src: "raw/2026-11/07/qq.ndjson#01JCV...", supersedes: ["fact_…"] })
    │  ① 指针必须能解析到真实记录   ← 硬规则，不满足直接抛错
    │  ② 查重：完全相同 / 包含 / 双字 bigram ≥0.78  → 命中则只 +1 重复次数
    │  ③ 槽位：同槽位新值关闭旧值（写 until，不删）
-   │  ④ 重要度：规则表打分（承诺 > 事实 > 闲聊）
-   │  ⑤ 情绪浓度、是否「最初」
+   │  ④ 替换：supersedes 里的旧记忆标 until（历史仍在，不再进上下文）
+   │  ⑤ 重要度：规则表打分（承诺 > 事实 > 闲聊）
+   │  ⑥ 情绪浓度、是否「最初」
    ▼
 personas/<id>/spaces/日常/<主题>.json  +  版本历史一条
 ```
 
-规则提炼抓不到、但值得长期记住的事，模型用 `yuanling_remember` 写——同样必须给 `src` 指针。
+规则提炼抓不到、但值得长期记住的事，模型用 `yuanling_remember` 写——同样必须给 `src` 指针；
+觉得自动提炼那条不像她自己会说的话，就重写一条并 `supersedes` 掉旧的那条。**记忆是她的话，不是摘录。**
 
 ### 注入（每一轮）
 
@@ -725,13 +732,13 @@ $pnpm = "D:\Program Files\dsh\resources\runtime\primary-runtime\dependencies\pnp
 | 工具 | 干什么 |
 |---|---|
 | `yuanling_context` | 取回记忆卡 + `[惦记]` + 在场人物卡 + 当前群体卡（私聊/群聊都传 `channel`） |
-| `yuanling_recall` | 按词检索记忆，返回事实与证据指针 |
+| `yuanling_recall` | 按词检索记忆，返回事实、证据指针、**id 与 kind**（`extracted` = 机器摘的，可以用自己的话重写它） |
 | `yuanling_person_identity` | **写**：把学到的账号归属写回档案（原文正本，解析派生；已属别人的号只报冲突） |
 | `yuanling_observe` | **写 / 读印象**：人物素描和群体描述共用一套（整段覆盖 + 必填 reason + 600 字节上限 + 版本历史）；`withHistory` 能看这份印象一路怎么变的 |
 | `yuanling_purpose` | 看 / 回报**惦记**：`list` 读账本；`mentioned` 回报"我问过了"（不回报系统会以为你没提）；`drop` 回报"这条不提了" |
 | `yuanling_group` | 看 / 改某个群的名字；只给 `channel` 就能定位是哪个群，只读时不建档 |
 | `yuanling_drive` | 看 / 改**动机**：`list` 读强度；`adjust` 调权重（≤±0.2/次、6 次/天、必填 reason）；`add` 加自定义动机（必须给关键词——听到那些词才会升温，也能长出属于它的惦记）；`remove` 删自定义动机 |
-| `yuanling_remember` | **写一条事实**：必须给 `src` 指针（指向 raw 里的原话）；重复的表述只 +1 次数，不写第二条 |
+| `yuanling_remember` | **用她自己的话写一条事实**：必须给 `src` 指针；可用 `supersedes` 替换掉自动提炼的那条（旧事实不删、不再进上下文）；重复的表述只 +1 次数 |
 | `yuanling_sources` | 看已装模块里有哪些数据能被她**主动要**（v1.1：模块声明 `sources` 才有） |
 | `yuanling_fetch` | **取一次数**：向某个模块要数据，**先落原始层再给她看**，所以查过就记得；一次最多 20 条 |
 

@@ -77,8 +77,9 @@ const TOOLS = [
   {
     name: 'yuanling_recall',
     description:
-      '按关键词检索原灵的长期记忆，返回命中的事实与其证据指针。\n' +
-      '当需要确认某件具体的事、或想在回答里说明"我为什么记得"时调用；比 yuanling_context 更细。',
+      '按关键词检索原灵的长期记忆，返回命中的事实、证据指针、id 与来源（kind）。\n' +
+      '当需要确认某件具体的事、或想在回答里说明"我为什么记得"时调用；比 yuanling_context 更细。\n' +
+      '看到 kind=extracted 的条目不必照抄——那是机器摘的；你可以用自己的话重写并替换它。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -126,10 +127,11 @@ const TOOLS = [
   {
     name: 'yuanling_remember',
     description:
-      '**写一条事实**进记忆层（她"记住"的东西），用于规则提炼抓不到、但值得长期记住的事。\n' +
-      '**必须给 src 指针** —— 指向 raw 里真实存在的那条记录（形如 `raw/2026-11/10/qq.ndjson#01J...`，' +
-      '可以用 yuanling_context / yuanling_recall 里看到的 @指针，或 CLI `yuanling last`）。' +
-      '没有指针的事实一律拒绝：她记得的事必须能翻回原话。\n' +
+      '**用你自己的话，写下你记住的一件事。**\n' +
+      '入库时有一层自动提炼，但它只会把原句机械地摘成一条——**同一句话，不同人格应该记成不一样的东西**。\n' +
+      '所以：先看看自动提炼写了什么（`yuanling_recall` 会带 kind 与 id），如果你有更准确的判断，\n' +
+      '就用你自己的话重写一遍，并把被替换的那条 id 放进 `supersedes`——旧事实不删，只是不再进上下文。\n' +
+      '**必须给 src 指针** —— 指向 raw 里真实存在的那条记录；没有指针的事实一律拒绝：你记得的事必须能翻回原话。\n' +
       '重复的表述不会写第二条，只会让原事实的「重复次数」+1（那正是人格演化的原料）。',
     inputSchema: {
       type: 'object',
@@ -138,6 +140,11 @@ const TOOLS = [
         topic: { type: 'string', description: '归到哪个主题（记忆页按主题分文件），例如「喜好」「工作」' },
         src: { type: 'string', description: '证据指针 raw/…ndjson#ULID —— 必填' },
         slot: { type: 'string', description: '可选槽位：同槽位的新事实会关闭旧事实（例如「住处」）' },
+        supersedes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '可选：被你这条新记忆替换掉的旧事实 id（yuanling_recall 返回值里有）。旧事实不删，只是不再进上下文',
+        },
         imp: { type: 'number', description: '可选重要度 1–100；不填由核心估' },
       },
       required: ['text', 'topic', 'src'],
@@ -330,7 +337,12 @@ function formatFacts(rows) {
   if (!rows.length) return '（没有命中）'
   // recall 返回的是 { topic, fact, retention, band, ... }：正文和指针都在 fact 里
   return rows
-    .map((r, i) => `${i + 1}. 〔${r.topic}〕${r.fact?.text ?? ''}\n   证据：${r.fact?.src ?? ''}`)
+    .map(
+      (r, i) =>
+        `${i + 1}. 〔${r.topic}〕${r.fact?.text ?? ''}\n` +
+        `   证据：${r.fact?.src ?? ''}\n` +
+        `   id：${r.fact?.id ?? ''}｜kind：${r.fact?.kind ?? 'fact'}`,
+    )
     .join('\n')
 }
 
@@ -571,12 +583,18 @@ async function callTool(root, name, args = {}) {
       text,
       src,
       slot: typeof args.slot === 'string' && args.slot.trim() ? args.slot.trim() : null,
+      supersedes: Array.isArray(args.supersedes) ? args.supersedes.map(String) : [],
       imp: Number.isFinite(Number(args.imp)) ? Number(args.imp) : null,
     })
     if (r.repeated) {
       return { text: `· 这句话已经记过了（累计 ${r.fact.repeat} 次）：${r.fact.text}\n  重复本身就是信号，不用再写一条` }
     }
-    return { text: `✓ 已记住：${r.fact.text}\n  主题：${topic}｜重要度 ${r.fact.imp}｜出处 ${src}` }
+    const replaced = (r.closed ?? []).filter((id) => id !== null && id !== undefined)
+    return {
+      text:
+        `✓ 已记住：${r.fact.text}\n  主题：${topic}｜重要度 ${r.fact.imp}｜出处 ${src}` +
+        (replaced.length ? `\n  替换了 ${replaced.length} 条旧记忆（不再进上下文，历史仍可查）` : ''),
+    }
   }
 
   if (name === 'yuanling_drive') {

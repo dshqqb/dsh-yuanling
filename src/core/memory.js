@@ -225,6 +225,7 @@ export function addFact(
     origin = null,
     person = null,
     kind = 'fact',
+    supersedes = [],
     originModule = null,
     now = localIso(),
   },
@@ -259,6 +260,23 @@ export function addFact(
   }
 
   const closed = []
+
+  const factId = 'fact_' + ulid()
+
+  // 她用自己的话重写一条旧记忆（典型场景：自动提炼的「他明天要去医院」被她改写成
+  // 带自己判断的一句）。旧事实不删，标 until 关掉——历史仍在，注入里不再出现。
+  const replaceIds = new Set((Array.isArray(supersedes) ? supersedes : []).map(String).filter(Boolean))
+  if (replaceIds.size) {
+    const today = now.slice(0, 10)
+    for (const f of entry.facts) {
+      if (replaceIds.has(String(f.id)) && !f.until) {
+        f.until = today
+        f.superseded_by = factId
+        closed.push(f.id)
+      }
+    }
+  }
+
   if (slot) {
     const today = now.slice(0, 10)
     for (const f of entry.facts) {
@@ -269,7 +287,6 @@ export function addFact(
     }
   }
 
-  const factId = 'fact_' + ulid()
   // 「最初」只考虑条目最早的两条事实，并按 id 做确定性抽签。
   // 抽签而不是"前 N 条一律算"——否则新条目会把所有早期事实都标成最初。
   const autoOrigin =
