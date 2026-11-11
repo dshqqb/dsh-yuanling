@@ -291,6 +291,7 @@ D:\yuanling\
 │     ├─ versions\               人格自己的版本库（blobs + journal，可随人格拷走）
 │     └─ snapshots\              导出用的快照
 │
+├─ media-archive\                冷归档：`media archive --apply` 搬过来的老媒体（同 hash 布局，指针仍可解析）
 ├─ raw-archive\                  冷归档：raw 的早期分片按月移入，链仍可校验
 ├─ web\                          管理台静态页（仓库自带一份；这里可放覆盖版，预留）
 │
@@ -317,25 +318,26 @@ D:\yuanling\
 原始层（`raw/`）是所有人格共用的，不跟着人格搬。
 
 **哪些能删**：`system/shields.json` 删了可以从 raw 重建；`system/modules.json` 删了重扫 `modules/` 就能还原；`personas/*/versions` 删了只是丢掉回滚能力；`media/index.ndjson` 删了能从 `media/` 与 raw 里的引用重建。
-**不能删**：`raw/` 和 `media/`——删了就没有任何东西能证明事实从哪来、那句话长什么样。`raw/` 是文本的真相，`media/` 是二进制的真相。
+**不能删**：`raw/` 和 `media/`（含 `media-archive\`）——删了就没有任何东西能证明事实从哪来、那句话长什么样。`raw/` 是文本的真相，`media/` 是二进制的真相；归档删掉之后那些指针就真的找不到了。
 
 **媒体的生命周期**（`media/` 的清理规则）：
 
 - **全留。** 不按年龄删、不按配额删——几十 G 的空间换"她记得的那张图还在"，值。
 - **去重是自动的**：同内容同 hash 同路径，群里转发的重复文件不占第二份空间。
-- 归档（`media-archive/`）是**设计目标，还没实现**：目前没有搬迁代码，也没有"多少文件、多大、最老到哪年"的清单命令。
 
-**现状（2026-11-11 补齐）**：`media.put.file` / `media.get`（能力 `media.read`）两个 handler 已经实现——
-模块把文件写进自己的临时目录（`system/tmp/<id>/`）再交进来，核心校验路径 / 单文件 ≤20MB / mime 白名单 /
-20 次每分钟，算 sha256 落盘、追加索引、收走源文件，返回 `media:sha256:<hash>.<ext>`。
-出站把指针解析成**临时文件**（10 分钟过期）交给模块，帧里不出现内部指针；**热库没有就去归档库找**（指针永不过期）。
+**入库（已实现）**：模块把文件写进自己的临时目录（`system/tmp/<id>/`）→ `media.put.file`。
+核心校验路径 / 单文件 ≤20MB / mime 白名单 / 每分钟 20 次，算 sha256 落盘、追加索引、收走源文件，
+返回 `media:sha256:<hash>.<ext>`。
 
-**归档（2026-11-11 补上）**：`yuanling media archive [--days n] [--apply]` —— 默认**只出一份清单**
+**出库（已实现）**：`media.get` 把指针解析成**临时文件**（10 分钟过期），帧里不出现内部指针；
+**热库没有就去归档库找**——指针永不过期。
+
+**归档（已实现）**：`yuanling media archive [--days n] [--apply]`——默认**只出一份清单**
 （多少个、多大、最老到哪年、raw 里被引用几次），加 `--apply` 才真的搬去 `media-archive/`（同 hash 布局）。
-搬走之后 `media.get` 仍然读得到（指针永不过期）；同一内容再次入库会从归档搬回热库，不留两份。
-另有 `yuanling media stats`（热库/归档各多少）与 `media list`。
+搬走之后 `media.get` 仍然读得到；同一内容再次入库会从归档搬回热库，不留两份。
+另有 `media stats`（热库/归档各多少）与 `media list`。
 
-**还没做的**：`egress.request` 的 `media[]` 解析（把指针换成临时文件交给模块发图），它和 QQ 模块阶段二绑在一起。
+**还没做**：`egress.request` 的 `media[]` 解析（把指针换成临时文件交给模块发图）——它和 QQ 模块阶段二绑在一起。
 
 ---
 
@@ -802,13 +804,13 @@ yuanling shield --last 1 [--yes]          # 屏蔽刚才那条
 yuanling proposal scan|list|approve|reject|rollback|sweep
 yuanling person new 张三 --platform qq --id 12345
 yuanling person identity <uid> --text "QQ 号是 12345，b站叫老张"
-yuanling person weight [refresh] | set <uid> 80 | auto <uid>
+yuanling person weight [refresh]                   # 看权重（只读；想抬高就 pin）
 yuanling group list|show <qq:123456>              # 群体：一个群 / 一个吧就是一个地方
 yuanling group set <群> --name 摸鱼群 --feature "晚上最热闹"
 yuanling group members <群>                       # 从 raw 重新归集"谁在这里说过话"
 yuanling group backfill                           # 扫 raw 里出现过的群频道，补建档案
 yuanling group promote|demote <群>                # 置顶为重要群体 / 取消
-yuanling group weight <群> 80 | auto              # 手改权重 / 恢复自动
+yuanling group weight <群>                        # 看当前权重（只读，不能手改）
 yuanling purpose list|mine|drives|close <id>     # 目的账本（惦记）
 yuanling identity claim --platform bili --id abc123 --src-last 1 --channel private:10001
 yuanling mcp status|install|uninstall             # 把记忆登记成 DSH 的 MCP 工具
@@ -820,6 +822,9 @@ yuanling module export <id>                       # 导出 tgz，换机器用
 yuanling module uninstall <id> --yes
 yuanling log [--audit] [--lens ...] [--module id]  # 日志；--audit 就是审计
 yuanling diag [--all] [--fast] [--json]           # 诊断：每项给下一步（退出码 4 = 有硬故障）
+yuanling media stats                              # 媒体：热库 / 归档 各多少、多大
+yuanling media list [--limit n]                   # 热库里的媒体（指针 / 大小 / 时间）
+yuanling media archive [--days n] [--apply]       # 归档：默认只出清单，--apply 才搬
 yuanling serve --root D:\yuanling         # 管理台
 ```
 

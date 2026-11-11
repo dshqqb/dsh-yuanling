@@ -263,7 +263,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling group members <群>          从原始层重新归集成员
   yuanling group backfill              扫 raw 里出现过的群频道，补建档案
   yuanling group promote|demote <群>   置顶 / 取消置顶
-  yuanling group weight <群> <0-100|auto>
+  yuanling group weight <群>          看当前生效权重与口径（不能手改）
   yuanling log [--audit] [--lens all|write|error|module|refusal] [--module id] [--limit n]
                                        日志与审计（同一份数据，两个镜头）
   yuanling diag [--all] [--fast] [--json]  诊断：每项给"下一步做什么"，退出码 4 = 有硬故障
