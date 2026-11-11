@@ -16,10 +16,11 @@
 // 老数据不可改写（raw 只追加），所以读取侧要认得老形状：`private:10001`、
 // `group:123555`。认不出的标 unresolved，**不猜**。
 import path from 'node:path'
-import { loadIdentities, findByIdentity, newUid, PLATFORMS, identitiesPath } from './entities.js'
+import { loadIdentities, saveIdentities, findByIdentity, newUid, PLATFORMS } from './entities.js'
 import { writeJsonAtomic, readJson, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
+import { personaFile, requirePid } from './scope.js'
 
 /** 频道种类 → 平台（`group`/`private` 默认 qq：历史上只有 QQ 用过这两个）。 */
 function platformOfKind(kind) {
@@ -240,7 +241,7 @@ export function ensureSenderPerson(root, { platform, nativeId, display = '' }) {
     // 影子：见过，但还不认识。不进注入、人物页默认不显示。
     tier: 'shadow',
   }
-  writeJsonAtomic(identitiesPath(root), data)
+  saveIdentities(root, data)
   return uid
 }
 
@@ -250,7 +251,7 @@ export function promoteShadow(root, uid) {
   const person = data.people?.[uid]
   if (!person || person.tier !== 'shadow') return false
   delete person.tier
-  writeJsonAtomic(identitiesPath(root), data)
+  saveIdentities(root, data)
   return true
 }
 
@@ -261,18 +262,17 @@ export function isShadow(root, uid) {
 // ── 群体身份（客观，跨人格共用）────────────────────────────────────────
 
 /**
- * 群体身份登记表：`system/groups.json`。
+ * 群体身份登记表：`personas/<p>/entities/group-identities.json`（**按人格**）。
  *
- * 和 `identities.json` 同一个道理：**群体是谁是客观事实**（同一个 QQ 群在所有人格里
- * 都是同一个群），而"她对这个群有什么印象"才按人格存。所以编号（`grp_xxx`）在这里
- * 分配一次，人格目录里只放印象卡。
+ * 用户定的（2026-11-11）：**除原始层外，所有人格相关数据都在 personas/<id>/ 下**。
+ * "这个群是哪个 QQ 群"也是一种认知（网关报错、号变了都会让它出错），所以随人格走。
  *
  * 为什么编号不能是 `qq:123456`：场景不属于任何 App。换成微信、贴吧、Discord，
  * 场景还是"群体场景"这一类，变的只是卡里记的号。编号里带平台名，就等于把场景
  * 钉死在某一个 App 上（这正是被反复纠正的那一点）。
  */
 export function loadGroupIdentities(root) {
-  const j = readJson(path.join(root, P.groupIdentities), null)
+  const j = readJson(path.join(root, personaFile.groupIdentities(requirePid(root))), null)
   if (!j || typeof j !== 'object') return { version: 1, groups: {}, byNative: {} }
   return {
     version: j.version ?? 1,
@@ -282,7 +282,7 @@ export function loadGroupIdentities(root) {
 }
 
 export function saveGroupIdentities(root, data) {
-  writeJsonAtomic(path.join(root, P.groupIdentities), data)
+  writeJsonAtomic(path.join(root, personaFile.groupIdentities(requirePid(root))), data)
   return data
 }
 

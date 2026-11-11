@@ -15,6 +15,7 @@ import { exists, readJson, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 
 import { listDays, readDay } from './raw.js'
+import { personaFile, requirePid } from './scope.js'
 
 export const ENGAGE_WINDOW_MS = 4 * 60 * 1000
 export const ENGAGE_MAX_MS = 20 * 60 * 1000
@@ -23,7 +24,8 @@ export const ENGAGE_MAX_MS = 20 * 60 * 1000
 const FALLBACK_NAMES = ['原灵']
 
 function engagePath(root) {
-  return path.join(root, P.system, 'engage.json')
+  // 在场状态是「这个角色此刻在不在场」，按人格各自算
+  return path.join(root, personaFile.engage(requirePid(root)))
 }
 
 /**

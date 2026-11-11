@@ -84,7 +84,15 @@ test('scaffold：建出根级七项与关键文件', () => {
   for (const rel of [P.marker, P.guardrails, P.ingestRules, P.firstDoc, 'raw', 'raw-archive', 'media', 'personas', 'system', 'web']) {
     assert.ok(fs.existsSync(path.join(root, rel)), `缺少 ${rel}`)
   }
-  for (const rel of [P.manifest, P.identities, P.shields, P.consoleToken, 'personas/yuanling/persona/SELF.md']) {
+  for (const rel of [
+    P.manifest,
+    P.shields,
+    P.consoleToken,
+    'personas/yuanling/persona/SELF.md',
+    // 身份登记已按人格：除原始层外，人格数据都在 personas/<id>/ 下
+    'personas/yuanling/entities/identities.json',
+    'personas/yuanling/entities/group-identities.json',
+  ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), `缺少 ${rel}`)
   }
 

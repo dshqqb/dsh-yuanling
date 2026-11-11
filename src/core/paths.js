@@ -139,10 +139,8 @@ export const P = {
   web: 'web',
   system: 'system',
   manifest: 'system/manifest.json',
-  identities: 'system/identities.json',
-  // 群体身份（客观）：`(平台, 原生号) ↔ grp_xxx`。和 identities.json 同一层道理——
-  // 群体是谁是客观事实、跨人格共用；"她对这个群有什么印象"才按人格存。
-  groupIdentities: 'system/groups.json',
+  // 身份登记**按人格**，不在这里：见 scope.js 的 personaFile（personas/<p>/entities/）。
+  // 留着这两个常量只会让人以为 system/ 里还有一份，所以删掉。
   shields: 'system/shields.json',
   inbox: 'system/inbox',
   health: 'system/inbox/.health',

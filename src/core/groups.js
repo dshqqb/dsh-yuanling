@@ -25,6 +25,7 @@ import { writeTracked } from './version.js'
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
 import { pinWeight } from './weights.js'
 import { autoUniqueName } from './names.js'
+import { personaFile, requirePid } from './scope.js'
 import { mentionedGroups } from './aliases.js'
 
 export { CHANNEL_PLATFORM, GROUP_KINDS }
@@ -391,7 +392,7 @@ export function collectMembers(root, pid, gid, { days = MEMBER_SCAN_DAYS, now = 
 }
 
 function readIdentitiesSafe(root) {
-  const p = path.join(root, P.identities)
+  const p = path.join(root, personaFile.identities(requirePid(root)))
   if (!exists(p)) return null
   try {
     return readJson(p, null)

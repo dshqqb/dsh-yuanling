@@ -1,28 +1,28 @@
 // src/core/entities.js —— 人物与群：客观身份映射 + 主观认识。
 //
-// 分工（文档 §9.1）：
-//   system/identities.json        账号 → person_uid 的**客观**映射（跨人格共用）
-//   personas/<p>/entities/...     这个角色**认识**的 TA（按人格隔离）
-//
-// 合并/拆分只改映射，各人格的记忆文件零改动——这就是把两者分开的收益。
+// **全部按人格隔离**（用户 2026-11-11 定的）："这个号是谁"是她的认知，会有误差；
+// 不同人格可能挂在不同的账号上，所以映射和档案都放 personas/<p>/entities/ 下。
+// 复制这一个目录就能迁移人格——除原始层外，没有人格数据留在 system/。
 import fs from 'node:fs'
 import path from 'node:path'
 import { exists, isDir, readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
 import { autoUniqueName } from './names.js'
+import { personaFile, requirePid } from './scope.js'
 import { effectivePersonWeight } from './weights.js'
 
 // 账号平台清单：解析器认得的与绑定层接受的**必须是同一张表**，
 // 否则会出现"描述写对了、绑定报不认识"这种漂移（p15 就是这么挂的）。
 export const PLATFORMS = ['qq', 'bili', 'weibo', 'wechat', 'xhs', 'tg', 'github', 'pet', 'dsh']
 
-export function identitiesPath(root) {
-  return path.join(root, P.identities)
+/** 身份登记在**人格目录**里（不是 system/）。 */
+export function identitiesPath(root, pid = null) {
+  return path.join(root, personaFile.identities(requirePid(root, pid)))
 }
 
-export function loadIdentities(root) {
-  const j = readJson(identitiesPath(root), null)
+export function loadIdentities(root, pid = null) {
+  const j = readJson(identitiesPath(root, pid), null)
   if (!j || typeof j !== 'object') return { version: 1, people: {}, pending: [], merges: [] }
   return {
     version: j.version ?? 1,
@@ -32,8 +32,8 @@ export function loadIdentities(root) {
   }
 }
 
-export function saveIdentities(root, data) {
-  writeJsonAtomic(identitiesPath(root), data)
+export function saveIdentities(root, data, pid = null) {
+  writeJsonAtomic(identitiesPath(root, pid), data)
   return data
 }
 

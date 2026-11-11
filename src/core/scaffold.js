@@ -4,6 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { ensureDir, exists, writeFileAtomic, writeJsonAtomic, ulid, localIso } from './fsx.js'
 import { P, personaPaths } from './paths.js'
+import { personaFile } from './scope.js'
 import * as T from './templates.js'
 
 export const PERSONA_ID_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/
@@ -59,7 +60,9 @@ export function fileList({ personaId, name, now }) {
     ['.gitignore', () => T.dataGitignore()],
     ['README.md', () => T.dataReadme()],
     [P.manifest, () => JSON.stringify(manifestStub(now), null, 2) + '\n'],
-    [P.identities, () => JSON.stringify({ _comment: '账号 → person_uid 的客观映射。敏感：禁明文导出，不进任何注入。', version: 1, people: {}, pending: [] }, null, 2) + '\n'],
+    // 身份登记**按人格**：复制 personas/<id>/ 就能迁移人格，system/ 里不再留人格数据
+    [personaFile.identities(personaId), () => JSON.stringify({ _comment: '这个角色认知里的"哪个号是谁"。敏感：禁明文导出，不进任何注入。', version: 1, people: {}, pending: [] }, null, 2) + '\n'],
+    [personaFile.groupIdentities(personaId), () => JSON.stringify({ _comment: '这个角色认知里的"哪个群是哪个群"（平台 + 原生号）。', version: 1, groups: {}, byNative: {} }, null, 2) + '\n'],
     [P.shields, () => JSON.stringify({ _comment: '墓碑登记。全局生效，可撤销。', version: 1, redactions: [] }, null, 2) + '\n'],
     [pp.manifest, () => JSON.stringify(T.personaJson({ id: personaId, name, now }), null, 2) + '\n'],
     [pp.self, () => T.selfMd(name)],

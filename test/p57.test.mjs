@@ -58,7 +58,7 @@ test('人物：改名成功之后，旧名字可以给别人用', () => {
 
 test('人物：影子卡不参与唯一性（只见过、还没认识的人没有名字可占）', () => {
   // 影子卡是核心按账号自动建的，不是人起的名字
-  const identitiesPath = path.join(root, 'system', 'identities.json')
+  const identitiesPath = path.join(root, 'personas', PID, 'entities', 'identities.json')
   const data = JSON.parse(fs.readFileSync(identitiesPath, 'utf8'))
   data.people.person_shadow_1 = {
     uid: 'person_shadow_1',
@@ -77,12 +77,12 @@ test('人物：影子卡不参与唯一性（只见过、还没认识的人没�
 
 test('人物：新增时重名，创建流程会失败且不留下半张卡', () => {
   createPerson(root, { display: '赵六' })
-  const before = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'system', 'identities.json'), 'utf8')).people).length
+  const before = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'personas', PID, 'entities', 'identities.json'), 'utf8')).people).length
   assert.throws(
     () => createPersonWithCard(root, PID, { display: '赵六', identityText: 'QQ 号是 70001' }),
     /已经有人用了/,
   )
-  const after = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'system', 'identities.json'), 'utf8')).people).length
+  const after = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'personas', PID, 'entities', 'identities.json'), 'utf8')).people).length
   assert.equal(after, before, '不能留下一个只有名字的空卡')
 })
 
