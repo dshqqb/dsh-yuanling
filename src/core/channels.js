@@ -46,6 +46,38 @@ export function parseChannel(channel) {
   return { kind: s.slice(0, i), id: s.slice(i + 1) }
 }
 
+/**
+ * 内部场景 → 平台侧的投递地址（QQ 号 / 群号）。
+ *
+ * 为什么需要它：出站必须给模块一个"能直接投递"的原始字符串（协议 §5.2 的 `target`），
+ * 而场景编号里**故意不含**外部号码。这里做的是**反查**，方向与 resolveChannel 相反：
+ *   `private:person_xxx` → 那个人挂在 qq 上的号
+ *   `group:qq:123456`    → `123456`
+ *
+ * @returns {{platform:string, id:string} | null}
+ */
+export function nativeTargetFor(root, channel) {
+  const scene = resolveChannel(root, channel)
+
+  if (scene.kind === 'private' && scene.personUid) {
+    const person = loadIdentities(root).people?.[scene.personUid]
+    const ids = Array.isArray(person?.identities) ? person.identities : []
+    // 有多平台账号时优先 QQ（历史与现在的群/私聊都只有 QQ 用过这两个场景种类）；
+    // 没有就取第一个，并如实把平台带回给调用方，让它自己判断能不能投。
+    const pick = ids.find((i) => String(i.platform) === 'qq') ?? ids[0]
+    return pick ? { platform: String(pick.platform), id: String(pick.id) } : null
+  }
+
+  if (scene.gid) {
+    const s = String(scene.gid)
+    const i = s.indexOf(':')
+    if (i <= 0) return null
+    return { platform: s.slice(0, i), id: s.slice(i + 1) }
+  }
+
+  return null
+}
+
 export function isPersonUid(id) {
   return /^person_/.test(String(id ?? ''))
 }

@@ -15,6 +15,7 @@ import { P } from './paths.js'
 import { writeTracked, history, snapshotCurrent, revertTo } from './version.js'
 import { listEntries, entryRel, EXPRESSION_BYTES } from './memory.js'
 import { loadEffectiveRules, rulePaths } from './rules.js'
+import { writePolicy as writeRuntimePolicy } from './policy.js'
 
 export const DEFAULT_MIN_REPEAT = 5
 export const DEFAULT_MIN_DAYS = 3
@@ -23,8 +24,10 @@ export const DEFAULT_ROLLBACK_DAYS = 7
 export const DEFAULT_DAILY_LIMIT = 1
 
 /**
- * 策略文件：由 DSH 设置页同步过来的两个旋钮。
- * 它比 rules 优先——因为设置页是给人随手调的，规则文件是给人精调的。
+ * 策略文件：**唯一真值在数据目录里**（`system/policy.json`，见 core/policy.js）。
+ *
+ * 这里保留两个薄封装，因为 CLI 与提案采纳只关心这两个旋钮；
+ * 别再在这里写盘——两处写同一个文件，迟早出现"页面存进去的和定时任务读到的不一样"。
  */
 export function readPolicy(root) {
   const j = readJson(path.join(root, P.policy), null)
@@ -34,14 +37,7 @@ export function readPolicy(root) {
 }
 
 export function writePolicy(root, { autoApproveDays, dailyAutoLimit }) {
-  const next = {
-    _comment: '由 DSH 设置页同步；直接改这里等价于改设置。',
-    autoApproveDays,
-    dailyAutoLimit,
-    updated_at: localIso(),
-  }
-  writeJsonAtomic(path.join(root, P.policy), next)
-  return next
+  return writeRuntimePolicy(root, { autoApproveDays, dailyAutoLimit })
 }
 
 export function proposalsDir(root, pid) {

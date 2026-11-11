@@ -25,6 +25,7 @@ import { parsePointer } from './pointer.js'
 import { readMarker } from './persona.js'
 import { appendEvent } from './events.js'
 import { canReply } from './audience.js'
+import { nativeTargetFor } from './channels.js'
 
 /** 主动开口的门槛：动机强度低于这个数就不打扰人。 */
 export const PROACTIVE_MIN_DRIVE = 0.55
@@ -251,11 +252,23 @@ export const OUTBOX_MAX_ATTEMPTS = 3
 export const OUTBOX_FETCH_LIMIT = 5
 
 /** 对外只暴露模块需要的字段：内部记账字段不外泄。 */
-function publicItem(it) {
+function publicItem(root, it) {
+  // `target` 是平台侧能直接投递的原始字符串（QQ 号/群号）——协议 §5.2 的 target。
+  // 场景编号里没有外部号码，所以这里现查一次；查不到就留 null，让模块自己回 ack 失败。
+  let target = null
+  let platform = null
+  try {
+    const t = nativeTargetFor(root, it.scene)
+    target = t?.id ?? null
+    platform = t?.platform ?? null
+  } catch {
+    /* 查不到不影响交付，模块会回 ack ok:false */
+  }
   return {
     id: it.id,
     channel: it.scene,
-    target: it.target ?? null,
+    target,
+    platform,
     text: it.text,
     need: it.need,
     why: it.why,
@@ -335,7 +348,7 @@ export function claimOutbox(root, pid, { limit = OUTBOX_FETCH_LIMIT, claimBy = '
     ready.push(it)
   }
   if (ready.length) saveOutbox(root, pid, doc, { reason: `模块 ${claimBy} 取走 ${ready.length} 条待发` })
-  return ready.map(publicItem)
+  return ready.map((x) => publicItem(root, x))
 }
 
 /**

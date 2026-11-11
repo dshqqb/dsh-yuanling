@@ -287,7 +287,7 @@ D:\yuanling\
    ├─ manifest.json              格式版本（太新就拒绝启动）
    ├─ identities.json            **客观**身份映射：哪个号是同一个人（跨人格共用）
    ├─ shields.json              墓碑登记簿（可从 raw 重建，不是真相）
-   ├─ policy.json                设置页同步下来的两个旋钮（到期天数 / 每日配额）
+   ├─ policy.json                **运行设置的唯一真值**（端口 / 周期 / 日志级别 / 到期天数…，见「设置」一节）
    ├─ secrets\console.token      管理台令牌（64 位 hex）
    ├─ inbox\                     文件投递（<source>.ndjson + .health 心跳）
    ├─ versions\                  根级文件的版本库（blobs + journal）
@@ -653,18 +653,22 @@ $pnpm = "D:\Program Files\dsh\resources\runtime\primary-runtime\dependencies\pnp
 
 ### 配置项
 
-DSH 设置里只暴露最关键的三个，其余在 profile 的 `cordis.patch.yml` 里改：
+**设置的真相只有一处：数据目录里的 `system/policy.json`。** DSH 设置页里那几个同名字段只是**初值**——
+文件里没有这个键时才用它补一次，补完就不再覆盖（否则每次启动都会把人改过的值冲掉）。
 
-| 配置 | 默认 | 在哪改 | 说明 |
+| 设置 | 默认 | 改在哪 | 说明 |
 |---|---|---|---|
-| `enabled` | true | 设置页 | 总开关。关掉 = 不注入、不写记忆、不起管理台，数据原样保留 |
-| `dataDir` | 空 → `~/.dsh/yuanling` | 设置页 | 数据目录。改它会自动同步 MCP 条目的 `--root`，**需要重启 DSH** |
-| `consoleHost` / `consolePort` | `127.0.0.1` / 17777 | 设置页（只读） | 目前不开放修改；改 IP 属于危险操作，留到以后 |
-| `consoleEnabled` | true | `cordis.patch.yml` | 是否起管理台。**注意**：设置页的总开关关掉时它也不起 |
-| `allowRemote` | false | `cordis.patch.yml` | 允许监听非回环地址。打开前先想清楚：这是你的私人记忆 |
-| `autoApproveDays` | 3 | `cordis.patch.yml` | 提案无人理会几天后自动批准 |
-| `dailyAutoLimit` | 1 | `cordis.patch.yml` | 每天最多自动采纳几条 |
-| `logLevel` | info | `cordis.patch.yml` | debug / info / warn / error |
+| `enabled` / `dataDir` | true / 空 → `~/.dsh/yuanling` | DSH 设置页 | **这两个搬不走**：前者是总开关，后者决定去哪找数据目录（鸡生蛋） |
+| `consoleEnabled` | true | 数据目录 `policy.json`（或设置页初值） | 是否起管理台 |
+| `consoleHost` / `consolePort` / `allowRemote` | `127.0.0.1` / 17777 / false | 同上 | **重启后生效**；非回环必须先开 `allowRemote` |
+| `evolveEveryHours` | 6 | 同上 | 演化扫描周期（小时；0 = 关掉自动扫描） |
+| `proactiveEveryMinutes` | 15 | 同上 | 主动开口周期（分钟；0 = 不算） |
+| `autoApproveDays` / `dailyAutoLimit` | 3 / 1 | 同上 | 兜底默认值，人格规则里写了以规则为准 |
+| `logLevel` | info | 同上 | debug / info / warn / error |
+
+改法有三种，效果一样：管理台「规则 → 运行设置」、直接编辑 `system/policy.json`、或者写进 DSH 设置页（只对还没写进文件里的键生效）。
+
+> **搬机器时还剩两样要重配**：① `dataDir` / `enabled`（决定去哪找数据，不能存在数据自己里）；② MCP 客户端条目（写在 DSH profile 里，重装一次 `yuanling mcp install --root <数据目录>`）。其余全部跟着数据目录走。
 
 ### 接进 DSH（MCP）
 

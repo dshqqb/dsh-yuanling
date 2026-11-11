@@ -1545,6 +1545,8 @@ async function openGroupCreate() {
 // 换个场景就换一条继承链，页面显示的"有效值"跟着变。但**保存只写全局层**——
 // 把合并结果压平写回某一层，等于把继承悄悄改掉。
 const RULE_INPUTS = { fields: new Map() }
+/** 运行设置的输入框（跟数据目录走，不属于任何人格）。 */
+const POLICY_INPUTS = new Map()
 
 function ruleDirty() {
   const msg = $('rule-msg')
@@ -1648,6 +1650,8 @@ async function loadRules() {
 
   for (const g of d.spec ?? []) box.append(ruleGroup(g, d.own ?? {}, d.rules ?? {}))
 
+  await loadPolicy().catch(() => {})
+
   // 根级硬线：只读。它不是"规则"，是底线——页面上必须有，但不能从这里改。
   const gbox = $('rule-guardrails')
   gbox.innerHTML = ''
@@ -1664,6 +1668,72 @@ async function loadRules() {
     body.append(el('div', 's', Array.isArray(list) && list.length ? list.join('、') : '（空）'))
     n.append(body)
     gbox.append(n)
+  }
+}
+
+/** 运行设置：跟数据目录走、不跟人格走，所以单独一块。 */
+async function loadPolicy() {
+  const d = await api('/api/policy')
+  const box = $('policy-form')
+  box.innerHTML = ''
+  POLICY_INPUTS.clear()
+
+  for (const f of d.fields ?? []) {
+    const row = el('div', 'field-row')
+    const label = el('label', 'small', f.label || f.key)
+    if (f.hint) label.title = f.hint
+
+    let input
+    if (f.type === 'bool') {
+      input = document.createElement('input')
+      input.type = 'checkbox'
+      input.checked = Boolean(f.value)
+    } else if (f.type === 'enum') {
+      input = document.createElement('select')
+      for (const v of f.values ?? []) {
+        const o = document.createElement('option')
+        o.value = v
+        o.textContent = v
+        input.append(o)
+      }
+      input.value = String(f.value ?? '')
+    } else if (f.type === 'number') {
+      input = document.createElement('input')
+      input.type = 'number'
+      if (f.min != null) input.min = String(f.min)
+      if (f.max != null) input.max = String(f.max)
+      input.value = String(f.value ?? '')
+    } else {
+      input = document.createElement('input')
+      input.value = String(f.value ?? '')
+    }
+
+    row.append(label, input)
+    if (f.restart) row.append(el('span', 'tag', '重启后生效'))
+    if (f.hint) row.append(el('span', 'muted small', f.hint))
+    box.append(row)
+    POLICY_INPUTS.set(f.key, { type: f.type, el: input })
+  }
+  $('policy-msg').textContent = ''
+}
+
+async function savePolicy() {
+  const msg = $('policy-msg')
+  const btn = $('policy-save')
+  const patch = {}
+  for (const [key, io] of POLICY_INPUTS) {
+    patch[key] = io.type === 'bool' ? io.el.checked : io.el.value
+  }
+  btn.disabled = true
+  msg.textContent = '保存中…'
+  try {
+    const r = await postApi('/api/policy', { patch })
+    await loadPolicy()
+    msg.textContent = r.changed?.length ? `✓ 已保存：${r.changed.join('、')}` : '没有改动'
+  } catch (err) {
+    msg.textContent = `保存失败：${err.message}`
+  } finally {
+    btn.disabled = false
   }
 }
 
@@ -3182,6 +3252,7 @@ $('rule-save').addEventListener('click', () => {
   })
 })
 $('rule-reload').addEventListener('click', () => loadRules().catch((err) => showPageError(err)))
+$('policy-save').addEventListener('click', () => savePolicy().catch(() => {}))
 
 $('proposal-scan').addEventListener('click', async () => {
   try {

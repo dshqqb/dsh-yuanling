@@ -370,6 +370,22 @@
 
           <div class="card">
             <div class="card-head">
+              <h3>运行设置</h3>
+              <span class="muted small">存在数据目录里（<code>system/policy.json</code>）——拷走数据目录就一起走了</span>
+            </div>
+            <div id="policy-form" class="list"></div>
+            <div class="field-row">
+              <button id="policy-save" class="btn small">保存运行设置</button>
+              <span id="policy-msg" class="muted small"></span>
+            </div>
+            <div class="muted small">
+              DSH 设置页里那几个同名字段只是<b>初值</b>：这个文件存在就以它为准。
+              标「重启后生效」的项（端口、监听地址）改了要重启 DSH，别的立刻生效。
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
               <h3>根级硬线（不参与合并，谁都改不动）</h3>
               <span class="muted small">guardrails.json · 写在数据目录根上，所有人格共用</span>
             </div>

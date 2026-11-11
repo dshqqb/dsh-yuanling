@@ -24,6 +24,7 @@ import {
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
 import { writePrefs, readPrefs } from './prefs.js'
+import { policyView, writePolicy } from './policy.js'
 import { readOutbox, dropOutbox, planProactive } from './proactive.js'
 import { readAudience, audienceView, setAudienceMode, setAudienceMember, removeAudienceMember } from './audience.js'
 import { refreshWeights } from './weights.js'
@@ -209,6 +210,11 @@ export function handleApi(root, url) {
   // 人格偏好（昵称 / 对管理员更温柔）：切人格就变的那部分设置
   if (pathname === '/api/prefs') {
     return { status: 200, body: { ok: true, prefs: readPrefs(root, pid) } }
+  }
+
+  // 运行设置：**真值在数据目录里**（system/policy.json），DSH 设置页只是初值。
+  if (pathname === '/api/policy') {
+    return { status: 200, body: { ok: true, fields: policyView(root), path: 'system/policy.json' } }
   }
 
   // 主动开口的待发队列：只读 + 取消（人不要她说这句）。
@@ -930,6 +936,18 @@ export function handleApiWrite(root, url, body) {
     if (pathname === '/api/prefs') {
       const next = writePrefs(root, pid, b, { actor: 'human:editor', reason: '管理台修改人格偏好' })
       return { status: 200, body: { ok: true, prefs: next } }
+    }
+
+    // 运行设置（跟数据目录走，不跟人格走）
+    if (pathname === '/api/policy') {
+      const patch = b?.patch && typeof b.patch === 'object' ? b.patch : b
+      const clean = {}
+      for (const [k, v] of Object.entries(patch ?? {})) {
+        if (['_comment', '_reason', 'updated_at', 'path'].includes(k)) continue
+        clean[k] = v
+      }
+      const r = writePolicy(root, clean, { reason: '管理台修改运行设置' })
+      return { status: 200, body: { ok: true, changed: r.changed, fields: policyView(root) } }
     }
 
     if (pathname === '/api/person/admin') {

@@ -17,7 +17,7 @@ import { resolveRoot, validateRoot } from './src/core/paths.js'
 import { scaffold } from './src/core/scaffold.js'
 import { readMarker } from './src/core/persona.js'
 import { checkFormat } from './src/core/manifest.js'
-import { exists, localIso, readJson, writeJsonAtomic } from './src/core/fsx.js'
+import { exists, localIso } from './src/core/fsx.js'
 import { listEntries } from './src/core/memory.js'
 import {
   API_PREFIX,
@@ -31,6 +31,7 @@ import {
   describeConfigValue,
 } from './src/core/settingsapi.js'
 import { findProfiles, installMcp } from './src/core/mcpinstall.js'
+import { ensurePolicy, runtimeConfig } from './src/core/policy.js'
 import { startEvolution, EVOLVE_EVERY_HOURS } from './src/core/evolve.js'
 import { startProactive, PROACTIVE_EVERY_MINUTES } from './src/core/proactive.js'
 
@@ -66,10 +67,10 @@ export const Config = z.object({
     .default('')
     .description('数据目录的绝对路径，例如 D:\\yuanling。留空则用 ~/.dsh/yuanling。')
     .extra('volatile', true),
-  consoleEnabled: z.boolean().default(true).description('是否启动管理台（http://127.0.0.1:<端口>）。'),
-  consoleHost: z.string().default('127.0.0.1').description('监听地址。默认只允许回环；改成 0.0.0.0 必须同时打开 allowRemote。'),
-  consolePort: z.number().default(17777).description('管理台端口（0 = 随机）。改动需重启。'),
-  allowRemote: z.boolean().default(false).description('允许管理台监听非回环地址。打开前先想清楚：这是你的私人记忆。'),
+  consoleEnabled: z.boolean().default(true).description('**初值**：是否启动管理台。真值见数据目录的 system/policy.json。'),
+  consoleHost: z.string().default('127.0.0.1').description('**初值**：监听地址（真值见 system/policy.json）。默认只允许回环。'),
+  consolePort: z.number().default(17777).description('**初值**：管理台端口（0 = 随机，改动需重启）。真值见 system/policy.json。'),
+  allowRemote: z.boolean().default(false).description('**初值**：允许非回环监听（真值见 system/policy.json）。'),
   autoApproveDays: z
     .number()
     .default(3)
@@ -81,12 +82,12 @@ export const Config = z.object({
   evolveEveryHours: z
     .number()
     .default(EVOLVE_EVERY_HOURS)
-    .description('多久自动跑一次"扫描提案 + 到期采纳"（小时；默认 6，0 = 关闭，只保留手动扫描）。'),
+    .description('**初值**：演化扫描周期（小时；0 = 关闭）。真值见 system/policy.json。'),
   proactiveEveryMinutes: z
     .number()
     .default(PROACTIVE_EVERY_MINUTES)
-    .description('多久算一次"她想不想主动说话"（分钟；默认 15，0 = 关闭）。只产出待发队列，不真发送。'),
-  logLevel: z.string().default('info').description('debug | info | warn | error'),
+    .description('**初值**：主动开口周期（分钟；0 = 关闭）。真值见 system/policy.json。'),
+  logLevel: z.string().default('info').description('**初值**：debug | info | warn | error。真值见 system/policy.json。'),
 })
 
 function log(level, cfg, ...args) {
@@ -96,29 +97,6 @@ function log(level, cfg, ...args) {
   if (level === 'error') console.error(tag, ...args)
   else if (level === 'warn') console.warn(tag, ...args)
   else console.log(tag, ...args)
-}
-
-/**
- * 设置页 → 数据目录。
- * 只在这两个值真的变了的时候写盘，避免每次启动都动文件。
- * CLI 与定时任务读同一份，所以"设置页改了"和"命令行跑"不会各说各话。
- */
-function syncPolicy(root, config) {
-  try {
-    const p = path.join(root, 'system', 'policy.json')
-    const days = Number(config.autoApproveDays ?? 3)
-    const limit = Number(config.dailyAutoLimit ?? 1)
-    const cur = readJson(p, null)
-    if (cur && Number(cur.autoApproveDays) === days && Number(cur.dailyAutoLimit) === limit) return
-    writeJsonAtomic(p, {
-      _comment: '由 DSH 设置页同步；直接改这里等价于改设置。',
-      autoApproveDays: Number.isFinite(days) ? days : 3,
-      dailyAutoLimit: Number.isFinite(limit) ? limit : 1,
-      updated_at: localIso(),
-    })
-  } catch (err) {
-    console.warn('[yuanling:warn] 同步策略失败：', err?.message ?? err)
-  }
 }
 
 /**
@@ -382,32 +360,37 @@ export function apply(ctx, config) {
 
   const marker = readMarker(root)
 
-  // 把设置页的两个旋钮同步到数据目录，CLI / 定时任务也读它
-  syncPolicy(root, config)
+  // 运行设置的唯一真值在数据目录里（system/policy.json）：
+  // DSH 设置页只在**没有这个文件**时提供初值；之后以数据目录为准，谁都不覆盖它。
+  // 这样"复制数据目录到新机器"才算真的迁移——见 README 第一条。
+  const policy = ensurePolicy(root, config)
+  // 从这里开始，所有 config.xxx 读到的都是**真值**：policy 赢，DSH 设置页只是初值
+  const rc = runtimeConfig(config, policy)
+  config = { ...rc }
 
   log(
     'info',
-    config,
+    rc,
     `就绪：root=${root}（${source}） active=${marker?.active ?? '无'} personas=${marker?.personas?.length ?? 0}`,
   )
 
   // ── 管理台 ────────────────────────────────────────────────────────────
-  if (!config.consoleEnabled) {
-    log('info', config, '管理台未启用（consoleEnabled=false）')
+  if (!rc.consoleEnabled) {
+    log('info', rc, '管理台未启用（consoleEnabled=false）')
     return
   }
 
-  const host = String(config.consoleHost || '127.0.0.1').trim()
-  if (!LOOPBACK.has(host) && !config.allowRemote) {
+  const host = String(rc.consoleHost || '127.0.0.1').trim()
+  if (!LOOPBACK.has(host) && !rc.allowRemote) {
     log(
       'error',
-      config,
+      rc,
       `拒绝监听 ${host}：管理台默认只允许回环地址。确实要暴露，请同时打开 allowRemote。`,
     )
     return
   }
   if (!LOOPBACK.has(host)) {
-    log('warn', config, `管理台正在监听 ${host}——它会暴露你的私人记忆，确认这是你要的`)
+    log('warn', rc, `管理台正在监听 ${host}——它会暴露你的私人记忆，确认这是你要的`)
   }
 
   // 关停有两个坑，都会让宿主等到 `graceful deadline exceeded`（更新失败）：
@@ -423,7 +406,7 @@ export function apply(ctx, config) {
     .then((mod) => {
       closeServer = mod.closeServer
       return mod.listen(root, {
-        port: Number(config.consolePort) || 0,
+        port: Number(rc.consolePort) || 0,
         host,
         // 关键：插件跑在 DSH 宿主进程里，监听句柄不能钉住宿主的事件循环。
         // 只靠 dispose 不够——宿主关停时可能根本不会调我们的 dispose，
