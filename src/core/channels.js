@@ -185,7 +185,7 @@ export function legacySceneIdentity(root, scene) {
  * 私聊来源还没人物卡时建一张**影子卡**（tier=shadow）：记着"这个人我见过，但还不认识"。
  * 影子卡不进注入、默认不在人物页显示；等有人写素描、被认领、或当管理员才算认识。
  */
-export function canonicalChannelForIngest(root, { channel, source, actorName = '' }) {
+export function canonicalChannelForIngest(root, { channel, source, actorName = '', createPerson = true }) {
   const raw = String(channel || 'unknown')
   const { kind, id } = parseChannel(raw)
 
@@ -194,6 +194,8 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
     if (isPersonUid(id)) {
       return { channel: raw, native: null, personUid: id, gid: null }
     }
+    // 她自己的话不建卡：影子卡是"她见过谁"，不该把她自己的号记成一个陌生人
+    if (!createPerson) return { channel: raw, native: raw, personUid: null, gid: null }
     const platform = platformOfKind(kind) ?? platformFromSource(source)
     const uid = ensureSenderPerson(root, { platform, nativeId: id, display: actorName || id })
     return { channel: `private:${uid}`, native: raw, personUid: uid, gid: null }

@@ -14,7 +14,7 @@ import path from 'node:path'
 import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall, addFact } from './src/core/memory.js'
-import { loadIdentities, createPerson, setIdentityText } from './src/core/entities.js'
+import { loadIdentities, createPerson, setAccountTexts, renamePersonAuto } from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
 import { resolveChannel } from './src/core/channels.js'
 import { readStyle, addStyleLine, removeStyleLine } from './src/core/style.js'
@@ -90,20 +90,23 @@ const TOOLS = [
     },
   },
   {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     description:
-      '把学到的身份信息写回人物档案（账号归属）。**只在对方自述、或有明确证据时调用**——别从一句玩笑里推断账号。\n' +
-      'text 用自然语言写整句话（例："QQ 号是 12345，b站叫老张"），解析由核心负责；原文才是正本，解析结果只是派生。\n' +
+      '把学到的**账户信息**写回人物档案（不是"她对这个人的印象"——印象用 yuanling_observe）。\n' +
+      '**只在对方自述、或有明确证据时调用**——别从一句玩笑里推断账号。\n' +
+      '一个人可以有多条账户信息（QQ / 微信 / 贴吧各一句）。用 texts 数组一次交多句，或用 text 交一句。\n' +
+      '默认**追加**（不改别人已写的）；要整组改写才传 replace:true。\n' +
       '已经属于别人的账号不会被抢，只会报冲突。',
     inputSchema: {
       type: 'object',
       properties: {
         uid: { type: 'string', description: '人物 id（person_xxx）。和 display 二选一，优先 uid。' },
         display: { type: 'string', description: '显示名；没有对应人物时会新建一个。' },
-        text: { type: 'string', description: '自然语言身份描述，≤2000 字' },
+        text: { type: 'string', description: '一条账户信息（例："QQ 号是 12345"），≤2000 字' },
+        texts: { type: 'array', items: { type: 'string' }, description: '多条账户信息（一条一句）' },
+        replace: { type: 'boolean', description: 'true = 用这次的交替换全部账户信息；默认 false = 追加' },
         autoLink: { type: 'boolean', description: '是否自动绑定未被占用的账号，默认 true' },
       },
-      required: ['text'],
     },
   },
   {
@@ -207,6 +210,10 @@ const TOOLS = [
       properties: {
         kind: { type: 'string', enum: ['person', 'group'], description: '写谁/哪里：person 或 group' },
         id: { type: 'string', description: '人物 uid（person_xxx）或群体 gid（qq:123456）' },
+        name: {
+          type: 'string',
+          description: '可选：给这个人改个名字（只对 person；撞名会自动加平台/号标识）。群名请用 yuanling_group',
+        },
         text: { type: 'string', description: '整段印象（≤600 字节）。不传就只读' },
         reason: { type: 'string', description: '这次为什么改——会写进版本历史，以后能回看' },
         evidence: { type: 'string', description: '可选：raw/2026-11/07/qq.ndjson#01JCV…，必须真能解析到' },
@@ -347,12 +354,14 @@ function formatFacts(rows) {
 }
 
 function formatIdentityResult(uid, display, r) {
-  const lines = [`✓ 已写入 ${display ?? uid}（${uid}）的身份描述`]
-  if (r.parsed.items.length) lines.push(`识别：${r.parsed.items.map((x) => `${x.platform}:${x.id}`).join('、')}`)
+  const parsed = r.texts.flatMap((x) => x.parsed)
+  const unparsed = r.unparsed ?? []
+  const lines = [`✓ 已写入 ${display ?? uid}（${uid}）的账户信息（现共 ${r.texts.length} 条）`]
+  if (parsed.length) lines.push(`识别：${parsed.map((x) => `${x.platform}:${x.id}`).join('、')}`)
   if (r.linked.length) lines.push(`新绑定：${r.linked.map((x) => `${x.platform}:${x.id}`).join('、')}`)
   for (const c of r.conflicts) lines.push(`冲突：${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
-  if (r.parsed.unparsed.length) lines.push(`没认出：${r.parsed.unparsed.join(' / ')}`)
-  if (!r.parsed.items.length) lines.push('（这段话里没识别出账号）')
+  if (unparsed.length) lines.push(`没认出：${unparsed.join(' / ')}`)
+  if (!parsed.length) lines.push('（这段话里没识别出账号）')
   return lines.join('\n')
 }
 
@@ -511,10 +520,12 @@ async function callTool(root, name, args = {}) {
     return { text: formatFacts(rows), count: rows.length }
   }
 
-  if (name === 'yuanling_person_identity') {
-    const text = String(args.text ?? '').trim()
-    if (!text) throw new Error('缺少 text（用一句自然语言写清楚账号）')
-    if (text.length > MAX_IDENTITY_TEXT) throw new Error(`身份描述太长（≤${MAX_IDENTITY_TEXT} 字）`)
+  if (name === 'yuanling_person_account') {
+    const texts = (Array.isArray(args.texts) ? args.texts : args.text ? [args.text] : [])
+      .map((t) => String(t ?? '').trim())
+      .filter(Boolean)
+    if (!texts.length) throw new Error('缺少 text 或 texts（用自然语言写清楚账号）')
+    for (const t of texts) if (t.length > MAX_IDENTITY_TEXT) throw new Error(`账户信息太长（≤${MAX_IDENTITY_TEXT} 字）`)
 
     let uid = String(args.uid ?? '').trim() || null
     let display = null
@@ -529,7 +540,7 @@ async function callTool(root, name, args = {}) {
     if (!data.people?.[uid]) throw new Error(`人物不存在：${uid}`)
     display = display ?? data.people[uid].display ?? uid
 
-    const r = setIdentityText(root, uid, text, { autoLink: args.autoLink !== false })
+    const r = setAccountTexts(root, uid, texts, { autoLink: args.autoLink !== false, replace: args.replace === true })
     return { text: formatIdentityResult(uid, display, r), linked: r.linked.length, conflicts: r.conflicts.length }
   }
 
@@ -642,24 +653,39 @@ async function callTool(root, name, args = {}) {
     const withHistory = args.withHistory === true
     const limit = Number(args.limit) > 0 ? Number(args.limit) : 10
     const text = typeof args.text === 'string' ? args.text.trim() : ''
+    const wantName = typeof args.name === 'string' ? args.name.trim() : ''
 
-    if (!text) {
+    if (!text && !wantName) {
       // 只读：把"现在的印象"和"它是怎么变的"一起给出来
       const body = renderImpression(root, pid, kind, id, { withHistory, limit })
       return { text: body }
     }
 
-    const r = setImpression(root, pid, kind, id, {
-      text,
-      reason: args.reason,
-      evidence: args.evidence ?? null,
-      actor: 'model:observe',
-    })
-    const head = r.changed
-      ? `✓ 已更新${kind === 'person' ? '人物' : '群体'}印象（${Buffer.byteLength(r.after, 'utf8')}/${IMPRESSION_MAX_BYTES} 字节，旧版留在版本历史里）`
-      : `· 内容没变，没有产生新版本`
-    const tail = withHistory ? `\n\n${renderImpression(root, pid, kind, id, { withHistory: true, limit })}` : ''
-    return { text: `${head}\n原因：${r.reason}${tail}` }
+    const lines = []
+    if (wantName) {
+      if (kind !== 'person') throw new Error('群名请用 yuanling_group；yuanling_observe 的 name 只改人物名')
+      const r = renamePersonAuto(root, pid, id, wantName, {
+        reason: args.reason || '她自己给人物起的名字',
+        actor: 'model:person',
+      })
+      lines.push(r.renamed ? `✓ 名字改成「${r.display}」` : `· 名字没变（还是「${r.display}」）`)
+    }
+
+    if (text) {
+      const r = setImpression(root, pid, kind, id, {
+        text,
+        reason: args.reason,
+        evidence: args.evidence ?? null,
+        actor: 'model:observe',
+      })
+      lines.push(
+        r.changed
+          ? `✓ 已更新${kind === 'person' ? '人物' : '群体'}印象（${Buffer.byteLength(r.after, 'utf8')}/${IMPRESSION_MAX_BYTES} 字节，旧版留在版本历史里）`
+          : `· 内容没变，没有产生新版本`,
+      )
+      if (withHistory) lines.push(renderImpression(root, pid, kind, id, { withHistory: true, limit }))
+    }
+    return { text: lines.join('\n') }
   }
 
   if (name === 'yuanling_purpose') {
@@ -760,7 +786,7 @@ async function handle(req) {
         serverInfo: SERVER_INFO,
         instructions:
           '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；' +
-          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_identity 写回档案；' +
+          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_account 写回账户信息；' +
           '对某个人或某个群有了新印象，用 yuanling_observe 整段写回去（必须带 reason，旧版能回滚）。\n' +
           '把 [惦记] 里的事真的问出来了，用 yuanling_purpose {action:"mentioned"} 回报——不回报系统会以为你没提。',
       })

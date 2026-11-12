@@ -8,13 +8,13 @@ import path from 'node:path'
 import { exists, isDir, readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
-import { autoUniqueName } from './names.js'
+import { autoUniqueName, platformTag } from './names.js'
 import { personaFile, requirePid } from './scope.js'
 import { effectivePersonWeight } from './weights.js'
 
 // 账号平台清单：解析器认得的与绑定层接受的**必须是同一张表**，
 // 否则会出现"描述写对了、绑定报不认识"这种漂移（p15 就是这么挂的）。
-export const PLATFORMS = ['qq', 'bili', 'weibo', 'wechat', 'xhs', 'tg', 'github', 'pet', 'dsh']
+export const PLATFORMS = ['qq', 'bili', 'weibo', 'wechat', 'xhs', 'tieba', 'tg', 'github', 'pet', 'dsh']
 
 /** 身份登记在**人格目录**里（不是 system/）。 */
 export function identitiesPath(root, pid = null) {
@@ -302,6 +302,92 @@ function promoteShadowLocal(root, uid) {
   return true
 }
 
+/**
+ * 给一个"已经见过"的人建第一份档案 —— 影子卡转正成**路人卡**。
+ *
+ * 触发口径（用户 2026-11-12 定）：
+ *   · 私聊：每条都算"跟她说话" → 建；
+ *   · 群聊：只有 @ 她 / 引用回复她 才算（群里旁听的人仍然只有影子卡）。
+ *
+ * 这里只写"最小档案"：名字（QQ 昵称，撞名自动加标识）、初识时间；素描留空等她自己写。
+ * 账户信息本来就在 identities.json 里，不重复存。
+ */
+export function ensurePersonProfile(root, pid, uid, { display = '', firstMet = null, reason = '第一次跟她说话，建路人卡' } = {}) {
+  const cur = readProfile(root, pid, uid)
+  if (cur) return { created: false, profile: cur }
+
+  const data = loadIdentities(root)
+  const person = data.people?.[uid]
+  if (!person) throw new Error(`没有这个人物：${uid}`)
+  const acct = (person.identities ?? [])[0] ?? null
+  const base = String(display || person.display || uid).trim() || uid
+  // 影子卡不占名字，所以两张影子可能同名；转正时必须现取一个唯一的
+  const unique = autoUniqueName(base, {
+    platform: acct?.platform ?? null,
+    nativeId: acct?.id ?? '',
+    taken: (name) => Boolean(personNameOwner(root, name, { exceptUid: uid })),
+  })
+  const profile = writeProfile(
+    root,
+    pid,
+    uid,
+    { display: unique, first_met: firstMet || localIso(), last_met: firstMet || localIso(), __reason: reason },
+    { actor: 'system:ingest' },
+  )
+  // 账户信息跟着人物卡一起出现：她既然认识这个人，就该看得到他的号
+  for (const idn of person.identities ?? []) ensureAccountTextForIdentity(root, uid, idn)
+  return { created: true, profile }
+}
+
+/**
+ * 她/人给人物改名（走版本历史）。撞名按**自动建卡**规则加标识，不失败——
+ * 这条是给她用的：她不该因为"群里两个老王"就卡住，但人改名仍然走严格查重（writeProfile）。
+ */
+export function renamePersonAuto(root, pid, uid, display, { reason = '她给人物改名', actor = 'model:person' } = {}) {
+  const data = loadIdentities(root)
+  const person = data.people?.[uid]
+  if (!person) throw new Error(`没有这个人物：${uid}`)
+  const base = String(display ?? '').trim()
+  if (!base) throw new Error('名字不能为空')
+  const acct = (person.identities ?? [])[0] ?? null
+  const unique = autoUniqueName(base, {
+    platform: acct?.platform ?? null,
+    nativeId: acct?.id ?? '',
+    taken: (name) => Boolean(personNameOwner(root, name, { exceptUid: uid })),
+  })
+  const profile = writeProfile(root, pid, uid, { display: unique, __reason: reason }, { actor })
+  return { uid, display: unique, renamed: unique !== String(person.display ?? ''), profile }
+}
+
+/**
+ * 记一笔"这个号是她的好友"（平台侧事实，不是印象）。
+ *
+ * 好友关系按 **身份条目** 存：同一个人的两个号可以一个是好友一个不是。
+ * 只写有变化的一次——每条消息都写会把 identities 写成流水账。
+ * @returns {boolean} 有没有改动
+ */
+export function noteFriendship(root, uid, platform, nativeId, { remark = '' } = {}) {
+  const data = loadIdentities(root)
+  const person = data.people?.[uid]
+  if (!person) return false
+  const id = String(nativeId ?? '')
+  const entry = (person.identities ?? []).find((x) => x.platform === platform && String(x.id) === id)
+  if (!entry) return false
+  const nextRemark = String(remark ?? '').trim()
+  const changed = entry.friend !== true || (nextRemark && entry.remark !== nextRemark)
+  if (!changed) return false
+  entry.friend = true
+  if (nextRemark) entry.remark = nextRemark
+  saveIdentities(root, data)
+  return true
+}
+
+/** 这个人的任意一个号是不是好友（注入与页面用）。 */
+export function friendshipOf(person) {
+  const hit = (person?.identities ?? []).find((x) => x.friend === true)
+  return hit ? { friend: true, remark: String(hit.remark ?? ''), platform: hit.platform, id: hit.id } : null
+}
+
 /** 第一次和这个人打交道：只写一次。 */
 export function ensureFirstMet(root, pid, uid, now = localIso()) {
   const cur = readProfile(root, pid, uid)
@@ -329,6 +415,7 @@ export const PLATFORM_ALIASES = [
   { platform: 'bili', re: /(?:b\s*站|B站|bilibili|哔哩哔哩)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
   { platform: 'weibo', re: /(?:微博|weibo)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
   { platform: 'wechat', re: /(?:微信|wechat)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
+  { platform: 'tieba', re: /(?:贴吧|tieba)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
   { platform: 'xhs', re: /(?:小红书|xhs)/i, value: /@?[A-Za-z0-9_\-\u4e00-\u9fa5]{2,}/ },
   { platform: 'tg', re: /(?:telegram|tg)/i, value: /@?[A-Za-z0-9_]{3,}/ },
   { platform: 'github', re: /(?:github)/i, value: /@?[A-Za-z0-9_-]{2,}/ },
@@ -409,62 +496,170 @@ function maybeMentionsPlatform(seg) {
 }
 
 /**
- * 写入身份描述：存原文 → 解析 → 把**还没有归属**的账号自动绑上。
- * 已经被别人占用的账号不抢，记进 conflicts 交给人。
+ * 这个人的**账户信息**列表（一人可以有多条，QQ / 微信 / 贴吧各一句）。
+ *
+ * 注意：这是"账号"，不是"她对这个人的印象"——印象是 `profile.sketch`（人物描述）。
+ * 读写都走这一个入口。
  */
-export function setIdentityText(root, uid, text, { autoLink = true } = {}) {
+export function accountTextsOf(person) {
+  const list = Array.isArray(person?.account_texts) ? person.account_texts : []
+  const out = []
+  for (const row of list) {
+    const text = String(typeof row === 'string' ? row : (row?.text ?? '')).trim()
+    if (!text) continue
+    out.push({
+      text,
+      parsed: Array.isArray(row?.parsed) ? row.parsed : [],
+      unparsed: Array.isArray(row?.unparsed) ? row.unparsed : [],
+    })
+  }
+  return out
+}
+
+/** 一条账号的人话写法：`QQ：3206104913`。自动补账户信息时用。 */
+export function accountTextFor(platform, id) {
+  return `${platformTag(platform)}：${String(id ?? '').trim()}`
+}
+
+/**
+ * 写入账户信息（`replace:true` 整组覆盖；`replace:false` 追加去重）。
+ *
+ * 每条都会解析；解析出的账号**没归属的自动绑上**，已经属于别人的只报冲突、不抢。
+ * 删掉一条时，**由这条账户信息推出的绑定**（evidence 含 `account_text`）会被收回；
+ * 从消息里观察到的绑定（evidence 为空）不动——那是事实，不是描述。
+ */
+export function setAccountTexts(root, uid, texts, { autoLink = true, replace = true } = {}) {
   const data = loadIdentities(root)
   const person = data.people[uid]
   if (!person) throw new Error(`人物不存在：${uid}`)
 
-  const parsed = parseIdentityText(text)
-  person.identity_text = String(text ?? '')
-  person.identity_parsed = parsed.items
-  person.identity_unparsed = parsed.unparsed
-  person.identity_parsed_at = localIso()
+  const incoming = (Array.isArray(texts) ? texts : [texts])
+    .map((t) => String(typeof t === 'object' ? (t?.text ?? '') : (t ?? '')).trim())
+    .filter(Boolean)
+  const base = replace ? [] : accountTextsOf(person).map((x) => x.text)
+  const all = []
+  for (const t of [...base, ...incoming]) if (!all.includes(t)) all.push(t)
+  if (all.length > 20) throw new Error('账户信息最多 20 条')
+
+  const entries = all.map((text) => {
+    const parsed = parseIdentityText(text)
+    return { text, parsed: parsed.items, unparsed: parsed.unparsed, at: localIso() }
+  })
+  person.account_texts = entries
   saveIdentities(root, data)
 
   const linked = []
   const conflicts = []
   if (autoLink) {
-    for (const item of parsed.items) {
-      const cur = findByIdentity(root, item.platform, item.id)
-      if (cur && cur.uid === uid) continue
-      if (cur) {
-        conflicts.push({ ...item, owner: cur.uid })
-        continue
+    const fresh = loadIdentities(root)
+    const me = fresh.people[uid]
+    // 新账户信息里还提到的账号保留（不算"新绑定"）；不再提到的、且是由账户信息推出的，收回。
+    // 从消息里观察到的绑定（evidence 为空）一律不动——那是事实，不是描述。
+    const wanted = new Set(entries.flatMap((e) => e.parsed.map((p) => `${p.platform}:${p.id}`)))
+    me.identities = (me.identities ?? []).filter((x) => {
+      const fromText = Array.isArray(x.evidence) && x.evidence.includes('account_text')
+      if (!fromText) return true
+      return wanted.has(`${x.platform}:${x.id}`)
+    })
+    saveIdentities(root, fresh)
+    for (const entry of entries) {
+      for (const item of entry.parsed) {
+        const cur = findByIdentity(root, item.platform, item.id)
+        if (cur && cur.uid === uid) continue
+        if (cur) {
+          conflicts.push({ ...item, owner: cur.uid })
+          continue
+        }
+        linkIdentity(root, uid, {
+          platform: item.platform,
+          id: item.id,
+          state: 'inferred',
+          confidence: 0.8,
+          evidence: ['account_text'],
+        })
+        linked.push(item)
       }
-      linkIdentity(root, uid, {
-        platform: item.platform,
-        id: item.id,
-        state: 'inferred',
-        confidence: 0.8,
-        evidence: ['identity_text'],
-      })
-      linked.push(item)
     }
   }
-
-  const fresh = loadIdentities(root)
-  return { person: fresh.people[uid], parsed, linked, conflicts }
+  const out = loadIdentities(root).people[uid]
+  return { person: out, texts: entries, linked, conflicts, unparsed: entries.flatMap((e) => e.unparsed) }
 }
 
-/** 重新解析所有人物（解析器升级后跑一次）。 */
-export function reparseIdentityTexts(root, { autoLink = false } = {}) {
+/** 单条（CLI / 工具沿用）：等价于 `setAccountTexts([text])`。 */
+export function setAccountText(root, uid, text, opts = {}) {
+  return setAccountTexts(root, uid, [text], opts)
+}
+
+/**
+ * 确认某个已知账号写进了这个人的**账户信息**里（没有就补一条 `QQ：12345`）。
+ *
+ * 从消息里拿到 QQ 号的那一刻就该有——她不该知道"这个人是谁"却看不到他的号。
+ * 只补账户信息，不动 identities（那个号本来就观察到了）。
+ * @returns {boolean} 有没有改动
+ */
+export function ensureAccountTextForIdentity(root, uid, { platform, id } = {}) {
+  const pid = String(id ?? '').trim()
+  if (!pid) return false
+  const data = loadIdentities(root)
+  const person = data.people?.[uid]
+  if (!person) return false
+  const rows = accountTextsOf(person)
+  if (rows.some((x) => x.text.includes(pid))) return false
+  const text = accountTextFor(platform, pid)
+  person.account_texts = [...rows, { text, parsed: [{ platform, id: pid }], unparsed: [], at: localIso() }]
+  saveIdentities(root, data)
+  return true
+}
+
+/** 把所有"已经观察到的账号"补进账户信息（幂等；启动时跑一次）。 */
+export function backfillAccountTexts(root) {
+  const data = loadIdentities(root)
+  let changed = 0
+  for (const person of Object.values(data.people)) {
+    const existing = accountTextsOf(person)
+    const seen = existing.map((x) => x.text).join('\n')
+    let dirty = false
+    for (const idn of person.identities ?? []) {
+      const id = String(idn.id ?? '').trim()
+      if (!id) continue
+      if (seen.includes(id)) continue
+      person.account_texts = person.account_texts ?? []
+      person.account_texts.push({
+        text: accountTextFor(idn.platform, id),
+        parsed: [{ platform: idn.platform, id }],
+        unparsed: [],
+        at: localIso(),
+      })
+      dirty = true
+    }
+    if (dirty) changed += 1
+  }
+  if (changed) saveIdentities(root, data)
+  return changed
+}
+
+/** 重新解析所有账户信息（解析器升级后跑一次）。 */
+export function reparseAccountTexts(root, { autoLink = false } = {}) {
   const data = loadIdentities(root)
   const out = []
   for (const person of Object.values(data.people)) {
-    if (!person.identity_text) continue
-    const parsed = parseIdentityText(person.identity_text)
-    person.identity_parsed = parsed.items
-    person.identity_unparsed = parsed.unparsed
-    person.identity_parsed_at = localIso()
-    out.push({ uid: person.uid, items: parsed.items.length, unparsed: parsed.unparsed.length })
+    const rows = accountTextsOf(person)
+    if (!rows.length) continue
+    person.account_texts = rows.map((row) => {
+      const parsed = parseIdentityText(row.text)
+      return { text: row.text, parsed: parsed.items, unparsed: parsed.unparsed, at: localIso() }
+    })
+    out.push({
+      uid: person.uid,
+      items: person.account_texts.reduce((n, r) => n + r.parsed.length, 0),
+      unparsed: person.account_texts.flatMap((r) => r.unparsed).length,
+    })
   }
   saveIdentities(root, data)
   if (autoLink) {
     for (const row of out) {
-      setIdentityText(root, row.uid, loadIdentities(root).people[row.uid].identity_text, { autoLink })
+      const texts = accountTextsOf(loadIdentities(root).people[row.uid]).map((x) => x.text)
+      setAccountTexts(root, row.uid, texts, { autoLink })
     }
   }
   return out
@@ -534,20 +729,23 @@ export function movePinned(root, pid, uid, direction) {
  *
  * 账户必填：一个既没有名字来源、也没有账号的人，等于一个纯字符串，建了也没用。
  */
-export function createPersonWithCard(root, pid, { display, identityText, sketch = '', actor = 'human:editor' } = {}) {
+export function createPersonWithCard(root, pid, { display, accountText = '', accountTexts = null, sketch = '', actor = 'human:editor' } = {}) {
   const name = String(display ?? '').trim()
   if (!name) throw new Error('名字不能为空')
-  const text = String(identityText ?? '').trim()
-  if (!text) throw new Error('账户不能为空：用自然语言写清他/她在哪个平台叫什么')
-  if (!parseIdentityText(text).items.length) {
-    throw new Error(`账户里没认出任何账号：${text}。写成"QQ 号是 12345"或"b站叫老张"这样`)
+  const texts = (Array.isArray(accountTexts) ? accountTexts : String(accountText ?? '').split('\n'))
+    .map((t) => String(t ?? '').trim())
+    .filter(Boolean)
+  if (!texts.length) throw new Error('账户信息不能为空：写清他/她在哪个平台叫什么')
+  const parsedCount = texts.reduce((n, t) => n + parseIdentityText(t).items.length, 0)
+  if (!parsedCount) {
+    throw new Error(`账户信息里没认出任何账号：${texts.join(' / ')}。写成"QQ 号是 12345"或"b站叫老张"这样`)
   }
   const person = createPerson(root, { display: name })
-  const r = setIdentityText(root, person.uid, text, { autoLink: true })
+  const r = setAccountTexts(root, person.uid, texts, { autoLink: true })
   if (!r.linked.length) {
     const why = r.conflicts.length
       ? `这些账号已经属于别人了：${r.conflicts.map((c) => `${c.platform}:${c.id}`).join('、')}`
-      : '账户里没认出可以绑定的号'
+      : '账户信息里没认出可以绑定的号'
     throw new Error(why)
   }
   if (String(sketch).trim()) {
@@ -610,6 +808,7 @@ export function listPeopleForUi(root, pid, { includeShadow = false } = {}) {
     .map((person) => {
       const profile = readProfile(root, pid, person.uid)
       const eff = effectivePersonWeight(profile, { totalPinned })
+      const f = friendshipOf(person)
       return {
         uid: person.uid,
         display: profile?.display || person.display || person.uid,
@@ -623,6 +822,9 @@ export function listPeopleForUi(root, pid, { includeShadow = false } = {}) {
         firstMet: profile?.first_met ?? null,
         lastMet: profile?.last_met ?? null,
         hasProfile: Boolean(profile),
+        friend: Boolean(f),
+        remark: f?.remark ?? '',
+        accountTexts: accountTextsOf(person).map((x) => x.text),
         identities: person.identities ?? [],
       }
     })

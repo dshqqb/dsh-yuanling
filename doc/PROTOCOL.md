@@ -1,6 +1,7 @@
-# PROTOCOL · 原灵模块协议（v1.6）
+# PROTOCOL · 原灵模块协议（v1.7）
 
-> 状态：**v1.6 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> 状态：**v1.7 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> v1.7：⑩ `ingest` 回执按条带 `items[]`（canonical channel / directed / deduped / record）——模块靠它开 DSH 回合、做 `egress`；见 §5.1.5。
 > v1.6：⑨ `egress.request`——模块要发消息必须**先问过核心**（`rules/action` + 名单 + 配额），通过才投递；见 §5.1.4。
 > v1.5：⑧ `outbox` 能力 + `outbox.fetch` / `outbox.ack`——把她主动想说的话交给模块，并听它回报结果（见 §5.1.3）。
 > v1.1：① `sources` 声明、`provide.source` 能力、安装即空授权；② `source.fetch` 与模型工具 `yuanling_sources` / `yuanling_fetch`。
@@ -358,7 +359,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 
 | op | 入参 | 出参 | 说明 |
 |---|---|---|---|
-| `ingest` | 复用 inbox 信封 `{v, source, acct, items[]}` | `{accepted, deduped, skipped, errors[]}` | 需 `ingest.message`；**`source` 以核心盖章为准**；单批 `items ≤ 100`；返回值即重试依据 |
+| `ingest` | 复用 inbox 信封 `{v, source, acct, items[]}` | `{accepted, deduped, skipped, errors[], items?[]}` | 需 `ingest.message`；**`source` 以核心盖章为准**；单批 `items ≤ 100`；返回值即重试依据；v1.7 起回执带 `items`（见 §5.1.5） |
 | `propose.fact` | `{topic, text, src, imp?}` | `{status: accepted\|deduped\|rejected, factId?}` | 需 `propose.fact`；`src` 必须可解析（先 `ingest` 再 `propose`）；落库带 `origin_module` |
 | `media.put.file` | `{path, mime, size?}` | `{ptr, hash, size, mime}` | 路径须在 `$YUANLING_TMP/` 内；≤20MB；mime 需在 `media.receive` ∩ 白名单；默认 20 次/分钟 |
 | `media.get` | `{ptr}` | `{path, mime, size, expires_at}` | 需 `media.read`；**不回字节**，返回临时文件路径；每次读取记模块日志 |
@@ -432,6 +433,32 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 
 > 通过之后由**模块自己投递**（而不是核心再调 `send`）：这就是"核心决定、模块投递"。
 > 多一跳只会让"到底谁发的"更难答。
+
+#### 5.1.5 `ingest` 回执的 `items[]`：模块怎么拿到内部场景号（v1.7）
+
+模块只知道外部频道（`private:3206104913` / `group:460085222`），而 `egress.request` 要的是内部场景号
+（`private:person_…` / `group:grp_…`）。让模块自己换算等于把"场景归属"抄第二份，所以由核心回执：
+
+```jsonc
+// 模块 → 核心（不变）
+{ "op":"ingest", "id":"…", "data":{ "v":1, "source":"qq", "acct":"2823503286",
+  "items":[ { "channel":"private:3206104913", "actor":{…}, "role":"user", "text":"在吗" } ] } }
+
+// 核心 → 模块
+{ "ok":true, "result":{
+  "accepted":1, "deduped":0, "skipped":0, "errors":[],
+  "items":[ { "channel":"private:person_01M75…", "native":"private:3206104913",
+              "directed":true, "deduped":false, "skipped":false,
+              "record":"raw/2026-11/12/qq.ndjson#01M77…" } ]
+}}
+```
+
+- **按入参顺序对齐**，一条一个对象（被跳过的是 `skipped:true`，仍然有 `channel`）。
+- `directed`：这句话是不是冲她说的（@ 她 / 引用回复她 / 叫了她的名字；私聊恒为 true，她自己说的恒为 false）。
+  模块拿它决定群聊要不要开 DSH 回合——**判断只在核心算一次**。
+- `deduped:true`：重复投递。`channel` 照给（模块的映射不会缺），但**不要因此再回一次**。
+- `record`：`raw/<相对路径>#<id>`，排障用。
+- 旧核心不返回 `items` 时，模块必须降级为"只收不回"，**不许自己猜场景号**。
 
 #### 5.1.2 `diag.report`：让模块的专业判断进同一张诊断清单（v1.4）
 

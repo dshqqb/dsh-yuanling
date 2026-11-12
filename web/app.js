@@ -1059,9 +1059,9 @@ async function submitModal() {
 function weightField(row) {
   const bits = [`当前生效：${row.weight}`]
   if (row.weightKind === 'pinned') {
-    bits.push(`重点第 ${Number(row.rank ?? 0) + 1} 名`)
-    bits.push(`落盘权重：${row.storedWeight}`)
-    bits.push('取消重点后，落盘的权重会重新生效')
+    bits.push(`重要第 ${Number(row.rank ?? 0) + 1} 名`)
+    bits.push('落盘权重：' + row.storedWeight)
+    bits.push('取消重要后，落盘的权重会重新生效')
   } else {
     bits.push('由互动推算，不能手改')
   }
@@ -1074,12 +1074,18 @@ function personCard(p, { onMove } = {}) {
   const head = el('div', 't')
   const tags = el('span')
   if (p.admin) tags.append(el('span', 'tag purple', '管理员'))
-  if (p.pinned) tags.append(el('span', 'tag ok', `重点 #${Number(p.rank ?? 0) + 1}`))
+  if (p.pinned) tags.append(el('span', 'tag ok', `重要 #${Number(p.rank ?? 0) + 1}`))
+  if (p.friend) tags.append(el('span', 'tag ok', p.remark ? `好友·${p.remark}` : '好友'))
   tags.append(el('span', p.weightKind === 'pinned' ? 'tag ok' : 'tag', String(p.weight)))
   head.append(tags, document.createTextNode(p.display))
 
   const accts = p.identities.map((x) => `${x.platform}:${x.id}`).join('、') || '无账号'
-  body.append(head, el('div', 's', `${p.uid} · ${accts}${p.sketch ? ' · ' + p.sketch.slice(0, 40) : ''}`))
+  const identity = (p.accountTexts ?? []).length ? p.accountTexts.join(' / ') : accts
+  const firstMet = p.firstMet ? `初识 ${String(p.firstMet).slice(0, 10)}` : ''
+  body.append(
+    head,
+    el('div', 's', [p.uid, identity, firstMet, p.sketch ? p.sketch.slice(0, 40) : ''].filter(Boolean).join(' · ')),
+  )
   n.append(body)
 
   const acts = el('div', 'actions')
@@ -1104,14 +1110,14 @@ function personCard(p, { onMove } = {}) {
     acts.append(
       mkBtn('↑', 'small ghost', () => onMove?.(p, 'up')),
       mkBtn('↓', 'small ghost', () => onMove?.(p, 'down')),
-      mkBtn('取消重点', 'small ghost', async () => {
+      mkBtn('取消重要', 'small ghost', async () => {
         await postApi('/api/person/pin', { uid: p.uid, pinned: false })
         await loadPeople()
       }),
     )
   } else if (!p.admin) {
     acts.append(
-      mkBtn('设为重点', 'small ghost', async () => {
+      mkBtn('设为重要', 'small ghost', async () => {
         await postApi('/api/person/pin', { uid: p.uid, pinned: true })
         await loadPeople()
       }),
@@ -1141,19 +1147,25 @@ async function openPersonEditor(p) {
     title: `${d2.person.display}（${p.uid}）`,
     fields: [
       { key: 'display', label: '名字', value: d2.person.display || '' },
+      { label: '初识', type: 'static', value: d2.profile?.first_met ? String(d2.profile.first_met).slice(0, 10) : '—' },
       {
         key: 'identity',
-        label: '账户',
-        value: d2.person.identity_text || '',
-        placeholder: 'QQ 号是 12345，另一个 QQ 号是 67890，b站叫老张',
-        hint: '用自然语言写，可以写多个号；保存时自动识别并绑定',
+        label: '账户信息',
+        type: 'textarea',
+        rows: 4,
+        value: (d2.accountTexts ?? []).join('\n'),
+        hint: '一行一个账户（QQ / 微信 / 贴吧…），不是"她对这个人的印象"——印象写在下面的「人物描述」。QQ 号会从消息里自动补进来',
       },
       { key: 'sketch', label: '人物描述', type: 'textarea', rows: 5, value: d2.profile?.sketch || '' },
       weightField(row),
     ],
     onSubmit: async (v) => {
       await postApi('/api/person', { uid: p.uid, display: v.display, sketch: v.sketch })
-      const r = await postApi('/api/person/identity', { uid: p.uid, text: v.identity })
+      const texts = String(v.identity ?? '')
+        .split('\n')
+        .map((x) => x.trim())
+        .filter(Boolean)
+      const r = await postApi('/api/person/accounts', { uid: p.uid, texts })
       await loadPeople()
       const bits = []
       if (r.linked?.length) bits.push(`新绑定 ${r.linked.length} 个`)
@@ -1172,15 +1184,20 @@ async function openPersonCreate() {
       { key: 'display', label: '名字', placeholder: '怎么称呼他' },
       {
         key: 'identity',
-        label: '账户',
-        placeholder: 'QQ 号是 12345，b站叫老张',
-        hint: '必填：没认出账号会拒绝创建（一个只有名字的人对应不到任何真实的人）',
+        label: '账户信息',
+        type: 'textarea',
+        rows: 3,
+        hint: '一行一个账户；至少要认出一个（一个只有名字的人对应不到任何真实的人）',
       },
       { key: 'sketch', label: '人物描述', type: 'textarea', rows: 4, placeholder: '这个人是谁、怎么说话、在意什么' },
       { label: '权重', type: 'static', value: '新建默认 50（普通名单的中值），之后由互动推演' },
     ],
     onSubmit: async (v) => {
-      await postApi('/api/person/create', { display: v.display, identityText: v.identity, sketch: v.sketch })
+      const accountTexts = String(v.identity ?? '')
+        .split('\n')
+        .map((x) => x.trim())
+        .filter(Boolean)
+      await postApi('/api/person/create', { display: v.display, accountTexts, sketch: v.sketch })
       await loadPeople()
     },
   })
@@ -1192,6 +1209,7 @@ async function loadPeople() {
   const adminSlot = $('admin-slot')
   adminSlot.innerHTML = ''
   const admins = d.people.filter((p) => p.admin)
+  $('admin-count').textContent = admins.length ? `${admins.length} 人` : ''
   if (!admins.length) adminSlot.append(el('div', 'zone-empty', '还没指定管理员。在下面任意一张卡上点「设为管理员」。'))
   for (const p of admins) adminSlot.append(personCard(p))
 
@@ -1202,7 +1220,8 @@ async function loadPeople() {
   const pinnedSlot = $('pinned-slot')
   pinnedSlot.innerHTML = ''
   const pinned = d.people.filter((p) => p.pinned && !p.admin)
-  if (!pinned.length) pinnedSlot.append(el('div', 'zone-empty', '还没有重点人物。点下面任意一张卡上的「设为重点」。'))
+  $('pinned-count').textContent = pinned.length ? `${pinned.length} 人` : ''
+  if (!pinned.length) pinnedSlot.append(el('div', 'zone-empty', '还没有重要人物。点下面任意一张卡上的「设为重要」。'))
   const move = async (p, direction) => {
     await postApi('/api/person/move', { uid: p.uid, direction })
     await loadPeople()
@@ -1210,14 +1229,12 @@ async function loadPeople() {
   for (const p of pinned) pinnedSlot.append(personCard(p, { onMove: move }))
 
   const rest = d.people.filter((p) => !p.admin && !p.pinned)
-  $('people-count').textContent = d.people.length
-    ? `共 ${d.people.length} 人${d.shadowCount ? ` · 另有 ${d.shadowCount} 个只见过、还没认识的人没列出来` : ''}`
-    : d.shadowCount
-      ? `还没有认识的人 · 另有 ${d.shadowCount} 个只见过、还没认识的`
-      : ''
+  $('people-count').textContent = `${rest.length} 人${
+    d.shadowCount ? ` · 另有 ${d.shadowCount} 个路人卡（只见过、还没说过话）` : ''
+  }`
   const box = $('people-out')
   box.innerHTML = ''
-  if (!rest.length) box.append(el('div', 'muted small', '没有其他人物了。'))
+  if (!rest.length) box.append(el('div', 'muted small', '还没有熟人。'))
   for (const p of rest) box.append(personCard(p))
 
   await loadAudience('people')
@@ -3196,7 +3213,6 @@ $('proposal-scan').addEventListener('click', async () => {
 // ── 弹窗事件（人物/群体的新增与编辑共用）──────────────────────────────
 $('modal-ok').addEventListener('click', () => submitModal().catch(() => {}))
 $('modal-cancel').addEventListener('click', () => closeModal())
-$('modal-x').addEventListener('click', () => closeModal())
 $('modal-mask').addEventListener('click', () => closeModal())
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('modal').hidden) closeModal()

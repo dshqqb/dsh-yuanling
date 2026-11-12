@@ -19,7 +19,8 @@ import {
   createPersonWithCard,
   setAdmin,
   currentAdmin,
-  setIdentityText,
+  setAccountTexts,
+  accountTextsOf,
 } from './entities.js'
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
@@ -90,13 +91,24 @@ function sceneReport(root, scene) {
   if (c.kind === 'private') {
     if (c.personUid) {
       const prof = readProfile(root, readMarker(root)?.active, c.personUid)
-      if (!prof?.sketch) {
+      if (!prof) {
         return {
           sceneInfo: {
             resolved: true,
             kind: 'private',
             personUid: c.personUid,
             reason: '解析到了人物，但这个人还没有档案（她还没认识他），所以注入里没有人物卡',
+          },
+        }
+      }
+      if (!prof.sketch) {
+        return {
+          sceneInfo: {
+            resolved: true,
+            kind: 'private',
+            personUid: c.personUid,
+            // 有档案（账号、初识、好友）但还没写素描：卡会注入，只是内容少
+            reason: '会带上这个人的卡（有账号与初识，还没有写素描）',
           },
         }
       }
@@ -650,7 +662,16 @@ export function handleApi(root, url) {
     if (!person) return { status: 404, body: { ok: false, error: '没有这个人物' } }
     // 生效权重/名次和列表同一口径（重点名单按名次，其余按互动分）
     const row = listPeopleForUi(root, pid).find((p) => p.uid === uid) ?? null
-    return { status: 200, body: { ok: true, person, profile: readProfile(root, pid, uid), weight: row } }
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        person,
+        accountTexts: accountTextsOf(person).map((x) => x.text),
+        profile: readProfile(root, pid, uid),
+        weight: row,
+      },
+    }
   }
 
   return { status: 404, body: { ok: false, error: 'no such api' } }
@@ -863,17 +884,23 @@ export function handleApiWrite(root, url, body) {
       return { status: 200, body: { ok: true, changed: r.changed, path: rel, hash: r.hash } }
     }
 
-    if (pathname === '/api/person/identity') {
+    if (pathname === '/api/person/accounts') {
       const uid = String(b.uid ?? '')
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-      const r = setIdentityText(root, uid, String(b.text ?? ''), { autoLink: b.autoLink !== false })
+      const texts = Array.isArray(b.texts)
+        ? b.texts
+        : typeof b.text === 'string'
+          ? String(b.text).split('\n')
+          : null
+      if (!texts) return { status: 400, body: { ok: false, error: '需要 texts（数组）或 text（多行）' } }
+      const r = setAccountTexts(root, uid, texts, { autoLink: b.autoLink !== false, replace: b.replace !== false })
       return {
         status: 200,
         body: {
           ok: true,
-          identityText: r.person.identity_text,
-          parsed: r.parsed.items,
-          unparsed: r.parsed.unparsed,
+          accountTexts: accountTextsOf(r.person).map((x) => x.text),
+          parsed: r.texts.flatMap((x) => x.parsed),
+          unparsed: r.unparsed,
           linked: r.linked,
           conflicts: r.conflicts,
         },
@@ -926,7 +953,8 @@ export function handleApiWrite(root, url, body) {
     if (pathname === '/api/person/create') {
       const r = createPersonWithCard(root, pid, {
         display: b.display,
-        identityText: b.identityText ?? b.identity,
+        accountTexts: Array.isArray(b.accountTexts) ? b.accountTexts : undefined,
+        accountText: b.accountText ?? b.identityText ?? b.identity,
         sketch: b.sketch,
       })
       return { status: 200, body: { ok: true, uid: r.person.uid, person: r.person, linked: r.linked, conflicts: r.conflicts } }

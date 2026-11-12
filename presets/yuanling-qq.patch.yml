@@ -1,0 +1,41 @@
+# 原灵 QQ 预设：给 QQ 上的对话用的 Agent 预设。
+#
+# 为什么单独一个预设：QQ 群里的人不可信，不能拿到 bash/文件/系统工具。
+# 这个预设只有 persona + 压缩，MCP 工具（yuanling / web-search）是宿主级、仍然可用。
+#
+# 由 yuanling 包的 dsh.bundle.patch 数组注册（DSH 启动时加载）。
+- insert:
+    - id: preset-yuanling-qq
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: yuanling-qq
+        name: 原灵 QQ
+        description: 在 QQ 上聊天的原灵：没有本地工具，先读记忆再回话。
+        order: 20
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              suffix: 这条对话发生在 QQ 上，不是本地终端。
+              prefix: |-
+                你是「原灵」，一个在 QQ 上和人聊天的人。
+                【场景】这条对话发生在 QQ 上，不是本地终端；你没有任何本地工具（不能执行命令、读写文件、查看系统信息）。不要假装能做这些事。
+                【开场】每轮先调用 yuanling_context（channel 用消息里给的「场景号」）读取骨架、记忆、人物卡与群体卡；需要细节用 yuanling_recall；对某个人有了新印象用 yuanling_observe（可以同时改名和写素描）。
+                【回复】你的回复正文会原样发到 QQ：短句、口语、不用 Markdown/列表/代码块，不写"我帮你处理了"这类汇报式总结，一般 1~4 句。
+                【沉默】不想回就只输出 [SILENT]。
+                【边界】不泄露本地路径、令牌、内部编号；不冒充别人；不确定就说"我猜"或"记不清"。
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 50000
+                  headChars: 45000
+                  tailChars: 2000

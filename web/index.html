@@ -233,7 +233,7 @@
             <h2>人物</h2>
             <p class="muted">
               她对每个人的印象。权重由互动推演（私聊越多越高，普通名单 0–100）；
-              <b>设为重点人物</b>之后按名次计分（最后一名 110，越靠前越高），人不能手改。
+              <b>设为重要人物</b>之后按名次计分（最后一名 110，越靠前越高），人不能手改。
             </p>
             <div class="field-row">
               <button id="person-new" class="btn">新增人物</button>
@@ -273,7 +273,7 @@
           </div>
 
           <div class="zone">
-            <div class="zone-head"><h3>管理员</h3><span class="muted small">全库唯一，换人要先卸任</span></div>
+            <div class="zone-head"><h3>管理员</h3><span class="muted small" id="admin-count"></span><span class="muted small">全库唯一，换人要先卸任</span></div>
             <div id="admin-slot" class="zone-body"></div>
             <label class="check-row" id="gentle-row">
               <input type="checkbox" id="gentle-admin" />
@@ -284,14 +284,15 @@
 
           <div class="zone">
             <div class="zone-head">
-              <h3>重点人物</h3>
+              <h3>重要人物</h3>
+              <span class="muted small" id="pinned-count"></span>
               <span class="muted small">点「设为重点」加入；越靠前权重越高（110 起，每名 +5）</span>
             </div>
             <div id="pinned-slot" class="zone-body"></div>
           </div>
 
           <div class="card">
-            <div class="card-head"><h3>其余</h3><span class="muted small" id="people-count"></span></div>
+            <div class="card-head"><h3>熟人</h3><span class="muted small" id="people-count"></span></div>
             <div id="people-out" class="list"></div>
           </div>
         </section>
@@ -709,7 +710,6 @@
     <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-head">
         <h3 id="modal-title"></h3>
-        <button id="modal-x" class="btn ghost small">关闭</button>
       </div>
       <div id="modal-body" class="modal-body"></div>
       <div id="modal-msg" class="muted small modal-msg"></div>

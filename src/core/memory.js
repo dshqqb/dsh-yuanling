@@ -16,7 +16,7 @@ import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
 import { refreshDrives, readDrives, driveName } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
-import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile, currentAdmin } from './entities.js'
+import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile, currentAdmin, friendshipOf } from './entities.js'
 import { groupsForContext, groupCardLine, readGroup, gidForChannel } from './groups.js'
 import { readPrefs } from './prefs.js'
 import { mentionedPeople } from './aliases.js'
@@ -796,6 +796,8 @@ function personCardLine({ uid, person, profile }) {
   const acct = (person?.identities ?? [])[0]
   const head = acct ? `${name}（${acct.platform}:${acct.id}）` : name
   const bits = [head]
+  const f = friendshipOf(person)
+  if (f) bits.push(f.remark ? `好友（备注「${f.remark}」）` : '好友')
   if (profile.sketch) bits.push(String(profile.sketch))
   if (profile.first_met) bits.push(`初识 ${String(profile.first_met).slice(0, 10)}`)
 

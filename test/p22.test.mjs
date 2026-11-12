@@ -89,7 +89,7 @@ test('tools/list：十一个工具都在（v1.1 sources/fetch，v1.2 group，v1.
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',
-    'yuanling_person_identity',
+    'yuanling_person_account',
     'yuanling_purpose',
     'yuanling_recall',
     'yuanling_remember',
@@ -100,7 +100,7 @@ test('tools/list：十一个工具都在（v1.1 sources/fetch，v1.2 group，v1.
 
 test('identity：给 uid 写描述 → 解析并绑定没被占用的号', async () => {
   const res = await call('tools/call', {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     arguments: { uid: aliceUid, text: 'QQ 号是 12345，b站叫老张' },
   })
   const text = toolText(res)
@@ -110,13 +110,13 @@ test('identity：给 uid 写描述 → 解析并绑定没被占用的号', async
 
   const data = loadIdentities(root)
   const person = data.people[aliceUid]
-  assert.equal(person.identity_text, 'QQ 号是 12345，b站叫老张', '原文必须原样存下')
+  assert.equal(person.account_texts[0].text, 'QQ 号是 12345，b站叫老张', '原文必须原样存下')
   assert.ok(person.identities.some((x) => x.platform === 'qq' && String(x.id) === '12345'))
 })
 
 test('identity：只给 display 时会新建人物', async () => {
   const res = await call('tools/call', {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     arguments: { display: '李四', text: 'b站昵称是阿四' },
   })
   const text = toolText(res)
@@ -133,7 +133,7 @@ test('identity：号已属于别人 → 只报冲突，不抢', async () => {
   linkIdentity(root, other.uid, { platform: 'qq', id: '99999' })
 
   const res = await call('tools/call', {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     arguments: { uid: aliceUid, text: 'QQ 号是 99999' },
   })
   const text = toolText(res)
@@ -146,13 +146,13 @@ test('identity：号已属于别人 → 只报冲突，不抢', async () => {
 })
 
 test('identity：缺 text 时报错而不是崩', async () => {
-  const res = await call('tools/call', { name: 'yuanling_person_identity', arguments: { uid: aliceUid } })
+  const res = await call('tools/call', { name: 'yuanling_person_account', arguments: { uid: aliceUid } })
   assert.match(errText(res), /缺少 text/)
 })
 
 test('identity：uid 不存在时报错', async () => {
   const res = await call('tools/call', {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     arguments: { uid: 'person_nope', text: 'QQ 号是 12345' },
   })
   assert.match(errText(res), /人物不存在/)
@@ -160,7 +160,7 @@ test('identity：uid 不存在时报错', async () => {
 
 test('identity：超长描述被拒绝（不是悄悄截断）', async () => {
   const res = await call('tools/call', {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     // 5 字 × 500 = 2500 字，超过 2000 上限
     arguments: { uid: aliceUid, text: '很长的描述'.repeat(500) },
   })
@@ -169,12 +169,12 @@ test('identity：超长描述被拒绝（不是悄悄截断）', async () => {
 
 test('identity：autoLink=false 时只存原文，不绑号', async () => {
   const res = await call('tools/call', {
-    name: 'yuanling_person_identity',
+    name: 'yuanling_person_account',
     arguments: { uid: aliceUid, text: '微博 @zhang_new', autoLink: false },
   })
   toolText(res)
 
   const data = loadIdentities(root)
   assert.ok(!data.people[aliceUid].identities.some((x) => String(x.id) === 'zhang_new'))
-  assert.match(data.people[aliceUid].identity_text, /zhang_new/, '原文还是存着的')
+  assert.ok(data.people[aliceUid].account_texts.some((x) => x.text.includes('zhang_new')), '原文还是存着的')
 })

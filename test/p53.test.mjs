@@ -149,11 +149,12 @@ test('入库：私聊消息的频道变成 private:person_x，并留痕原始号
   // 频道里不能再出现外部号码
   assert.ok(!rec.channel.includes('10003'))
 
-  // 新人物是影子卡（见过但还没认识）
+  // 私聊 = 跟她说话 → 直接建"路人卡"（2026-11-12 新口径），不再是影子
   const after = loadIdentities(root).people
   const created = Object.keys(after).find((uid) => !before[uid])
   assert.ok(created, '应该建了一张人物卡')
-  assert.equal(after[created].tier, 'shadow')
+  assert.equal(after[created].tier, undefined, '私聊过的人不是影子')
+  assert.ok(readProfile(root, 'yuanling', created), '要有一份最小档案')
   assert.ok(after[created].identities.some((x) => x.platform === 'qq' && x.id === '10003'))
 })
 

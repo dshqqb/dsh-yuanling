@@ -12,16 +12,15 @@ import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel, noteGroupMember } from './groups.js'
-import { canonicalChannelForIngest, platformFromSource } from './channels.js'
+import { ensureSenderPerson, isShadow, canonicalChannelForIngest, platformFromSource } from './channels.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
 import { noteGroupMessage, herNames, isReplyToHer } from './engage.js'
-import { noteSelfNameCandidate, herPlatformIds } from './selfname.js'
+import { noteSelfNameCandidate, herPlatformIds, addressesHer } from './selfname.js'
 import { addFact } from './memory.js'
 import { parseChannel } from './channels.js'
-import { findByIdentity } from './entities.js'
-
+import { ensurePersonProfile, findByIdentity, noteFriendship } from './entities.js'
 /**
  * 从一条刚入库的消息里提炼事实。
  *
@@ -95,13 +94,17 @@ export function normalizeEnvelope(env) {
  *
  * @returns {{accepted:number, deduped:number, skipped:number, errors:string[], records?:Array}}
  */
-export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
+export function ingest(root, env, { now, maxBytes, withRecords = false, withItems = false } = {}) {
   const { source, acct, items } = normalizeEnvelope(env)
   const rules = loadIngestRules(root)
   const out = { accepted: 0, deduped: 0, skipped: 0, errors: [] }
   if (withRecords) out.records = []
+  // v1.7：按入参顺序回执每一条的 canonical channel（模块拿它去 egress / 开 DSH 回合）。
+  // 只有 ingest 走模块通道时才带，HTTP /inbox 的响应不该因此变大。
+  if (withItems) out.items = new Array(items.length).fill(null)
 
-  for (const item of items) {
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i]
     try {
       const channelIn = String(item.channel ?? 'unknown')
 
@@ -114,6 +117,8 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
           channel: channelIn,
           source,
           actorName: item.actor?.name ?? '',
+          // 她自己的话不建人物卡（协议 §5.1.1 的 role:"bot"）
+          createPerson: String(item.role ?? 'user') !== 'bot',
         })
       } catch {
         // 归人失败（比如缺 id）不该丢这条消息：退回原频道，让它带着老形状进 raw
@@ -121,6 +126,36 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       }
       const channel = canonical.channel
       const rawText = String(item.text ?? '')
+
+      // v1.7：这句是不是**冲她说的**。模块拿它决定群聊要不要开 DSH 回合；
+      // 顺便给"建路人卡"用，不再算第二遍。私聊恒为真；她说的话恒为假。
+      const isBot = String(item.role ?? 'user') === 'bot'
+      const kind = parseChannel(channel).kind
+      let directed = false
+      if (!isBot) {
+        if (kind === 'private') directed = true
+        else if (kind === 'group') {
+          directed = directedAtHer(root, readMarker(root)?.active, rawText, {
+            replyTo: item.reply_to ?? item.replyTo ?? '',
+            selfIds: [acct],
+          })
+        }
+      }
+      const report = withItems
+        ? { channel, native: canonical.native || '', directed, deduped: false, skipped: false, record: null }
+        : null
+      if (withItems) out.items[i] = report
+
+      // 私聊：适配器说"这个号是好友"就记在身份上（群聊的在下面建完影子卡再记）。
+      if (item.actor?.friend && canonical.personUid && item.actor?.id) {
+        try {
+          noteFriendship(root, canonical.personUid, platformFromSource(source) ?? 'qq', String(item.actor.id), {
+            remark: item.actor.remark ?? '',
+          })
+        } catch {
+          /* 好友关系写不进去不该挡消息 */
+        }
+      }
 
       // 硬线：guardrails.never_record 命中的内容，连 raw 都不进。
       const guard = canIngest(root, channel, rawText)
@@ -176,6 +211,10 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       )
       if (r.deduped) out.deduped += 1
       else out.accepted += 1
+      if (report) {
+        report.record = `${r.file}#${r.id}`
+        report.deduped = Boolean(r.deduped)
+      }
 
       // 消息里出现她自定义动机的关键词 → 那条动机升温。
       // 放在入库这一处（不是每轮读时算）：一条消息只到一次，热量也就只加一次。
@@ -188,9 +227,9 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
       }
 
       // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
-      // 只记"谁在这个群说过话"这件事本身，正文照旧只走 raw。
+      // 群名由适配器带上来（NapCat get_group_info）——没带就留空，以后拿到再补。
       if (!r.deduped) {
-        touchGroup(root, channel, item.ts ? String(item.ts) : null)
+        touchGroup(root, channel, item.ts ? String(item.ts) : null, item.group_name)
         // 有人用**新称呼**叫她（@她 / 喊了个没见过的名字）：攒够了写进她自己的名称。
         // 只写"名称"，不另建昵称字段——见 selfname.js 的三道闸门。
         try {
@@ -213,13 +252,48 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
           const pid = readMarker(root)?.active
           const gid = gidForChannel(root, channel)
           const actorId = item.actor?.id
-          if (pid && gid && actorId) {
+          if (pid && gid && actorId && !isBot) {
             const platform = platformFromSource(source) ?? 'qq'
-            const hit = findByIdentity(root, platform, String(actorId))
-            if (hit) noteGroupMember(root, pid, gid, hit.uid)
+            // 群里说话的人也要有卡：第一次见就建一张**影子卡**（tier=shadow）——
+            // 不进注入、人物页默认不显示，但"这个号是谁"从此查得到。
+            // 名字取群名片/昵称（适配器从 NapCat 拿），拿不到就用号。
+            const uid = ensureSenderPerson(root, {
+              platform,
+              nativeId: String(actorId),
+              display: item.actor?.name ? String(item.actor.name) : '',
+            })
+            // 成员名单只收"认识的人"：影子卡不是认识，塞进名单只会让重名裁决拿路人当依据
+            if (!isShadow(root, uid)) noteGroupMember(root, pid, gid, uid)
+            // 好友关系是平台事实：群里说话的人也可能是她的好友
+            if (item.actor?.friend) {
+              try {
+                noteFriendship(root, uid, platform, String(actorId), { remark: item.actor.remark ?? '' })
+              } catch {
+                /* 同上：写不进去不挡消息 */
+              }
+            }
           }
         } catch {
           /* 记成员失败不该让一条消息丢掉 */
+        }
+        // 跟她**直接说过话**的人，建第一份档案（影子卡 → 路人卡）。
+        // 口径（用户 2026-11-12 定）：私聊每条都算；群聊只有 @ 她 / 引用回复她才算。
+        // 群里旁听的人仍然只有影子卡——不然一个 500 人群一天能长出几十张路人卡。
+        try {
+          const pid = readMarker(root)?.active
+          const actorId = item.actor?.id
+          if (pid && actorId && !isBot && directed) {
+            const platform = platformFromSource(source) ?? 'qq'
+            const hit = findByIdentity(root, platform, String(actorId))
+            if (hit) {
+              ensurePersonProfile(root, pid, hit.uid, {
+                display: item.actor?.name ? String(item.actor.name) : '',
+                firstMet: item.ts ? String(item.ts) : null,
+              })
+            }
+          }
+        } catch {
+          /* 建路人卡失败不该让一条消息丢掉 */
         }
       }
 
@@ -280,15 +354,38 @@ export function ingest(root, env, { now, maxBytes, withRecords = false } = {}) {
  * 是不是群体场景由 `gidForChannel` 说了算（私聊、module:、bili:video: 都不算）。
  * 记失败也不该挡住摄入——所以整个吞掉异常。
  */
-function touchGroup(root, channel, seenAt) {
+function touchGroup(root, channel, seenAt, groupName = '') {
   try {
     const pid = readMarker(root)?.active
     if (!pid) return
     const gid = gidForChannel(root, channel)
     if (!gid) return
-    ensureGroup(root, pid, gid, { seenAt: seenAt ?? localIso() })
+    const name = String(groupName ?? '').trim().slice(0, 100)
+    ensureGroup(root, pid, gid, { seenAt: seenAt ?? localIso(), name })
   } catch {
     /* 群体记账失败不该让一条消息丢掉 */
+  }
+}
+
+/**
+ * 这句话是不是**冲着她**说的：引用回复了她，或 @ 她 / 叫了她的名字。
+ *
+ * 只在群聊里用来决定"要不要把这个人从影子卡升成路人卡"。
+ * 私聊不需要这个判断——私聊每条都是冲她说的。
+ */
+function directedAtHer(root, pid, text, { replyTo = '', selfIds = [] } = {}) {
+  try {
+    if (isReplyToHer(root, replyTo)) return true
+  } catch {
+    /* raw 读不到就当没有引用 */
+  }
+  try {
+    return addressesHer(text, {
+      names: herNames(root, pid),
+      selfIds: new Set([...selfIds, ...herPlatformIds(root)].map(String).filter(Boolean)),
+    })
+  } catch {
+    return false
   }
 }
 

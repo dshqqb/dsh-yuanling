@@ -16,6 +16,7 @@ import path from 'node:path'
 import { resolveRoot, validateRoot } from './src/core/paths.js'
 import { scaffold } from './src/core/scaffold.js'
 import { readMarker, reconcilePersonas } from './src/core/persona.js'
+import { backfillAccountTexts } from './src/core/entities.js'
 import { checkFormat } from './src/core/manifest.js'
 import { exists, localIso } from './src/core/fsx.js'
 import { listEntries } from './src/core/memory.js'
@@ -360,6 +361,13 @@ export function apply(ctx, config) {
 
   // 迁移靠「复制粘贴 personas/<id>/」，所以启动时先把目录里有、登记里没有的人格认领回来
   reconcilePersonas(root)
+  // 账户信息补全：已经观察到的 QQ 号/平台号写进 people[].account_texts（幂等）
+  try {
+    const n = backfillAccountTexts(root)
+    if (n) log('info', config, `账户信息补全：${n} 个人`)
+  } catch (err) {
+    log('warn', config, `账户信息补全失败：${err?.message ?? err}`)
+  }
   const marker = readMarker(root)
 
   // 运行设置的唯一真值在数据目录里（system/policy.json）：

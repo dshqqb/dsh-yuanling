@@ -306,13 +306,34 @@ export function uniqueGroupName(root, pid, display, { platform = null, nativeId 
 export function ensureGroup(root, pid, gid, { name = '', seenAt = null, firstSeen = null } = {}) {
   const cur = readGroup(root, pid, gid)
   if (cur) {
+    // 第一次建卡时适配器没带群名（老版本 / 接口失败），后来拿到了就补上。
+    // 只补"空名字"，不覆盖人写过的名字——补名和自动建卡是同一条路（撞名自动加标识）。
+    const wantName = String(name ?? '').trim()
+    if (wantName && !String(cur.name ?? '').trim()) {
+      const idn = readGroupIdentity(root, gid)
+      const uniqueName = uniqueGroupName(root, pid, wantName, {
+        platform: idn?.platform ?? platformFromGid(gid),
+        nativeId: idn?.nativeId ?? '',
+      })
+      return writeGroup(
+        root,
+        pid,
+        gid,
+        { name: uniqueName, ...(seenAt ? { lastSeen: String(seenAt) } : {}) },
+        { reason: '第一次拿到这个群的名字', skipNameCheck: true },
+      )
+    }
     if (seenAt && shouldAdvance(cur.lastSeen, String(seenAt))) {
       return writeGroup(root, pid, gid, { lastSeen: String(seenAt) }, { reason: '见到这个群体有新动静' })
     }
     return cur
   }
-  // 自动建卡：群名撞了也自动加标识（(QQ群) 老窝），理由和人物一样——这是她在办事。
-  const uniqueName = name ? uniqueGroupName(root, pid, name, { platform: platformFromGid(gid) }) : ''
+  // 自动建卡：群名撞了也自动加标识（(QQ) 老窝），理由和人物一样——这是她在办事。
+  // 平台从身份登记表取：gid 是内部编号（grp_xxx），里面没有平台名。
+  const idn = readGroupIdentity(root, gid)
+  const uniqueName = name
+    ? uniqueGroupName(root, pid, name, { platform: idn?.platform ?? platformFromGid(gid), nativeId: idn?.nativeId ?? '' })
+    : ''
   return writeGroup(
     root,
     pid,

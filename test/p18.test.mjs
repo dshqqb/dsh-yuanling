@@ -116,7 +116,7 @@ test('tools/list：十一个工具，schema 都是 object', async () => {
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',
-    'yuanling_person_identity',
+    'yuanling_person_account',
     'yuanling_purpose',
     'yuanling_recall',
     'yuanling_remember',

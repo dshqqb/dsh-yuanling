@@ -68,10 +68,10 @@ test('生效权重：重点用名次分，普通用落盘分；落盘值始终�
 })
 
 test('新建人物：必须能认出账户；默认 50；账户绑定成功', () => {
-  assert.throws(() => createPersonWithCard(root, PID, { display: '甲', identityText: '他在某处' }), /没认出/)
-  assert.throws(() => createPersonWithCard(root, PID, { display: '甲', identityText: '' }), /账户不能为空/)
+  assert.throws(() => createPersonWithCard(root, PID, { display: '甲', accountText: '他在某处' }), /没认出/)
+  assert.throws(() => createPersonWithCard(root, PID, { display: '甲', accountText: '' }), /账户信息不能为空/)
 
-  const r = createPersonWithCard(root, PID, { display: '小明', identityText: 'QQ 号是 10010', sketch: '话少' })
+  const r = createPersonWithCard(root, PID, { display: '小明', accountText: 'QQ 号是 10010', sketch: '话少' })
   const prof = readProfile(root, PID, r.person.uid)
   assert.equal(prof.weight, 50)
   assert.equal(prof.sketch, '话少')

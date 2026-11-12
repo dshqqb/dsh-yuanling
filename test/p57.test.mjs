@@ -79,7 +79,7 @@ test('人物：新增时重名，创建流程会失败且不留下半张卡', ()
   createPerson(root, { display: '赵六' })
   const before = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'personas', PID, 'entities', 'identities.json'), 'utf8')).people).length
   assert.throws(
-    () => createPersonWithCard(root, PID, { display: '赵六', identityText: 'QQ 号是 70001' }),
+    () => createPersonWithCard(root, PID, { display: '赵六', accountText: 'QQ 号是 70001' }),
     /已经有人用了/,
   )
   const after = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'personas', PID, 'entities', 'identities.json'), 'utf8')).people).length

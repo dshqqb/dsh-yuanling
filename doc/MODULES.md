@@ -172,12 +172,22 @@ stdout 与 stdin 上都是 **NDJSON**：一行一条 JSON，UTF-8 无 BOM，行�
     "items": [ { "channel": "private:12345", "actor": { "kind": "member", "id": "12345", "name": "张三" }, "role": "user", "text": "在吗", "ts": "2026-11-08T16:00:00+08:00" } ]
 } }
 
-// 核心回
-{ "id": "…", "ok": true, "result": { "accepted": 1, "deduped": 0, "skipped": 0, "errors": [] } }
+// 核心回（v1.7 起多一个 items：按入参顺序，给内部场景号与 directed）
+{ "id": "…", "ok": true, "result": { "accepted": 1, "deduped": 0, "skipped": 0, "errors": [],
+    "items": [ { "channel": "private:person_x", "native": "private:12345",
+                 "directed": true, "deduped": false, "skipped": false,
+                 "record": "raw/2026-11/12/qq.ndjson#01JCV…" } ] } }
 ```
 
 - 单批 ≤ 100 条；
-- 不保证按投递顺序落盘，需要顺序就自己串行。
+- 不保证按投递顺序落盘，需要顺序就自己串行；
+- **`group_name`（可选，v1.7）**：群消息可以带这一条（`"group_name": "摸鱼群"`），核心第一次见到这个群时用它建群体卡；
+  之后拿到也会补上，但**不会覆盖人写过的群名**。不带你也不会丢消息，群卡只是暂时没有名字。
+- 群里说话的人第一次出现时，核心会自动建一张**影子人物卡**（`tier: shadow`，不进注入、人物页默认不显示）；
+  名字取 `actor.name`（建议填群名片/昵称），没有就先用号码。
+- **`actor.friend` / `actor.remark`（可选，v1.7）**：适配器能拿到好友列表时，把"这个号是不是好友 + 备注"带上。
+  核心只把它记在身份条目上（同一个人的两个号可以一个是一个不是），**不写进 raw 正文**；
+  拿不到就别带——核心不会猜。
 
 **`diag.report` 的入参与返回值**（v1.4，可选但值得写）：
 

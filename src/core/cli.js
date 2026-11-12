@@ -44,7 +44,7 @@ import {
   defaultServerPath,
   MCP_ENTRY_ID,
 } from './mcpinstall.js'
-import { setIdentityText } from './entities.js'
+import { setAccountTexts, accountTextsOf } from './entities.js'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule } from './modules/manage.js'
 import { installFromBytes, fetchModuleBytes, uninstall } from './modules/installer.js'
 import { refreshDrives } from './drives.js'
@@ -242,7 +242,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling person list|new|show|link|merge|split|profile
   yuanling person candidates|confirm <n>|reject <n>
   yuanling person weight [refresh] | 权重只能看，不能手改
-  yuanling person identity <uid> [--text "QQ 号是 12345，b站叫老张"] [--no-link]
+  yuanling person account <uid> [--text "QQ：12345"] [--no-link]
   yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
   yuanling identity correct <uid> --platform bili --id 123
@@ -1355,10 +1355,10 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         return EXIT.OK
       }
 
-      if (sub === 'identity') {
+      if (sub === 'account') {
         const uid = _[2]
         if (!uid) {
-          err('用法：yuanling person identity <uid> [--text "QQ 号是 12345，b站叫老张"]')
+          err('用法：yuanling person account <uid> [--text "QQ：12345"]')
           return EXIT.CONFIG
         }
         const text = flags.text === undefined ? null : String(flags.text)
@@ -1369,17 +1369,22 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
             err(`没有这个人物：${uid}`)
             return EXIT.CONFIG
           }
-          out(person.identity_text || '（还没有身份描述）')
-          for (const it of person.identity_parsed ?? []) out(`  解析：${it.platform}:${it.id}`)
-          for (const s of person.identity_unparsed ?? []) out(`  没认出：${s}`)
+          const rows = accountTextsOf(person)
+          if (!rows.length) out('（还没有账户信息）')
+          for (const row of rows) {
+            out(`· ${row.text}`)
+            for (const it of row.parsed ?? []) out(`    解析：${it.platform}:${it.id}`)
+            for (const s of row.unparsed ?? []) out(`    没认出：${s}`)
+          }
           return EXIT.OK
         }
-        const r = setIdentityText(root, uid, text, { autoLink: !flags['no-link'] })
-        out(`✓ 已保存身份描述（解析出 ${r.parsed.items.length} 个账号）`)
-        for (const it of r.parsed.items) out(`  ${it.platform}:${it.id}`)
+        const r = setAccountTexts(root, uid, text, { autoLink: !flags['no-link'] })
+        const parsed = r.texts.flatMap((x) => x.parsed)
+        out(`✓ 已保存账户信息（解析出 ${parsed.length} 个账号）`)
+        for (const it of parsed) out(`  ${it.platform}:${it.id}`)
         for (const it of r.linked) out(`  + 已绑定 ${it.platform}:${it.id}`)
         for (const c of r.conflicts) out(`  ! ${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
-        for (const s of r.parsed.unparsed) out(`  没认出：${s}`)
+        for (const s of r.unparsed) out(`  没认出：${s}`)
         return EXIT.OK
       }
 

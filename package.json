@@ -10,7 +10,10 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/yuanling-qq.patch.yml"
+      ]
     },
     "client": {
       "platform": "web",
@@ -27,6 +30,7 @@
     "src/",
     "web/",
     "cordis.patch.yml",
+    "presets/",
     "README.md",
     "doc/",
     "examples/"

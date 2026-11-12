@@ -26,8 +26,15 @@ export function moduleHandlers({ root, pid = null } = {}) {
      */
     onIngest: ({ id, data }) => {
       const env = { ...(data && typeof data === 'object' ? data : {}), source: String(id) }
-      const r = ingest(root, env)
-      return { accepted: r.accepted, deduped: r.deduped, skipped: r.skipped, errors: r.errors }
+      const r = ingest(root, env, { withItems: true })
+      return {
+        accepted: r.accepted,
+        deduped: r.deduped,
+        skipped: r.skipped,
+        errors: r.errors,
+        // v1.7：按入参顺序的 canonical channel / directed / record；模块用它开 DSH 回合
+        items: r.items ?? [],
+      }
     },
 
     /**
