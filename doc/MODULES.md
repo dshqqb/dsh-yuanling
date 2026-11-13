@@ -47,7 +47,8 @@ README.md                可选
 {
   "id": "echo",
   "version": "0.1.0",
-  "api": "1.0",
+  "api": "1.8",
+  "app": "echo",
   "kind": "gateway",
   "entry": { "command": ["node", "index.mjs"] },
   "capabilities": ["ingest.message"]
@@ -61,7 +62,8 @@ README.md                可选
 | `id` | ✅ | 小写字母开头，`[a-z0-9-]`，2~32 字符。**它会成为 raw 的来源名**（`raw/<月>/<日>/<id>.ndjson`），所以 `system` / `raw` / `media` / `rules` 这些是保留字，撞了会被拒装 |
 | `name` | ⬜ | **给人看的显示名，由你自己定**。管理台左侧菜单就显示它（超过 16 字会被截断加省略号，完整名在鼠标悬停提示里）。不写就回退到 `id`，并去掉 `dsh-yuanling-` / `yuanling-` 前缀（`dsh-yuanling-qq` → `qq`）。**核心不会从仓库名或 id 反推**——包名不等于你希望用户看到的名字 |
 | `version` | ✅ | 完整 semver（`1.2.3`）。更新时用来判断新旧 |
-| `api` | ✅ | 协议版本。核心实现 **1.1**（也接受 1.0）；**主版本必须相同**，次版本不能高于核心。声明 `sources` 就必须 ≥ `1.1` |
+| `api` | ✅ | 协议版本。核心实现 **1.8**（也接受更低的次版本）；**主版本必须相同**，次版本不能高于核心。声明 `sources` 就必须 ≥ `1.1`，声明 `app` 建议 ≥ `1.8` |
+| `app` | ⬜ | v1.8：**对接的 App 标识**，只允许小写字母/数字，`^[a-z0-9]{2,24}$`。例如 QQ 网关写 `qq`、米聊网关写 `milan`。多个模块可以写同一个 `app`（NapCat/SnowLuma 都接 QQ）；账户卡的 `platform` 用这个值。不声明也能工作，但核心不会把模块 id 当成 App |
 | `kind` | ⬜ | `gateway`（收消息，v1 唯一实现）/ `actuator`（由核心触发生成内容，v1 接口留、调用回 `E_UNSUPPORTED`）/ `enricher`（加工管道，语义未定） |
 | `entry.command` | ✅ | 非空数组，`[0]` 是命令名，**不能含路径分隔符**。`"node"` 会被核心换成本机的 node 可执行文件；用别的命令就写裸名字 |
 | `capabilities` | ⬜ | 封闭词表，见下节 |

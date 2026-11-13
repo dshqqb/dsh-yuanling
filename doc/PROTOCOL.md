@@ -1,6 +1,8 @@
-# PROTOCOL · 原灵模块协议（v1.7）
+# PROTOCOL · 原灵模块协议（v1.8）
 
-> 状态：**v1.7 已实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> 状态：**v1.8 已定稿（文档先行，核心实现待 A30）**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> v1.8：⑪ manifest 增 `app`——模块声明自己对接的 App 标识（只允许小写字母/数字），
+> 安装时由核心记进模块注册表；见 §3.6 / §16。**不搞官方注册表，先只是模块自报的稳定标识。**
 > v1.7：⑩ `ingest` 回执按条带 `items[]`（canonical channel / directed / deduped / record）——模块靠它开 DSH 回合、做 `egress`；见 §5.1.5。
 > v1.6：⑨ `egress.request`——模块要发消息必须**先问过核心**（`rules/action` + 名单 + 配额），通过才投递；见 §5.1.4。
 > v1.5：⑧ `outbox` 能力 + `outbox.fetch` / `outbox.ack`——把她主动想说的话交给模块，并听它回报结果（见 §5.1.3）。
@@ -68,7 +70,7 @@
   → 检查 routes 与已装模块无重叠
   → 先写 <id>.installing-<rand>/，再把旧目录改名备份、整体替换
   → 写 VERSION（version/api/sha256/source/repo/ref/at）
-  → 写 system/modules.json（granted 为空）
+  → 写 system/modules.json（granted 为空；v1.8 起记下 manifest.app）
   → 把 manifest 声明的全部能力列一次，问一次"是否全部授予"
 ```
 
@@ -146,8 +148,9 @@
 {
   "id": "qq",                              // 必填，^[a-z][a-z0-9-]{1,31}$，保留字见 §3.2
   "version": "1.2.0",                      // 必填，semver；更新比对用
-  "api": "1.0",                            // 主.次；主版本不符 → 拒装；次版本高于核心 → 拒装
+  "api": "1.8",                            // 主.次；主版本不符 → 拒装；次版本高于核心 → 拒装
   "minCore": "0.1.0",                      // 可选，模块要求的最低核心版本
+  "app": "qq",                             // v1.8 可选：对接的 App 标识，^[a-z0-9]{2,24}$（见 §3.6）
   "kind": "gateway",                       // gateway | enricher | actuator（v1 无 ui）
   "transport": "stdio",                    // v1 只实现 stdio；http 见 §14
   "entry": {
@@ -236,6 +239,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 7. `media.send/receive` 的 mime 在白名单内；
 8. `routes` 与已安装模块无重叠；`actuate.<kind>` 同 kind 与已安装模块无重叠（重叠 → 拒装并提示冲突模块）；
 9. `sources`（v1.1）：数组；每项 `id` 形如 `<模块id>.<名字>` 且不重复、`title` 非空；`params` 只允许 `type: "object"` + `properties` 里的 `string/number/boolean` + `required` 必须是已声明的键；**声明了 `sources` 就必须写 `api` ≥ `1.1`**。
+10. `app`（v1.8，可选）：字符串，`^[a-z0-9]{2,24}$`；不校验重名（多个模块可以接同一个 App）。
 
 ### 3.4 kind 的 v1 语义
 
@@ -312,6 +316,26 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 3. **模块停着也能看**：记录已经在 raw 里，不依赖进程活着。
 
 `type` 是记录类型（小写、点/下划线/连字符，如 `like` / `comment.reply`），必须精确匹配，**不支持通配**；`limit` 1~200，默认 50；扫描上限 30 天 / 32MB，超了标 `partial`。
+
+### 3.6 `app`：模块对接的 App 标识（v1.8）
+
+```jsonc
+"app": "milan"
+```
+
+- **可选字段**，只有“对接某个 App 的账号/群”的模块才需要（gateway / 部分 enricher）。
+  纯工具模块（字幕、TTS、媒体处理）不声明。
+- 格式：`^[a-z0-9]{2,24}$`——**只允许小写字母和数字**，不带 `-` `_` `.`，不放中文。
+  它是**稳定标识**，不是给人看的名字；显示名仍由 @name / `name` 字段负责。
+- 语义：这个模块看到的账号属于哪个 App。账户卡的 `platform` 用同一个值；
+  例如 QQ 网关写 `"app": "qq"`，米聊网关写 `"app": "milan"`。
+- **允许多个模块声明同一个 `app`**（NapCat 和 SnowLuma 都接 QQ）。
+  这不是冲突：App 是命名空间，模块只是通道；核心按 `app` 归账户，按模块记来源。
+- 安装/更新时校验格式；把它记进 `system/modules.json` 的 `app` 字段（§16）。
+- **升级时改 `app` 属于语义变更**：已有账户会因此分裂，所以和 `routes` / `capabilities` 一样
+  要重新走一次安装确认，不能静默通过。
+- 不声明 `app` 的模块仍可工作；它创建的账户由调用方显式给平台（管理台/API），
+  核心不猜“模块 id 就是 App”。
 
 ## §4 传输与帧
 
@@ -739,7 +763,8 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
   "version": 1,
   "modules": {
     "qq": {
-      "id": "qq", "version": "1.2.0", "api": "1.0",
+      "id": "qq", "version": "1.2.0", "api": "1.8",
+      "app": "qq",                          // v1.8：manifest.app 的快照；不声明则为 null
       "repo": "https://github.com/dshqqb/dsh-yuanling-qq",
       "installedRef": "9f2c…",              // commit SHA
       "previousRepo": null,
@@ -760,6 +785,7 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 - **注册表是 `repo` / `installedRef` / `previousRepo` / `installed_at` / `last_crash` / `enabled` 的唯一权威**——这些字段不在 manifest 里，重扫 `system/modules/` 恢复不出来；审计线索在 `changes.ndjson`。
 - `granted` 是**授权**的唯一权威（manifest 只声明"我想要什么"）。v1.1 起新装默认是空数组；更新时与旧值取交集，不自动扩权。删掉这个字段会让"声明即授权"回来——那正是 §2.1 要避免的。
 - 其余字段（id / version / api / routes / sources / capabilities / permissions）与 manifest 一致，以 manifest 为准。
+- **v1.8 `app`**：manifest 声明后记在这里；多个模块可以有同一个 `app`（NapCat + SnowLuma 都接 QQ）。
 - `state` 是**运行时快照**（advisory）：核心重启后所有 enabled 模块重新 spawn，`state` 重置；它不是持久事实，只是管理台展示"上次已知状态"。
 - 写入走原子替换（与核心其他 JSON 一致）。
 
@@ -801,3 +827,4 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
 | **v1.2（2026-11-08）** | ① 新增 §3.5 `ui`：模块能给管理台加**只读标签页**（`kv` / `list` / `text` 三种封闭形态，最多 5 个，不许占核心的「概况」「日志」）；② 新增 core→module 的 `ui.get`（§5.2.3，15s，限幅 200 行 / 16KB）；③ 明确 **`ui` 不进 §2.2 的 diff 清单**——改个标签名不该让人重新确认安装，所以校验反而卡得更紧；④ 明确"模块只能给数据、不能给标记"：拒绝任何 HTML/JS/CSS 下发（管理台握着 console.token，这条线不能松）；⑤ 管理台按 `config.schema` 渲染**真表单**并保存后自动重启模块（§3.1 补充） |
 | **v1.3（2026-11-08）** | ① `ui.tabs` 增 `kind:"config"`——模块可把一组配置单独开一页，内容由**核心**按 `config.schema` 渲染，不经 `ui.get`、模块停用时也能看；② 新增 `fields`（认领配置字段，避免同一份配置有两个编辑入口）；③ `config.schema` 支持 `array` + `items`（列表型配置，可增删改排序），数字支持 `minimum`/`maximum`（滑块量程）；④ 新增展示提示 `x-widget` / `x-step` / `x-enum-style`——只影响画什么控件，**不参与校验**；⑤ `action`（按钮）与 `file`（浏览文件）明确为**占位控件**：只画不提交，等 v1.4 的 `ui.action` 与核心侧文件选择器；⑥ `ui.tabs` 增 `kind:"records"`——模块只声明"看我自己产生的哪类记录"，**核心查 raw 渲染**（模块不读原始层，强制按模块 id 过滤） |
 | **v1.4（2026-11-09）** | ① 新增 §5.1.2 `diag.report`：模块可把**自己的专业判断**（cookie 过期、上游限流、引擎没起来）报给核心，并进「诊断」页同一张清单（`source:"module"`）；不需能力、≤20 条、整份替换、**15 分钟 TTL**（进程死了，它上次报的"正常"必须消失——假绿比不绿更糟）。② 模块的「日志 / 审计 / 诊断」三页由**核心统一提供**，不靠协议自报：日志是它的 stderr + 核心写的生命周期；审计是它造成的写入（从版本 journal 派生，带 actor/reason/可回滚）；诊断是核心事实 + 上面这条自报。③ 因此 `api ≥ 1.4` 的模块只是**可以**多给一层专业诊断，不给也照样有完整三页——协议不强迫任何人实现它。④ §4.2 澄清**失败帧必须嵌套** `error:{code,message,retry}`：此前 bili 把 `code/message` 摊在顶层，核心读不到，所有模块失败都被吞成 `E_MODULE`；核心现在照收但记警告，`UI_RESERVED` 同时补上 `audit` / `diag` 两个新基础 tab 的保留位 |
+| **v1.8（2026-11-13）** | ① manifest 增可选 `app`（`^[a-z0-9]{2,24}$`）：模块声明自己对接的 App 标识；多个模块可声明同一个 app（NapCat/SnowLuma 都接 `qq`），App 是命名空间、模块只是通道。② 安装时把 `app` 记进 `system/modules.json`；升级改 `app` 视同语义变更，要重新走安装确认。③ 不建官方注册表，先靠模块作者自报 + 格式约束把冲突概率压低；核心不因两个模块同 app 拒装。④ 账户卡的 `platform` 与 `app` 同值；未声明 app 的模块，账户平台由调用方显式给，核心不把模块 id 当 App。 |

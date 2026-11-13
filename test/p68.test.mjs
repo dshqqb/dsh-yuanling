@@ -12,7 +12,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, createPersonAuto, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, createPersonAuto, findByIdentity, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { loadAccount } from '../src/core/accounts.js'
 import { setImpression } from '../src/core/impressions.js'
 import { createGroupWithCard, readGroup, writeGroup } from '../src/core/groups.js'
 import { appendRecord } from '../src/core/raw.js'
@@ -43,18 +44,19 @@ test('autoUniqueName：撞名先加平台，再撞带号', () => {
   assert.equal(name, '(QQ 10001) 张三')
 })
 
-test('她自动建卡：撞名自动加标识（不抛错）', () => {
-  mkPerson('主人', 90000)
+test('她自动建卡：昵称重复也允许（人物没有名字，称呼由账户合并）', () => {
+  const a = mkPerson('主人', 90000)
   const auto = createPersonAuto(root, { display: '主人', platform: 'qq', nativeId: '90001' })
-  assert.equal(auto.display, '(QQ) 主人')
+  assert.notEqual(auto.uid, a.uid)
+  assert.ok(loadAccount(root, PID, findByIdentity(root, 'qq', '90001').acct).nicknames.includes('主人'))
 
-  // 再来一个同平台的"主人"：平台标识也撞了，这时要带号
   const auto2 = createPersonAuto(root, { display: '主人', platform: 'qq', nativeId: '90002' })
-  assert.equal(auto2.display, '(QQ 90002) 主人')
+  assert.notEqual(auto2.uid, auto.uid)
 })
 
-test('人建卡/改名撞名：仍然失败（人不该被系统悄悄改名）', () => {
-  assert.throws(() => createPerson(root, { display: '(QQ) 主人' }), /已经有人用了/)
+test('人建卡：同名不再失败（账户昵称允许重名）', () => {
+  const p = createPerson(root, { display: '(QQ) 主人' })
+  assert.ok(p.uid)
 })
 
 test('extractAliases：只认显式称呼，不把普通句子当昵称', () => {

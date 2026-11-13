@@ -16,11 +16,26 @@
 // 老数据不可改写（raw 只追加），所以读取侧要认得老形状：`private:10001`、
 // `group:123555`。认不出的标 unresolved，**不猜**。
 import path from 'node:path'
-import { loadIdentities, saveIdentities, findByIdentity, newUid, PLATFORMS } from './entities.js'
-import { writeJsonAtomic, readJson, localIso } from './fsx.js'
+import {
+  accountForNative,
+  accountsForPerson,
+  ensureAccount,
+  ensurePersonForAccount,
+  labelOfPerson,
+  loadAccount,
+  loadPersons,
+  savePersons,
+  personForAccount,
+  personWeight,
+} from './accounts.js'
+import { isAccountUid, isPersonUid } from './accounts.js'
+import { writeJsonAtomic, readJson, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
 import { personaFile, requirePid } from './scope.js'
+import { readRegistry } from './modules/registry.js'
+
+import { PLATFORMS } from './accounts.js'
 
 /** 频道种类 → 平台（`group`/`private` 默认 qq：历史上只有 QQ 用过这两个）。 */
 function platformOfKind(kind) {
@@ -47,6 +62,14 @@ export function parseChannel(channel) {
   return { kind: s.slice(0, i), id: s.slice(i + 1) }
 }
 
+/** v1.8：模块 manifest 上报的 app；没有就 null。 */
+export function appForModule(root, moduleId) {
+  const id = String(moduleId ?? '').trim()
+  if (!id) return null
+  const hit = readRegistry(root).modules?.[id]
+  return hit?.app ? String(hit.app) : null
+}
+
 /**
  * 内部场景 → 平台侧的投递地址（QQ 号 / 群号）。
  *
@@ -60,13 +83,15 @@ export function parseChannel(channel) {
 export function nativeTargetFor(root, channel) {
   const scene = resolveChannel(root, channel)
 
+  if (scene.kind === 'private' && scene.acct) {
+    const card = loadAccount(root, requirePid(root), scene.acct)
+    return card ? { platform: String(card.platform), id: String(card.nativeId) } : null
+  }
   if (scene.kind === 'private' && scene.personUid) {
-    const person = loadIdentities(root).people?.[scene.personUid]
-    const ids = Array.isArray(person?.identities) ? person.identities : []
-    // 有多平台账号时优先 QQ（历史与现在的群/私聊都只有 QQ 用过这两个场景种类）；
-    // 没有就取第一个，并如实把平台带回给调用方，让它自己判断能不能投。
-    const pick = ids.find((i) => String(i.platform) === 'qq') ?? ids[0]
-    return pick ? { platform: String(pick.platform), id: String(pick.id) } : null
+    // 兼容旧场景：拿主账户
+    const rec = loadPersons(root).persons?.[scene.personUid]
+    const card = rec?.primary ? loadAccount(root, requirePid(root), rec.primary) : null
+    return card ? { platform: String(card.platform), id: String(card.nativeId) } : null
   }
 
   if (scene.gid) {
@@ -79,74 +104,98 @@ export function nativeTargetFor(root, channel) {
   return null
 }
 
-export function isPersonUid(id) {
-  return /^person_/.test(String(id ?? ''))
-}
-
 /**
- * 任意平台上按账号 id 找人（**唯一命中才算**）。
- *
- * 只在"给人物找它可能在老记录里的写法"时用（`sceneRecordKeys`），
- * **不用于解析场景**——场景编号不是外部号，那一步反查会把 `private:10001`
- * 误解成"QQ 号 10001 的人"（用户明确否掉的语义）。
- */
-function findAnyIdentity(root, id) {
-  const data = loadIdentities(root)
-  const i = String(id)
-  const hits = []
-  for (const [uid, person] of Object.entries(data.people ?? {})) {
-    for (const identity of person.identities ?? []) {
-      if (String(identity.id) === i) hits.push({ uid, identity })
-    }
-  }
-  return hits.length === 1 ? hits[0] : null
-}
-
-/**
- * 把一个场景解析成**结构化语义**。
- *
- * **场景编号一定是内部编号**：`private:<人物编号>` / `group:<群体编号>`。
- * 这里**绝不做"按账号反查人物"**——那等于把 `private:10001` 理解成"QQ 号是 10001 的人"，
- * 而 10001 应该只是"第 10001 号人物卡"，他挂哪个 QQ 号是卡里的事，和场景无关。
- *
- * 老记录里的 `private:10001` / `group:123555` 是**旧格式**（外部号直接当编号用），
- * 现在一律 `resolved:false`。它们仍然能被读到、被统计——走的是
- * `sceneRecordKeys()`（已知人物/群体 → 列出它可能在老记录里的写法），方向是反的。
+ * 场景编号是内部编号：`private:<acct_xxx>`（新）/ `private:<person_xxx>`（旧）。
+ * 旧的 `private:<外部号>` 只有在能**唯一**反查到账户时才认；认不出就 unresolved，不猜。
  */
 export function resolveChannel(root, channel) {
   const raw = String(channel ?? '')
   const { kind, id } = parseChannel(raw)
 
   if (kind === 'private') {
-    if (isPersonUid(id)) {
-      return { raw, kind, id, canonical: raw, personUid: id, gid: null, nativeId: null, resolved: true, legacy: false }
+    if (isAccountUid(id)) {
+      const card = loadAccount(root, requirePid(root), id)
+      if (!card) {
+        return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: false, legacy: false, unresolvedReason: 'account-missing' }
+      }
+      const person = personForAccount(root, id)
+      return {
+        raw,
+        kind,
+        id,
+        canonical: raw,
+        acct: id,
+        personUid: person?.uid ?? null,
+        gid: null,
+        nativeId: `${card.platform}:${card.nativeId}`,
+        resolved: true,
+        legacy: false,
+      }
     }
-    // 旧格式：外部号当编号。**不反查**——反查就是"按 QQ 号找人"，语义错了。
+    if (isPersonUid(id)) {
+      const rec = loadPersons(root).persons?.[id]
+      const acct = rec?.primary ?? rec?.accounts?.[0] ?? null
+      return {
+        raw,
+        kind,
+        id,
+        canonical: raw,
+        acct,
+        personUid: rec ? id : null,
+        gid: null,
+        nativeId: acct ? null : null,
+        resolved: Boolean(rec),
+        legacy: false,
+        unresolvedReason: rec ? undefined : 'person-missing',
+      }
+    }
+    // 旧格式：外部号当编号。按 qq/微信/贴吧等逐个查账户；唯一命中才认。
+    const platforms = ['qq', 'wechat', 'tieba', 'tg', 'dsh']
+    const hits = []
+    for (const platform of platforms) {
+      const acct = accountForNative(root, platform, id)
+      if (acct) hits.push({ platform, acct })
+    }
+    if (hits.length === 1) {
+      const person = personForAccount(root, hits[0].acct)
+      return {
+        raw,
+        kind,
+        id,
+        canonical: raw,
+        acct: hits[0].acct,
+        personUid: person?.uid ?? null,
+        gid: null,
+        nativeId: `${hits[0].platform}:${id}`,
+        resolved: true,
+        legacy: true,
+      }
+    }
     return {
       raw,
       kind,
       id,
       canonical: raw,
+      acct: null,
       personUid: null,
       gid: null,
       nativeId: null,
       resolved: false,
       legacy: true,
-      unresolvedReason: 'not-internal-id',
+      unresolvedReason: hits.length ? 'ambiguous-native' : 'not-internal-id',
     }
   }
 
   if (GROUP_KINDS.has(kind)) {
-    // 新形状：`group:<grp_xxx>` —— 编号是内部的，属于任何 App 都能用
     if (/^grp_/.test(id)) {
-      return { raw, kind, id, canonical: raw, personUid: null, gid: id, nativeId: null, resolved: true, legacy: false }
+      return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: id, nativeId: null, resolved: true, legacy: false }
     }
-    // 旧格式：`group:123555` / `group:qq:123555`。同样不猜。
     return {
       raw,
       kind,
       id,
       canonical: raw,
+      acct: null,
       personUid: null,
       gid: null,
       nativeId: null,
@@ -157,7 +206,7 @@ export function resolveChannel(root, channel) {
   }
 
   // 不是人也不是地方：bili:video:BV1 / dsh:xxx / module:xxx —— 原样
-  return { raw, kind, id, canonical: raw, personUid: null, gid: null, nativeId: null, resolved: true, legacy: false }
+  return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: true, legacy: false }
 }
 
 /**
@@ -190,75 +239,77 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
   const { kind, id } = parseChannel(raw)
 
   if (kind === 'private') {
-    // 已经是内部编号（适配器自己归好人了）→ 直接用
-    if (isPersonUid(id)) {
-      return { channel: raw, native: null, personUid: id, gid: null }
+    // 已经是账户编号 → 直接用
+    if (isAccountUid(id)) {
+      const person = personForAccount(root, id)
+      return { channel: raw, native: null, acct: id, personUid: person?.uid ?? null, gid: null }
     }
-    // 她自己的话不建卡：影子卡是"她见过谁"，不该把她自己的号记成一个陌生人
-    if (!createPerson) return { channel: raw, native: raw, personUid: null, gid: null }
-    const platform = platformOfKind(kind) ?? platformFromSource(source)
-    const uid = ensureSenderPerson(root, { platform, nativeId: id, display: actorName || id })
-    return { channel: `private:${uid}`, native: raw, personUid: uid, gid: null }
+    // 旧内部人物编号 → 主账户
+    if (isPersonUid(id)) {
+      const rec = loadPersons(root).persons?.[id]
+      const acct = rec?.primary ?? rec?.accounts?.[0] ?? null
+      return { channel: acct ? `private:${acct}` : raw, native: null, acct, personUid: rec ? id : null, gid: null }
+    }
+    // 她自己的话不建卡
+    if (!createPerson) return { channel: raw, native: raw, acct: null, personUid: null, gid: null }
+    const platform = appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
+    const r = ensureSenderAccount(root, { platform, nativeId: id, nickname: actorName || id })
+    return { channel: `private:${r.acct}`, native: `private:${platform}:${id}`, acct: r.acct, personUid: r.person, gid: null }
   }
 
   if (GROUP_KINDS.has(kind)) {
-    // 已经是内部编号（`group:grp_xxx`）：直接用。
-    // 不做这一步会把内部编号当成"外部群号"，再建一张 nativeId = "grp_xxx" 的新群——
-    // 群档案一分为二，成员和提及全部对不上（踩过）。
     if (/^grp_/.test(id)) {
-      return { channel: raw, native: null, personUid: null, gid: id }
+      return { channel: raw, native: null, acct: null, personUid: null, gid: id }
     }
-    const platform = platformOfKind(kind) ?? platformFromSource(source)
+    const platform = appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
     const nativeId = id.includes(':') ? id.split(':').slice(1).join(':') : id
     const gid = ensureGroupScene(root, { platform, nativeId })
-    return { channel: `group:${gid}`, native: raw, personUid: null, gid }
+    return { channel: `group:${gid}`, native: raw, acct: null, personUid: null, gid }
   }
 
-  return { channel: raw, native: null, personUid: null, gid: null }
+  return { channel: raw, native: null, acct: null, personUid: null, gid: null }
 }
 
 /**
- * 保证某个外部账号有一个人物卡（没有就建影子卡）。返回 person uid。
- *
- * **只按 (平台, 号) 精确匹配**，绝不跨平台复用：两个 App 上的 10001 默认是两个人。
- * 想认定"这两个号是同一个人"，只能走身份主张 / 人工合并——那是需要证据的判断，
- * 不能由"号码碰巧一样"自动做掉。这条正是"频道不能用外部 id"的同一个理由。
+ * 保证某个外部账号有账户卡 + 人物卡（没有人物就建一张影子人物）。
+ * @returns {{acct:string, person:string, createdAcct:boolean, createdPerson:boolean}}
  */
-export function ensureSenderPerson(root, { platform, nativeId, display = '' }) {
+export function ensureSenderAccount(root, { platform, nativeId, nickname = '', nicknames = null } = {}) {
   if (!nativeId) throw new Error('缺少账号 id，没法归人')
-  const p = platform || 'unknown'
-  const hit = findByIdentity(root, p, nativeId)
-  if (hit) return hit.uid
-
-  const data = loadIdentities(root)
-  const uid = newUid()
-  data.people[uid] = {
-    uid,
-    display: display || nativeId,
-    aliases: [],
-    identities: [
-      { platform: p, id: String(nativeId), state: 'observed', confidence: 1, evidence: [], linked_at: localIso() },
-    ],
-    created: localIso(),
-    // 影子：见过，但还不认识。不进注入、人物页默认不显示。
-    tier: 'shadow',
+  const p = requirePid(root)
+  const r = ensureAccount(root, p, { platform: platform || 'unknown', nativeId, nickname, nicknames })
+  let person = personForAccount(root, p, r.acct)
+  let createdPerson = false
+  if (!person) {
+    const uid = ensurePersonForAccount(root, p, r.acct)
+    createdPerson = true
+    const data = loadPersons(root, p)
+    const rec = data.persons[uid]
+    const hasProfile = Boolean(readJson(path.join(root, P.personas, p, 'entities', 'people', `${uid}.json`), null))
+    if (rec && !hasProfile) rec.tier = 'shadow'
+    savePersons(root, data, p)
+    person = loadPersons(root, p).persons[uid]
   }
-  saveIdentities(root, data)
-  return uid
+  return { acct: r.acct, person: person.uid, createdAcct: r.created, createdPerson }
 }
 
-/** 影子卡转正：有人写过素描 / 认过领 / 当了管理员，就不再是"路人"。 */
+/** 旧名门面：返回人物 uid。 */
+export function ensureSenderPerson(root, opts = {}) {
+  return ensureSenderAccount(root, opts).person
+}
+
+/** 影子卡转正：有人写过素描 / 认过领 / 当了管理员，就不再是“路人”。 */
 export function promoteShadow(root, uid) {
-  const data = loadIdentities(root)
-  const person = data.people?.[uid]
+  const data = loadPersons(root)
+  const person = data.persons?.[uid]
   if (!person || person.tier !== 'shadow') return false
   delete person.tier
-  saveIdentities(root, data)
+  savePersons(root, data)
   return true
 }
 
 export function isShadow(root, uid) {
-  return loadIdentities(root).people?.[uid]?.tier === 'shadow'
+  return loadPersons(root).persons?.[uid]?.tier === 'shadow'
 }
 
 // ── 群体身份（客观，跨人格共用）────────────────────────────────────────
@@ -325,7 +376,7 @@ export function ensureGroupScene(root, { platform, nativeId, seenAt = null }) {
   }
 
   const data = loadGroupIdentities(root)
-  const gid = 'grp_' + newUid().slice('person_'.length)
+  const gid = 'grp_' + ulid()
   data.groups[gid] = {
     gid,
     platform: p,
@@ -348,12 +399,22 @@ export function ensureGroupScene(root, { platform, nativeId, seenAt = null }) {
 export function sceneRecordKeys(root, channel) {
   const c = resolveChannel(root, channel)
   const out = new Set([String(channel), c.raw, c.canonical])
-  const data = loadIdentities(root)
 
-  if (c.personUid) {
-    for (const identity of data.people?.[c.personUid]?.identities ?? []) {
-      out.add(`private:${identity.id}`)
+  if (c.acct) {
+    const card = loadAccount(root, requirePid(root), c.acct)
+    if (card) {
+      out.add(`private:${card.nativeId}`)
+      out.add(`private:${card.platform}:${card.nativeId}`)
     }
+    out.add(`private:${c.acct}`)
+    if (c.personUid) out.add(`private:${c.personUid}`)
+  }
+  if (!c.acct && c.personUid) {
+    for (const card of accountsForPerson(root, requirePid(root), c.personUid)) {
+      out.add(`private:${card.nativeId}`)
+      out.add(`private:${card.platform}:${card.nativeId}`)
+    }
+    out.add(`private:${c.personUid}`)
   }
   if (c.gid) {
     const idn = readGroupIdentity(root, c.gid)

@@ -16,7 +16,16 @@ import { resolvePointer } from './pointer.js'
 import { listDays, readDay } from './raw.js'
 import { refreshDrives, readDrives, driveName } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
-import { ensureFirstMet, loadIdentities, parseChannel, personForChannel, readProfile, currentAdmin, friendshipOf } from './entities.js'
+import {
+  ensureFirstMet,
+  findByIdentity,
+  listPeopleForUi,
+  parseChannel,
+  personForAccount,
+  personForChannel,
+  readProfile,
+  currentAdmin,
+} from './entities.js'
 import { groupsForContext, groupCardLine, readGroup, gidForChannel } from './groups.js'
 import { readPrefs } from './prefs.js'
 import { mentionedPeople } from './aliases.js'
@@ -684,17 +693,6 @@ function listPersonProfiles(root, pid) {
     .filter(Boolean)
 }
 
-/** 按 (platform, id) 找人。 */
-function findIdentityIn(data, platform, id) {
-  const p = String(platform)
-  const i = String(id)
-  for (const [uid, person] of Object.entries(data.people)) {
-    const hit = (person.identities ?? []).find((x) => x.platform === p && String(x.id) === i)
-    if (hit) return { uid, person }
-  }
-  return null
-}
-
 /**
  * 从一句话里找出被点名的账号。
  * 认两种写法：人类习惯的 `@123456`，和协议端的 `[CQ:at,qq=123456]`。
@@ -745,7 +743,6 @@ export function resolveParticipants(
   pid,
   { channel = null, participants = null, maxPeople = MAX_PEOPLE_PER_CONTEXT } = {},
 ) {
-  const data = loadIdentities(root)
   const uids = []
   const push = (uid) => {
     if (uid && !uids.includes(uid)) uids.push(uid)
@@ -756,8 +753,12 @@ export function resolveParticipants(
     if (!item) continue
     if (typeof item === 'string') {
       if (item.startsWith('person_')) push(item)
+      else if (item.startsWith('acct_')) {
+        const person = personForAccount(root, pid, item)
+        push(person?.uid)
+      }
     } else if (item.platform && item.id) {
-      push(findIdentityIn(data, item.platform, item.id)?.uid)
+      push(findByIdentity(root, item.platform, item.id, pid)?.uid)
     } else if (item.uid) {
       push(item.uid)
     }
@@ -765,41 +766,43 @@ export function resolveParticipants(
 
   if (channel) {
     const { kind } = parseChannel(channel)
-    if (kind === 'private') push(personForChannel(root, channel))
+    if (kind === 'private') push(personForChannel(root, channel, pid))
 
     if (kind === 'group') {
       const recs = recentChannelRecords(root, channel, 40)
-      // 被 @ 的人优先：一句话冲谁去，谁就该有卡
       for (const r of recs) {
-        for (const id of mentionedIds(r.text)) {
-          push(findIdentityIn(data, 'qq', id)?.uid)
-        }
+        for (const id of mentionedIds(r.text)) push(findByIdentity(root, 'qq', id, pid)?.uid)
       }
-      // 然后是发言人，按最近发言时间
       for (const r of recs) {
         if (r.role === 'bot') continue
-        push(findIdentityIn(data, 'qq', r.actor?.id)?.uid)
+        push(findByIdentity(root, 'qq', r.actor?.id, pid)?.uid)
       }
     }
   }
 
+  const rows = listPeopleForUi(root, pid, { includeShadow: true })
+  const byUid = new Map(rows.map((row) => [row.uid, row]))
   return uids
-    .map((uid) => ({ uid, person: data.people[uid], profile: readProfile(root, pid, uid) }))
-    .filter((x) => x.profile) // 她还没认识的人，不硬编
+    .map((uid) => byUid.get(uid))
+    .filter((row) => row && row.hasProfile)
     .slice(0, maxPeople)
 }
 
 /** 一张人物卡压缩成一行，硬上限 PERSON_BUDGET_BYTES。 */
-function personCardLine({ uid, person, profile }) {
-  const display = profile.display || person?.display || uid
-  const name = person?.tier === 'admin' ? `★${display}` : display
-  const acct = (person?.identities ?? [])[0]
-  const head = acct ? `${name}（${acct.platform}:${acct.id}）` : name
+function personCardLine(row) {
+  const display = row.display || row.uid
+  const name = row.admin ? `★${display}` : display
+  const accts = (row.accounts ?? []).map((a) => `${a.platform}:${a.nativeId}`).join('、')
+  const head = accts ? `${name}（${accts}）` : name
   const bits = [head]
-  const f = friendshipOf(person)
-  if (f) bits.push(f.remark ? `好友（备注「${f.remark}」）` : '好友')
-  if (profile.sketch) bits.push(String(profile.sketch))
-  if (profile.first_met) bits.push(`初识 ${String(profile.first_met).slice(0, 10)}`)
+  if (row.friend) {
+    const rem = (row.accounts ?? []).flatMap((a) => String(a.description ?? '').split('\n')).find((l) => l.startsWith('好友备注：'))
+    bits.push(rem ? `好友（${rem.replace(/^好友备注：/, '备注「') + '」'}）` : '好友')
+  }
+  const desc = (row.accounts ?? []).map((a) => String(a.description ?? '').split('\n').filter((l) => !l.startsWith('好友备注：')).join(' ')).filter(Boolean).join(' / ')
+  if (desc) bits.push(desc)
+  if (row.sketch) bits.push(String(row.sketch))
+  if (row.firstMet) bits.push(`初识 ${String(row.firstMet).slice(0, 10)}`)
 
   let s = bits.join(' · ')
   while (byteLen(s) > PERSON_BUDGET_BYTES) s = s.slice(0, -1)
@@ -1040,12 +1043,11 @@ export function contextFor(
         limit: 2,
       })
       if (uids.length) {
-        const data = loadIdentities(root)
+        const rows = new Map(listPeopleForUi(root, pid, { includeShadow: true }).map((r) => [r.uid, r]))
         for (const uid of uids) {
-          const person = data.people?.[uid]
-          const profile = readProfile(root, pid, uid)
-          if (!person || !profile) continue // 没认识的人不硬编
-          const line = personCardLine({ uid, person, profile })
+          const row = rows.get(uid)
+          if (!row || !row.hasProfile) continue // 没认识的人不硬编
+          const line = personCardLine(row)
           const trial = [...lines, ...kept, line].join('\n')
           if (byteLen(trial) > budget) break
           kept.push(line)

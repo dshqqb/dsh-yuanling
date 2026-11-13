@@ -22,10 +22,9 @@ import {
   setPinned,
   movePinned,
   pinnedPeople,
-  createPersonWithCard,
   setAdmin,
-  loadIdentities,
 } from '../src/core/entities.js'
+import { createAccountWithPerson, labelOfPerson, loadPersons } from '../src/core/accounts.js'
 import { pinWeight, effectivePersonWeight, SEED_WEIGHT } from '../src/core/weights.js'
 import {
   createGroupWithCard,
@@ -67,15 +66,12 @@ test('生效权重：重点用名次分，普通用落盘分；落盘值始终�
   assert.equal(plain.kind, 'auto')
 })
 
-test('新建人物：必须能认出账户；默认 50；账户绑定成功', () => {
-  assert.throws(() => createPersonWithCard(root, PID, { display: '甲', accountText: '他在某处' }), /没认出/)
-  assert.throws(() => createPersonWithCard(root, PID, { display: '甲', accountText: '' }), /账户信息不能为空/)
-
-  const r = createPersonWithCard(root, PID, { display: '小明', accountText: 'QQ 号是 10010', sketch: '话少' })
-  const prof = readProfile(root, PID, r.person.uid)
-  assert.equal(prof.weight, 50)
+test('新建账户：自动建人物；新账户权重 0；素描可写', () => {
+  const r = createAccountWithPerson(root, PID, { platform: 'qq', nativeId: '10010', nickname: '小明' })
+  writeProfile(root, PID, r.person, { sketch: '话少' })
+  const prof = readProfile(root, PID, r.person)
+  assert.equal(prof.weight, 0, '账户还没互动，人物权重从 0 起')
   assert.equal(prof.sketch, '话少')
-  assert.ok(r.person.identities.some((x) => x.platform === 'qq' && x.id === '10010'))
 })
 
 test('重点名单：设为重点 → 名次 0；再设一个 → 名次 1；取消后名次不留空洞', () => {
@@ -189,9 +185,10 @@ test('偏好：温柔开关按人格存、只认已知字段', () => {
 })
 
 test('注入：勾了「更温柔」才多一行 [对象]，而且叫得出管理员的名字', () => {
-  const data = loadIdentities(root)
-  const admin = Object.values(data.people)[0]
+  const data = loadPersons(root, PID)
+  const admin = Object.values(data.persons)[0]
   setAdmin(root, admin.uid)
+  const adminName = labelOfPerson(root, PID, admin.uid)
 
   writePrefs(root, PID, { gentleToAdmin: false })
   assert.ok(!personaExtraLines(root, PID).some((l) => l.startsWith('[对象]')))
@@ -201,5 +198,5 @@ test('注入：勾了「更温柔」才多一行 [对象]，而且叫得出管�
   const line = lines.find((l) => l.startsWith('[对象]'))
   assert.ok(line, '应该有 [对象] 那一行')
   assert.match(line, /温柔/)
-  assert.ok(line.includes(admin.display), '要叫得出管理员是谁')
+  assert.ok(line.includes(adminName), '要叫得出管理员是谁')
 })

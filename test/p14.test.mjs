@@ -148,7 +148,7 @@ test('create：新增人物必须能认出账户，否则拒绝', async () => {
   const d = await (await get('/api/people')).json()
   const row = d.people.find((p) => p.uid === created.uid)
   assert.equal(row.display, '李四')
-  assert.equal(row.weight, 50, '新建默认 50')
+  assert.equal(row.weight, 0, '新账户还没互动，权重从 0 起')
   assert.ok(row.identities.some((x) => x.platform === 'qq' && x.id === '88888'))
 })
 

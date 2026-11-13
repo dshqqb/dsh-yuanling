@@ -10,7 +10,13 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadIdentities, readProfile } from './entities.js'
+import {
+  accountsForPerson,
+  labelOfPerson,
+  loadPersons,
+  nicknamesOfPerson,
+  readPersonProfile,
+} from './accounts.js'
 import { P } from './paths.js'
 import { readImpression } from './impressions.js'
 import { listGroups } from './groups.js'
@@ -74,11 +80,13 @@ function listFiles(dir, ext = '.json') {
   }
 }
 
-/** 人物索引依赖的文件：身份登记 + 每个人物档案。 */
+/** 人物索引依赖的文件：账户/人物注册表 + 账户卡 + 每个人物档案。 */
 function personStamp(root, pid) {
   const base = path.join(root, P.personas, pid)
   return statSignature([
-    path.join(base, 'entities', 'identities.json'),
+    path.join(base, 'entities', 'accounts.json'),
+    path.join(base, 'entities', 'persons.json'),
+    ...listFiles(path.join(base, 'entities', 'accounts')),
     ...listFiles(path.join(base, 'entities', 'people')),
   ])
 }
@@ -127,14 +135,16 @@ export function extractAliases(text, { max = 8 } = {}) {
   return out
 }
 
-/** 一张人物卡的全部"可被怎么称呼"：唯一名 + 描述里认出的昵称。 */
+/** 一张人物卡的全部"可被怎么称呼"：账户昵称 + 描述里认出的昵称。 */
 function personAliases(root, pid, uid) {
-  const data = loadIdentities(root)
-  const person = data.people?.[uid]
+  const person = loadPersons(root, pid).persons?.[uid]
   if (!person) return { names: [], aliases: [] }
-  const profile = readProfile(root, pid, uid)
-  const names = [...new Set([person.display, profile?.display].filter(Boolean).map(String))]
+  const profile = readPersonProfile(root, pid, uid)
+  const names = nicknamesOfPerson(root, pid, uid)
   const texts = []
+  for (const card of accountsForPerson(root, pid, uid)) {
+    if (card.description) texts.push(String(card.description))
+  }
   try {
     const imp = readImpression(root, pid, 'person', uid)
     if (imp?.text) texts.push(String(imp.text))
@@ -162,7 +172,7 @@ export function personMentionIndex(root, pid) {
   const hit = mentionCache.get(key)
   if (hit && hit.stamp === stamp) return hit.index
 
-  const data = loadIdentities(root)
+  const data = loadPersons(root, pid)
   const map = new Map()
   const add = (key, uid, kind) => {
     const k = String(key ?? '').trim()
@@ -173,9 +183,9 @@ export function personMentionIndex(root, pid) {
     if (kind === 'name') hit.kind = 'name'
     map.set(k, hit)
   }
-  for (const person of Object.values(data.people ?? {})) {
+  for (const person of Object.values(data.persons ?? {})) {
     if (person.tier === 'shadow') continue
-    if (!readProfile(root, pid, person.uid)) continue
+    if (!readPersonProfile(root, pid, person.uid)) continue
     const { names, aliases } = personAliases(root, pid, person.uid)
     for (const n of names) add(n, person.uid, 'name')
     for (const a of aliases) add(a, person.uid, 'alias')

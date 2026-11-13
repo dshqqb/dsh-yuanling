@@ -256,12 +256,14 @@ test('tools/list 里有 yuanling_observe', async () => {
   const res = await call('tools/list', {})
   const names = res.result.tools.map((t) => t.name).sort()
   assert.deepEqual(names, [
+    'yuanling_account',
     'yuanling_context',
     'yuanling_drive',
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',
-    'yuanling_person_account',
+    'yuanling_person_merge',
+    'yuanling_person_split',
     'yuanling_purpose',
     'yuanling_recall',
     'yuanling_remember',

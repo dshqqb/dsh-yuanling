@@ -60,6 +60,7 @@ export function listModules(root) {
         description: manifest?.description ?? '',
         version: e.version,
         api: e.api,
+        app: e.app ?? manifest?.app ?? null,
         kind: e.kind,
         source: e.source ?? null,
         repo: e.repo ?? null,

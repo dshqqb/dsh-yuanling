@@ -1,6 +1,6 @@
 // test/p80.test.mjs —— ingest 回执 v1.7：按条给 canonical channel / directed（2026-11-12）
 //
-// 模块靠它开 DSH 回合、做 egress：外部号（private:3206104913）→ 内部场景号（private:person_…），
+// 模块靠它开 DSH 回合、做 egress：外部号（private:3206104913）→ 内部账户号（private:acct_…），
 // 以及"这句是不是冲她说的"（群聊要不要回）。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
@@ -45,8 +45,8 @@ test('私聊：回执带内部场景号 + directed=true + raw 指针', () => {
   )
   assert.equal(r.items.length, 1)
   const it = r.items[0]
-  assert.match(it.channel, /^private:person_/)
-  assert.equal(it.native, 'private:90001')
+  assert.match(it.channel, /^private:acct_/)
+  assert.equal(it.native, 'private:qq:90001')
   assert.equal(it.directed, true)
   assert.equal(it.deduped, false)
   assert.equal(it.skipped, false)
@@ -152,7 +152,7 @@ test('一条消息都没收：items 按入参顺序对齐（两条都在）', ()
     { withItems: true },
   )
   assert.equal(r.items.length, 2)
-  assert.match(r.items[0].channel, /^private:person_/)
+  assert.match(r.items[0].channel, /^private:acct_/)
   assert.match(r.items[1].channel, /^group:grp_/)
 })
 
@@ -174,6 +174,6 @@ test('模块通道：wire.onIngest 把 items 原样交回（模块靠它拿场�
   })
   assert.equal(r.accepted, 1)
   assert.equal(r.items.length, 1)
-  assert.match(r.items[0].channel, /^private:person_/)
+  assert.match(r.items[0].channel, /^private:acct_/)
   assert.equal(r.items[0].directed, true)
 })

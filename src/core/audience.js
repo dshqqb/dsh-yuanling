@@ -14,7 +14,7 @@ import fsSync from 'node:fs'
 import { readJson } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
-import { loadIdentities, readProfile } from './entities.js'
+import { labelOfPerson, loadPersons, readPersonProfile } from './accounts.js'
 import { readGroup } from './groups.js'
 
 export const AUDIENCE_KINDS = ['people', 'groups']
@@ -60,11 +60,10 @@ function assertKind(kind) {
  */
 export function isExempt(root, pid, kind, id) {
   if (kind === 'people') {
-    const data = loadIdentities(root)
-    const person = data.people?.[id]
+    const person = loadPersons(root, pid).persons?.[id]
     if (!person) return false
     if (person.tier === 'admin') return true
-    return Boolean(readProfile(root, pid, id)?.pinned)
+    return Boolean(readPersonProfile(root, pid, id)?.pinned)
   }
   if (kind === 'groups') return readGroup(root, pid, id)?.tier === 'important'
   return false
@@ -150,14 +149,13 @@ export function audienceView(root, pid, kind) {
   const one = doc[kind]
 
   if (kind === 'people') {
-    const data = loadIdentities(root)
-    const rows = Object.values(data.people ?? {})
+    const rows = Object.values(loadPersons(root, pid).persons ?? {})
       .filter((x) => x.tier !== 'shadow')
       .map((x) => ({
         id: x.uid,
-        name: readProfile(root, pid, x.uid)?.display || x.display || x.uid,
+        name: labelOfPerson(root, pid, x.uid) || x.uid,
         exempt: isExempt(root, pid, 'people', x.uid),
-        why: x.tier === 'admin' ? '管理员' : readProfile(root, pid, x.uid)?.pinned ? '重要人物' : '',
+        why: x.tier === 'admin' ? '管理员' : readPersonProfile(root, pid, x.uid)?.pinned ? '重要人物' : '',
       }))
     const byId = new Map(rows.map((r) => [r.id, r]))
     const decorate = (id) => byId.get(id) ?? { id, name: id, exempt: false, why: '' }

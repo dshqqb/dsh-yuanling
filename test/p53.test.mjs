@@ -132,7 +132,7 @@ test('gidForChannel 与 channelOfGid 互逆（群体编号是纯内部编号）'
 
 // ── 入库归人 ──────────────────────────────────────────────────────────
 
-test('入库：私聊消息的频道变成 private:person_x，并留痕原始号码', () => {
+test('入库：私聊消息的频道变成 private:acct_x，并留痕原始号码', () => {
   const before = loadIdentities(root).people
   const r = ingest(root, {
     v: 1,
@@ -144,16 +144,15 @@ test('入库：私聊消息的频道变成 private:person_x，并留痕原始号
 
   const days = listDays(root)
   const rec = readDay(root, days[days.length - 1]).at(-1)
-  assert.match(rec.channel, /^private:person_/, '频道必须是内部编号')
-  assert.equal(rec.channel_native, 'private:10003', '原始号码要留痕')
+  assert.match(rec.channel, /^private:acct_/, '频道必须是内部编号')
+  assert.equal(rec.channel_native, 'private:qq:10003', '原始号码要留痕')
   // 频道里不能再出现外部号码
   assert.ok(!rec.channel.includes('10003'))
 
-  // 私聊 = 跟她说话 → 直接建"路人卡"（2026-11-12 新口径），不再是影子
   const after = loadIdentities(root).people
   const created = Object.keys(after).find((uid) => !before[uid])
   assert.ok(created, '应该建了一张人物卡')
-  assert.equal(after[created].tier, undefined, '私聊过的人不是影子')
+  assert.notEqual(after[created].tier, 'shadow', '私聊过的人不是影子')
   assert.ok(readProfile(root, 'yuanling', created), '要有一份最小档案')
   assert.ok(after[created].identities.some((x) => x.platform === 'qq' && x.id === '10003'))
 })
@@ -294,7 +293,7 @@ test('硬要求：入库后的场景里永远没有外部号码', () => {
       if ((rec.type ?? 'message') !== 'message') continue
       const ch = String(rec.channel ?? '')
       // 私聊 → 人物编号；群聊 → 群体编号。两种都是内部编号，都不该出现号码。
-      if (ch.startsWith('private:')) assert.match(ch, /^private:person_/, `泄漏：${ch}`)
+      if (ch.startsWith('private:')) assert.match(ch, /^private:acct_/, `泄漏：${ch}`)
       if (ch.startsWith('group:')) assert.match(ch, /^group:grp_/, `泄漏：${ch}`)
     }
   }

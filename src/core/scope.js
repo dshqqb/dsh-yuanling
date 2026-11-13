@@ -27,6 +27,8 @@ export function requirePid(root, pid = null) {
 
 export const personaFile = {
   identities: (pid) => `personas/${pid}/entities/identities.json`,
+  accounts: (pid) => `personas/${pid}/entities/accounts.json`,
+  persons: (pid) => `personas/${pid}/entities/persons.json`,
   groupIdentities: (pid) => `personas/${pid}/entities/group-identities.json`,
   engage: (pid) => `personas/${pid}/state/engage.json`,
 }

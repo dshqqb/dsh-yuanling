@@ -13,6 +13,7 @@ import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel, noteGroupMember } from './groups.js'
 import { ensureSenderPerson, isShadow, canonicalChannelForIngest, platformFromSource } from './channels.js'
+import { noteAccountMessage } from './accounts.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
@@ -229,6 +230,14 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
       // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
       // 群名由适配器带上来（NapCat get_group_info）——没带就留空，以后拿到再补。
       if (!r.deduped) {
+        // 账户权重是基础数据：每条私聊都更新这个账户的统计（群聊不算）
+        if (canonical.acct && !isBot && parseChannel(channel).kind === 'private') {
+          try {
+            noteAccountMessage(root, readMarker(root)?.active, canonical.acct, { ts: item.ts ? String(item.ts) : null })
+          } catch {
+            /* 统计失败不该让消息丢掉 */
+          }
+        }
         touchGroup(root, channel, item.ts ? String(item.ts) : null, item.group_name)
         // 有人用**新称呼**叫她（@她 / 喊了个没见过的名字）：攒够了写进她自己的名称。
         // 只写"名称"，不另建昵称字段——见 selfname.js 的三道闸门。
@@ -260,7 +269,8 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
             const uid = ensureSenderPerson(root, {
               platform,
               nativeId: String(actorId),
-              display: item.actor?.name ? String(item.actor.name) : '',
+              nickname: item.actor?.name ? String(item.actor.name) : '',
+              nicknames: item.actor?.name ? [String(item.actor.name)] : null,
             })
             // 成员名单只收"认识的人"：影子卡不是认识，塞进名单只会让重名裁决拿路人当依据
             if (!isShadow(root, uid)) noteGroupMember(root, pid, gid, uid)
@@ -287,7 +297,6 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
             const hit = findByIdentity(root, platform, String(actorId))
             if (hit) {
               ensurePersonProfile(root, pid, hit.uid, {
-                display: item.actor?.name ? String(item.actor.name) : '',
                 firstMet: item.ts ? String(item.ts) : null,
               })
             }

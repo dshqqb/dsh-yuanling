@@ -9,7 +9,8 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, linkIdentity, loadIdentities } from '../src/core/entities.js'
+import { createPerson } from '../src/core/entities.js'
+import { listAccounts, loadAccount, personForAccount } from '../src/core/accounts.js'
 
 const PID = 'yuanling'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -80,16 +81,18 @@ after(() => {
   child?.kill()
 })
 
-test('tools/list：十一个工具都在（v1.1 sources/fetch，v1.2 group，v1.3 observe，v1.4 style，v1.5 drive，v1.6 remember）', async () => {
+test('tools/list：十三个工具都在（账户卡 / 合并 / 拆分）', async () => {
   const res = await call('tools/list', {})
   const names = res.result.tools.map((t) => t.name).sort()
   assert.deepEqual(names, [
+    'yuanling_account',
     'yuanling_context',
     'yuanling_drive',
     'yuanling_fetch',
     'yuanling_group',
     'yuanling_observe',
-    'yuanling_person_account',
+    'yuanling_person_merge',
+    'yuanling_person_split',
     'yuanling_purpose',
     'yuanling_recall',
     'yuanling_remember',
@@ -98,83 +101,91 @@ test('tools/list：十一个工具都在（v1.1 sources/fetch，v1.2 group，v1.
   ])
 })
 
-test('identity：给 uid 写描述 → 解析并绑定没被占用的号', async () => {
+test('account：platform + nativeId 建账户，并自动建 1:1 人物', async () => {
   const res = await call('tools/call', {
-    name: 'yuanling_person_account',
-    arguments: { uid: aliceUid, text: 'QQ 号是 12345，b站叫老张' },
+    name: 'yuanling_account',
+    arguments: { platform: 'qq', nativeId: '12345', nickname: '张三', description: '爱较真' },
   })
   const text = toolText(res)
-  assert.match(text, /已写入/)
   assert.match(text, /qq:12345/)
-  assert.match(text, /新绑定/)
+  assert.match(text, /张三/)
+  assert.match(text, /出现人物|属于人物/)
 
-  const data = loadIdentities(root)
-  const person = data.people[aliceUid]
-  assert.equal(person.account_texts[0].text, 'QQ 号是 12345，b站叫老张', '原文必须原样存下')
-  assert.ok(person.identities.some((x) => x.platform === 'qq' && String(x.id) === '12345'))
+  const acct = text.match(/acct_[0-9A-Z]+/)?.[0]
+  assert.ok(acct)
+  assert.equal(loadAccount(root, PID, acct).description, '爱较真')
 })
 
-test('identity：只给 display 时会新建人物', async () => {
+test('account：改昵称与描述', async () => {
+  const acct = listAccounts(root, PID).find((a) => a.nativeId === '12345').uid
   const res = await call('tools/call', {
-    name: 'yuanling_person_account',
-    arguments: { display: '李四', text: 'b站昵称是阿四' },
-  })
-  const text = toolText(res)
-  assert.match(text, /李四/)
-
-  const data = loadIdentities(root)
-  const hit = Object.values(data.people).find((p) => p.display === '李四')
-  assert.ok(hit, '应该新建出李四')
-  assert.ok(hit.identities.some((x) => x.platform === 'bili' && x.id === '阿四'))
-})
-
-test('identity：号已属于别人 → 只报冲突，不抢', async () => {
-  const other = createPerson(root, { display: '王五' })
-  linkIdentity(root, other.uid, { platform: 'qq', id: '99999' })
-
-  const res = await call('tools/call', {
-    name: 'yuanling_person_account',
-    arguments: { uid: aliceUid, text: 'QQ 号是 99999' },
-  })
-  const text = toolText(res)
-  assert.match(text, /冲突/)
-  assert.match(text, /没有抢/)
-
-  const data = loadIdentities(root)
-  assert.equal(data.people[other.uid].identities.find((x) => x.id === '99999').platform, 'qq')
-  assert.ok(!data.people[aliceUid].identities.some((x) => x.id === '99999'))
-})
-
-test('identity：缺 text 时报错而不是崩', async () => {
-  const res = await call('tools/call', { name: 'yuanling_person_account', arguments: { uid: aliceUid } })
-  assert.match(errText(res), /缺少 text/)
-})
-
-test('identity：uid 不存在时报错', async () => {
-  const res = await call('tools/call', {
-    name: 'yuanling_person_account',
-    arguments: { uid: 'person_nope', text: 'QQ 号是 12345' },
-  })
-  assert.match(errText(res), /人物不存在/)
-})
-
-test('identity：超长描述被拒绝（不是悄悄截断）', async () => {
-  const res = await call('tools/call', {
-    name: 'yuanling_person_account',
-    // 5 字 × 500 = 2500 字，超过 2000 上限
-    arguments: { uid: aliceUid, text: '很长的描述'.repeat(500) },
-  })
-  assert.match(errText(res), new RegExp(`≤${MAX_TEXT}`))
-})
-
-test('identity：autoLink=false 时只存原文，不绑号', async () => {
-  const res = await call('tools/call', {
-    name: 'yuanling_person_account',
-    arguments: { uid: aliceUid, text: '微博 @zhang_new', autoLink: false },
+    name: 'yuanling_account',
+    arguments: { uid: acct, nicknames: ['张三', '老张'], description: '好友备注：老张\n话少' },
   })
   toolText(res)
+  const card = loadAccount(root, PID, acct)
+  assert.deepEqual(card.nicknames, ['张三', '老张'])
+  assert.match(card.description, /好友备注：老张/)
+})
 
-  const data = loadIdentities(root)
-  assert.ok(!data.people[aliceUid].identities.some((x) => String(x.id) === 'zhang_new'))
-  assert.ok(data.people[aliceUid].account_texts.some((x) => x.text.includes('zhang_new')), '原文还是存着的')
+test('merge：两个账户合并成一个人物，必须给 sketch', async () => {
+  const qq = listAccounts(root, PID).find((a) => a.platform === 'qq').uid
+  const res0 = await call('tools/call', {
+    name: 'yuanling_account',
+    arguments: { platform: 'bili', nativeId: '阿四', nickname: '阿四' },
+  })
+  const bili = toolText(res0).match(/acct_[0-9A-Z]+/)?.[0]
+  assert.ok(bili)
+
+  const res = await call('tools/call', {
+    name: 'yuanling_person_merge',
+    arguments: { accounts: [qq, bili], sketch: '同一个人：QQ 与 B 站', reason: '本人在私聊里说的' },
+  })
+  const text = toolText(res)
+  assert.match(text, /已合并/)
+  assert.equal(personForAccount(root, PID, qq).uid, personForAccount(root, PID, bili).uid)
+})
+
+test('merge：不给 sketch 直接拒绝', async () => {
+  const accts = listAccounts(root, PID).map((a) => a.uid)
+  const res = await call('tools/call', {
+    name: 'yuanling_person_merge',
+    arguments: { accounts: accts, reason: '想合并' },
+  })
+  assert.match(errText(res), /sketch/)
+})
+
+test('account：缺 platform/nativeId 时报错而不是崩', async () => {
+  const res = await call('tools/call', { name: 'yuanling_account', arguments: {} })
+  assert.match(errText(res), /platform \+ nativeId/)
+})
+
+test('account：uid 不存在时报错', async () => {
+  const res = await call('tools/call', {
+    name: 'yuanling_account',
+    arguments: { uid: 'acct_nope', description: 'x' },
+  })
+  assert.match(errText(res), /账户不存在/)
+})
+
+test('account：描述超过 600 字节被拒绝（不是悄悄截断）', async () => {
+  const acct = listAccounts(root, PID)[0].uid
+  const res = await call('tools/call', {
+    name: 'yuanling_account',
+    arguments: { uid: acct, description: '很长的描述'.repeat(200) },
+  })
+  assert.match(errText(res), /600/)
+})
+
+test('split：拆出一个账户，两个人分别持有', async () => {
+  const accts = listAccounts(root, PID)
+  const qq = accts.find((a) => a.platform === 'qq').uid
+  const bili = accts.find((a) => a.platform === 'bili').uid
+  const person = personForAccount(root, PID, qq).uid
+  const res = await call('tools/call', {
+    name: 'yuanling_person_split',
+    arguments: { person, accounts: [bili], reason: '不是同一个人' },
+  })
+  toolText(res)
+  assert.notEqual(personForAccount(root, PID, qq).uid, personForAccount(root, PID, bili).uid)
 })

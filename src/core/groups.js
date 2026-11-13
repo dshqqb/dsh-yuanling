@@ -27,6 +27,7 @@ import { pinWeight } from './weights.js'
 import { autoUniqueName } from './names.js'
 import { personaFile, requirePid } from './scope.js'
 import { mentionedGroups } from './aliases.js'
+import { labelOfPerson, listAccounts, personForAccount } from './accounts.js'
 
 export { CHANNEL_PLATFORM, GROUP_KINDS }
 
@@ -391,35 +392,21 @@ export function collectMembers(root, pid, gid, { days = MEMBER_SCAN_DAYS, now = 
   }
 
   // 只留能对上人物卡的
-  const data = readIdentitiesSafe(root)
-  const people = data?.people ?? {}
-  const byQq = new Map()
-  for (const person of Object.values(people)) {
-    for (const ident of person.identities ?? []) {
-      if (ident.state === 'blocked') continue
-      byQq.set(`${ident.platform}:${ident.id}`, person.uid)
-    }
+  const byCue = new Map()
+  for (const card of listAccounts(root, pid)) {
+    const person = personForAccount(root, pid, card.uid)
+    if (person) byCue.set(`${card.platform}:${card.nativeId}`, person.uid)
   }
 
   const rows = []
   for (const [cue, n] of counts) {
-    const uid = byQq.get(cue)
+    const uid = byCue.get(cue)
     if (uid) rows.push({ uid, n })
   }
   rows.sort((a, b) => b.n - a.n)
 
   const members = [...new Set(rows.map((r) => r.uid))].slice(0, MAX_MEMBERS)
   return { members, memberCount: rows.length, scannedDays, partial: scannedDays < days }
-}
-
-function readIdentitiesSafe(root) {
-  const p = path.join(root, personaFile.identities(requirePid(root)))
-  if (!exists(p)) return null
-  try {
-    return readJson(p, null)
-  } catch {
-    return null
-  }
 }
 
 function scannerDay(root, day, keys, counts) {
@@ -835,29 +822,14 @@ export function groupCardLine(root, pid, g, { budgetBytes = 240, maxNames = 4 } 
   return s.trim() ? `[群体] ${s}` : null
 }
 
-/** 成员 uid → 显示名（认不出的跳过，绝不拿 uid 当名字给人看）。 */
+/** 成员 uid → 显示名（账户昵称合并；认不出的跳过，绝不拿 uid 当名字给人看）。 */
 function mentionableNames(root, pid, uids) {
-  const data = readIdentitiesSafe(root)
-  const people = data?.people ?? {}
   const out = []
   for (const uid of uids) {
-    const person = people[uid]
-    if (!person) continue
-    const prof = readProfileSafe(root, pid, uid)
-    const name = String(prof?.display || person.display || '').trim()
-    if (name) out.push(name)
+    const name = String(labelOfPerson(root, pid, uid) ?? '').trim()
+    if (name && !name.startsWith(uid)) out.push(name)
   }
   return out
-}
-
-function readProfileSafe(root, pid, uid) {
-  const p = path.join(root, P.personas, pid, 'entities', 'people', `${String(uid).replace(/[\\/:*?"<>|]/g, '_')}.json`)
-  if (!exists(p)) return null
-  try {
-    return readJson(p, null)
-  } catch {
-    return null
-  }
 }
 
 function byteLen(s) {

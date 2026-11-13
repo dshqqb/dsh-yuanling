@@ -10,25 +10,36 @@ import { loadEffectiveRules, recentRefusals, rulePaths, ruleFieldSpec, writeGlob
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals, mayEvolve } from './proposals.js'
 import {
-  loadIdentities,
   readProfile,
   writeProfile,
   listPeopleForUi,
   setPinned,
   movePinned,
-  createPersonWithCard,
   setAdmin,
   currentAdmin,
-  setAccountTexts,
-  accountTextsOf,
+  ensurePersonProfile,
 } from './entities.js'
+import {
+  labelOfPerson,
+  listAccounts,
+  loadAccount,
+  loadPersons,
+  createAccountWithPerson,
+  setAccountNicknames,
+  setAccountDescription,
+  setAccountFriend,
+  mergeAccounts,
+  splitPerson,
+  personForAccount,
+  parseIdentityText,
+} from './accounts.js'
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
 import { writePrefs, readPrefs } from './prefs.js'
 import { policyView, writePolicy } from './policy.js'
 import { readOutbox, dropOutbox, planProactive } from './proactive.js'
 import { readAudience, audienceView, setAudienceMode, setAudienceMember, removeAudienceMember } from './audience.js'
-import { refreshWeights } from './weights.js'
+import { refreshWeights, pinWeight } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
@@ -320,6 +331,20 @@ export function handleApi(root, url) {
   // ── 模块（读）──────────────────────────────────────────────────────────
   if (pathname === '/api/modules') {
     return { status: 200, body: { ok: true, modules: listModules(root), summary: moduleSummary(root) } }
+  }
+
+  // v1.8：已装模块上报的 App 标识（新建账户的平台下拉用）。
+  // 没有单独的 app 表——modules.json 里每个模块带 app，这里只做读时反转。
+  if (pathname === '/api/apps') {
+    const map = new Map()
+    for (const m of listModules(root)) {
+      const app = String(m.app ?? '').trim()
+      if (!app) continue
+      const hit = map.get(app) ?? { app, modules: [] }
+      hit.modules.push({ id: m.id, name: m.name, enabled: m.enabled })
+      map.set(app, hit)
+    }
+    return { status: 200, body: { ok: true, apps: [...map.values()].sort((a, b) => a.app.localeCompare(b.app)) } }
   }
 
   // 投递方心跳（谁还在往这投消息）——这个路径从 P8 起就是这个语义，
@@ -617,8 +642,7 @@ export function handleApi(root, url) {
     const g = readGroupLive(root, pid, gid)
     if (!g) return { status: 404, body: { ok: false, error: '没有这个群体' } }
     const members = g.members.map((uid) => {
-      const person = loadIdentities(root).people?.[uid]
-      return { uid, display: person?.display ?? uid, identities: person?.identities ?? [] }
+      return { uid, display: labelOfPerson(root, pid, uid), accounts: listAccounts(root, pid).filter((a) => personForAccount(root, pid, a.uid)?.uid === uid).map((a) => ({ platform: a.platform, id: a.nativeId })) }
     })
     return { status: 200, body: { ok: true, group: g, members } }
   }
@@ -631,13 +655,27 @@ export function handleApi(root, url) {
     } catch {
       /* 权重算不出来不该让页面打不开 */
     }
-    const data = loadIdentities(root)
-    const all = Object.values(data.people ?? {})
+    const data = loadPersons(root, pid)
+    const all = Object.values(data.persons ?? {})
     const aud = readAudience(root, pid).people
     const people = listPeopleForUi(root, pid).map((p) => ({
       ...p,
       audience: aud.allow.includes(p.uid) ? 'allow' : aud.deny.includes(p.uid) ? 'deny' : null,
     }))
+    // 生效权重：重点人物按名次 110 起，其余用落盘互动分
+    const pinned = people.filter((p) => p.pinned).sort((a, b) => Number(a.pin_rank ?? 0) - Number(b.pin_rank ?? 0))
+    const pinRank = new Map(pinned.map((p, i) => [p.uid, i]))
+    for (const p of people) {
+      p.storedWeight = p.weight
+      if (p.pinned && pinRank.has(p.uid)) {
+        p.weight = pinWeight(pinRank.get(p.uid), pinned.length)
+        p.weightKind = 'pinned'
+        p.rank = pinRank.get(p.uid)
+      } else {
+        p.weightKind = 'auto'
+        p.rank = null
+      }
+    }
     // 影子卡（只见过、没认识过）不进列表，但要让人知道"还有这些人"——
     // 藏起来不等于不存在，否则会出现"我明明在群里见到过他，人物页却没有"。
     const shadow = all.filter((p) => p.tier === 'shadow')
@@ -654,11 +692,45 @@ export function handleApi(root, url) {
     }
   }
 
+  if (pathname === '/api/accounts') {
+    const accounts = listAccounts(root, pid).map((a) => {
+      const person = personForAccount(root, pid, a.uid)
+      return {
+        uid: a.uid,
+        platform: a.platform,
+        nativeId: String(a.nativeId),
+        nicknames: a.nicknames ?? [],
+        description: a.description ?? '',
+        friend: Boolean(a.friend),
+        weight: Number(a.weight ?? 0),
+        stats: a.stats ?? null,
+        created: a.created,
+        person: person ? { uid: person.uid, display: labelOfPerson(root, pid, person.uid) } : null,
+      }
+    })
+    return { status: 200, body: { ok: true, accounts } }
+  }
+
+  if (pathname === '/api/account') {
+    const uid = searchParams.get('uid')
+    if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
+    const a = loadAccount(root, pid, uid)
+    if (!a) return { status: 404, body: { ok: false, error: '没有这个账户' } }
+    const person = personForAccount(root, pid, uid)
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        account: { ...a, nativeId: String(a.nativeId) },
+        person: person ? { uid: person.uid, display: labelOfPerson(root, pid, person.uid) } : null,
+      },
+    }
+  }
+
   if (pathname === '/api/person') {
     const uid = searchParams.get('uid')
     if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-    const data = loadIdentities(root)
-    const person = data.people[uid]
+    const person = loadPersons(root, pid).persons?.[uid]
     if (!person) return { status: 404, body: { ok: false, error: '没有这个人物' } }
     // 生效权重/名次和列表同一口径（重点名单按名次，其余按互动分）
     const row = listPeopleForUi(root, pid).find((p) => p.uid === uid) ?? null
@@ -666,8 +738,9 @@ export function handleApi(root, url) {
       status: 200,
       body: {
         ok: true,
-        person,
-        accountTexts: accountTextsOf(person).map((x) => x.text),
+        person: { ...person, display: labelOfPerson(root, pid, uid) },
+        accounts: row?.accounts ?? [],
+        accountTexts: (row?.accounts ?? []).map((a) => a.description).filter(Boolean),
         profile: readProfile(root, pid, uid),
         weight: row,
       },
@@ -884,27 +957,57 @@ export function handleApiWrite(root, url, body) {
       return { status: 200, body: { ok: true, changed: r.changed, path: rel, hash: r.hash } }
     }
 
-    if (pathname === '/api/person/accounts') {
+    if (pathname === '/api/account/create') {
+      const platform = String(b.platform ?? '').trim()
+      const nativeId = String(b.nativeId ?? b.id ?? '').trim()
+      const nickname = String(b.nickname ?? b.display ?? '').trim()
+      if (!platform || !nativeId || !nickname) {
+        return { status: 400, body: { ok: false, error: '需要 platform / nativeId / nickname' } }
+      }
+      const r = createAccountWithPerson(root, pid, {
+        platform,
+        nativeId,
+        nicknames: String(nickname).split(/\s+/).filter(Boolean),
+        description: String(b.description ?? ''),
+        friend: Boolean(b.friend),
+      })
+      if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有账户卡了', acct: r.acct, person: r.person } }
+      return { status: 200, body: { ok: true, acct: r.acct, person: r.person } }
+    }
+
+    if (pathname === '/api/account/update') {
       const uid = String(b.uid ?? '')
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-      const texts = Array.isArray(b.texts)
-        ? b.texts
-        : typeof b.text === 'string'
-          ? String(b.text).split('\n')
-          : null
-      if (!texts) return { status: 400, body: { ok: false, error: '需要 texts（数组）或 text（多行）' } }
-      const r = setAccountTexts(root, uid, texts, { autoLink: b.autoLink !== false, replace: b.replace !== false })
-      return {
-        status: 200,
-        body: {
-          ok: true,
-          accountTexts: accountTextsOf(r.person).map((x) => x.text),
-          parsed: r.texts.flatMap((x) => x.parsed),
-          unparsed: r.unparsed,
-          linked: r.linked,
-          conflicts: r.conflicts,
-        },
+      if (b.nicknames !== undefined || b.nickname !== undefined) {
+        const names = Array.isArray(b.nicknames) ? b.nicknames : String(b.nicknames ?? b.nickname ?? '').split(/\s+/)
+        setAccountNicknames(root, pid, uid, names)
       }
+      if (typeof b.description === 'string') setAccountDescription(root, pid, uid, b.description, { actor: 'human:editor' })
+      if (b.friend !== undefined) setAccountFriend(root, pid, uid, Boolean(b.friend))
+      return { status: 200, body: { ok: true, account: { ...loadAccount(root, pid, uid), nativeId: String(loadAccount(root, pid, uid)?.nativeId ?? '') } } }
+    }
+
+    if (pathname === '/api/person/merge') {
+      const accounts = Array.isArray(b.accounts) ? b.accounts.map(String) : []
+      const r = mergeAccounts(root, pid, {
+        accounts,
+        intoPerson: b.intoPerson ? String(b.intoPerson) : '',
+        sketch: String(b.sketch ?? ''),
+        reason: String(b.reason ?? '管理台合并'),
+        actor: 'human:editor',
+        evidence: b.evidence ? { src: String(b.evidence) } : null,
+      })
+      return { status: 200, body: { ok: true, person: r.person, accounts: r.accounts, from: r.from } }
+    }
+
+    if (pathname === '/api/person/split') {
+      const r = splitPerson(root, pid, {
+        person: String(b.person ?? b.uid ?? ''),
+        accounts: Array.isArray(b.accounts) ? b.accounts.map(String) : [],
+        primary: b.primary ? String(b.primary) : '',
+        actor: 'human:editor',
+      })
+      return { status: 200, body: { ok: true, from: r.from, to: r.to, accounts: r.accounts } }
     }
 
     // 主动开口：手动算一轮（调试/演示用），以及"不要她说这句"
@@ -951,13 +1054,29 @@ export function handleApiWrite(root, url, body) {
     }
 
     if (pathname === '/api/person/create') {
-      const r = createPersonWithCard(root, pid, {
-        display: b.display,
-        accountTexts: Array.isArray(b.accountTexts) ? b.accountTexts : undefined,
-        accountText: b.accountText ?? b.identityText ?? b.identity,
-        sketch: b.sketch,
+      const nickname = String(b.nickname ?? b.display ?? '').trim()
+      let platform = String(b.platform ?? '').trim()
+      let nativeId = String(b.nativeId ?? b.id ?? '').trim()
+      if (!platform || !nativeId) {
+        const parsed = parseIdentityText(String(b.accountText ?? b.identityText ?? b.identity ?? ''))
+        const first = parsed.items[0]
+        if (!first) return { status: 400, body: { ok: false, error: '需要 platform + nativeId，或一段能认出的账户信息' } }
+        platform = first.platform
+        nativeId = first.id
+      }
+      if (!nickname) return { status: 400, body: { ok: false, error: '需要昵称' } }
+      const r = createAccountWithPerson(root, pid, {
+        platform,
+        nativeId,
+        nicknames: nickname.split(/\s+/).filter(Boolean),
+        description: String(b.description ?? ''),
       })
-      return { status: 200, body: { ok: true, uid: r.person.uid, person: r.person, linked: r.linked, conflicts: r.conflicts } }
+      if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有账户卡了' } }
+      if (typeof b.sketch === 'string' && b.sketch.trim()) {
+        ensurePersonProfile(root, pid, r.person)
+        setImpression(root, pid, 'person', r.person, { text: b.sketch, reason: '新建人物时写素描', actor: 'human:editor' })
+      }
+      return { status: 200, body: { ok: true, acct: r.acct, uid: r.person, person: r.person } }
     }
 
     // 人格级偏好（切人格就会变的那部分设置）
@@ -981,17 +1100,14 @@ export function handleApiWrite(root, url, body) {
     if (pathname === '/api/person/admin') {
       const uid = b.uid === null || b.uid === undefined || b.uid === '' ? null : String(b.uid)
       const r = setAdmin(root, uid)
-      return { status: 200, body: { ok: true, admin: currentAdmin(root), uid: r.adminUid } }
+      return { status: 200, body: { ok: true, admin: currentAdmin(root), uid: r } }
     }
 
     if (pathname === '/api/person') {
       const uid = String(b.uid ?? '')
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-      const patch = { __reason: '管理台编辑人物档案' }
-      if (typeof b.display === 'string' && b.display.trim()) patch.display = b.display.trim().slice(0, 60)
-      if (Object.keys(patch).length > 1) writeProfile(root, pid, uid, patch, { actor: 'human:editor' })
-      // 素描也走印象那一层：人手写同样受 600 字节上限约束，同样进版本历史。
-      // 不然界面上能存 2000 字、注入时被截到 600——那就成了"存下来的和看到的不是一回事"。
+      // 人物卡没有 display；昵称在账户卡上改（/api/account/update）。
+      ensurePersonProfile(root, pid, uid)
       if (typeof b.sketch === 'string') {
         setImpression(root, pid, 'person', uid, { text: b.sketch, reason: '管理台手动修改', actor: 'human:editor' })
       }

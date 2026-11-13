@@ -70,6 +70,7 @@ export function makeEntry({ manifest, source, repo, ref = null, retrievedAt = nu
     id: manifest.id,
     version: manifest.version,
     api: manifest.api,
+    app: manifest.app ?? null,
     kind: manifest.kind,
     routes: (manifest.routes ?? []).map((r) => r.path),
     sources: (manifest.sources ?? []).map((s) => s.id),

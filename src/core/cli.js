@@ -15,17 +15,17 @@ import { history, revertTo, scanExternalEdits, snapshotCurrent, stats as version
 import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, DEFAULT_SPACE, CARD_BUDGET_BYTES } from './memory.js'
 import { shield, unshield, listShields, recentRecordIds, rebuildShields } from './shield.js'
 import {
-  loadIdentities,
-  createPerson,
-  linkIdentity,
-  findByIdentity,
-  listCandidates,
-  confirmCandidate,
-  rejectCandidate,
-  mergePeople,
-  splitIdentity,
-  readProfile,
-  writeProfile,
+  loadPersons,
+  labelOfPerson,
+  listAccounts,
+  accountsForPerson,
+  loadAccount,
+  ensureAccount,
+  ensurePersonForAccount,
+  setAccountNicknames,
+  setAccountDescription,
+  mergeAccounts,
+  splitPerson,
 } from './entities.js'
 import { listGroups, readGroupLive, writeGroup, setGroupTier, moveGroupPinned, createGroupWithCard, collectMembers, refreshGroupWeight, backfillGroups, ensureGroupScene, findGidByNative, migrateGroupIds } from './groups.js'
 import { setImpression, renderImpression } from './impressions.js'
@@ -34,6 +34,7 @@ import { diagnose, renderDiagnostics } from './diagnostics.js'
 import { catchUp, catchUpStatus } from './catchup.js'
 import { loadEffectiveRules, checkAction, loadGuardrails, recentRefusals } from './rules.js'
 import { claimIdentity, extractClaims, inferIdentityCandidates, applyInferredCandidates, correctIdentity } from './identity.js'
+import { migrateToAccounts } from './migrate-accounts.js'
 import { refreshWeights } from './weights.js'
 import {
   findProfiles,
@@ -44,7 +45,7 @@ import {
   defaultServerPath,
   MCP_ENTRY_ID,
 } from './mcpinstall.js'
-import { setAccountTexts, accountTextsOf } from './entities.js'
+import { readProfile, writeProfile, linkIdentity, findByIdentity, listCandidates, confirmCandidate, rejectCandidate } from './entities.js'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule } from './modules/manage.js'
 import { installFromBytes, fetchModuleBytes, uninstall } from './modules/installer.js'
 import { refreshDrives } from './drives.js'
@@ -242,7 +243,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling person list|new|show|link|merge|split|profile
   yuanling person candidates|confirm <n>|reject <n>
   yuanling person weight [refresh] | 权重只能看，不能手改
-  yuanling person account <uid> [--text "QQ：12345"] [--no-link]
+  yuanling person account <personUid|acctUid> [--nicknames "a b"] [--description "..."]
+  yuanling person merge <from> <into> --sketch "..."   /   split <uid> --account acct_xxx
   yuanling identity claim --platform bili --id 123 --src <指针> [--channel private:10001]
   yuanling identity infer [--apply]   从 raw 推断跨平台同名（只提候选）
   yuanling identity correct <uid> --platform bili --id 123
@@ -460,6 +462,24 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         out('')
         out(`${tl.counts.total} 条：事件 ${tl.counts.events} / 写入 ${tl.counts.writes} / 警 ${tl.counts.warn} / 错 ${tl.counts.error} / 拒绝 ${tl.counts.refusals}`)
       }
+      return EXIT.OK
+    }
+
+    if (cmd === 'migrate') {
+      const what = _[1] ?? 'accounts'
+      if (what !== 'accounts') {
+        err('用法：yuanling migrate accounts [--apply]')
+        return EXIT.CONFIG
+      }
+      const r = migrateToAccounts(root, { apply: Boolean(flags.apply) })
+      if (!r.ok) {
+        err(`迁移失败：${r.reason ?? '未知错误'}`)
+        return EXIT.ERROR
+      }
+      if (r.reason === 'already-migrated') out('· 已经迁移过了（entities/.accounts-v1 存在）')
+      else if (r.reason === 'no-old-identities') out('· 没有旧 identities.json，不需要迁移')
+      else if (r.reason === 'dry-run') out(`· dry-run：${r.people} 个人物、${r.accounts} 个账户（加 --apply 才写盘）`)
+      else out(`✓ 已迁移 ${r.people} 个人物 / ${r.accounts} 个账户；旧文件留在 ${r.moved}`)
       return EXIT.OK
     }
 
@@ -1247,26 +1267,28 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       const pid = flags.persona ? String(flags.persona) : marker?.active
 
       if (sub === 'list' || !sub) {
-        const data = loadIdentities(root)
-        const list = Object.values(data.people)
-        if (!list.length) out('（还没有任何人物）')
-        for (const p of list) {
-          const ids = (p.identities ?? []).map((x) => `${x.platform}:${x.id}`).join('、') || '（无账号）'
-          out(`${p.uid}  ${p.display}  [${ids}]`)
+        const persons = Object.values(loadPersons(root, pid).persons)
+        if (!persons.length) out('（还没有任何人物）')
+        for (const p of persons) {
+          const names = labelOfPerson(root, pid, p.uid)
+          const ids = accountsForPerson(root, pid, p.uid).map((a) => `${a.platform}:${a.nativeId}`).join('、') || '（无账户）'
+          out(`${p.uid}  ${names}  [${ids}]${p.tier === 'admin' ? '  ★' : p.tier === 'shadow' ? '  ·路人' : ''}`)
         }
-        if (data.pending.length) out(`\n有 ${data.pending.length} 个待确认的疑似同一人（yuanling person candidates）`)
+        const pending = listCandidates(root)
+        if (pending.length) out(`\n有 ${pending.length} 个待确认的疑似同一人（yuanling person candidates）`)
         return EXIT.OK
       }
 
       if (sub === 'new') {
-        const display = _[2] || String(flags.name ?? '')
-        if (!display) {
-          err('用法：yuanling person new <显示名> [--platform qq --id 12345]')
+        const nick = _[2] || String(flags.name ?? '')
+        if (!nick || !flags.platform || !flags.id) {
+          err('用法：yuanling person new <昵称> --platform qq --id 12345 [--description "..."]')
           return EXIT.CONFIG
         }
-        const p = createPerson(root, { display })
-        if (flags.platform && flags.id) linkIdentity(root, p.uid, { platform: flags.platform, id: flags.id })
-        out(`✓ 已建立人物 ${p.uid}（${p.display}）`)
+        const r = ensureAccount(root, pid, { platform: flags.platform, nativeId: flags.id, nickname: nick })
+        const personUid = ensurePersonForAccount(root, pid, r.acct)
+        if (flags.description) setAccountDescription(root, pid, r.acct, String(flags.description))
+        out(`✓ 已建立账户 ${r.acct}（${flags.platform}:${flags.id}）→ 人物 ${personUid}`)
         return EXIT.OK
       }
 
@@ -1287,21 +1309,23 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
           err('用法：yuanling person show <uid> [--persona <id>]')
           return EXIT.CONFIG
         }
-        const data = loadIdentities(root)
-        const p = data.people[uid]
+        const p = loadPersons(root, pid).persons?.[uid]
         if (!p) {
           err(`没有这个人物：${uid}`)
           return EXIT.CONFIG
         }
-        out(`${p.uid}  ${p.display}`)
-        for (const i of p.identities ?? []) out(`  ${i.platform}:${i.id}  ${i.state}  置信 ${i.confidence}`)
+        out(`${p.uid}  ${labelOfPerson(root, pid, uid)}${p.tier === 'admin' ? '  ★管理员' : ''}`)
+        for (const a of accountsForPerson(root, pid, uid)) {
+          out(`  ${a.uid}  ${a.platform}:${a.nativeId}  昵称：${(a.nicknames ?? []).join(' ')}  权重 ${a.weight ?? 0}${a.friend ? '  〔好友〕' : ''}`)
+          if (a.description) out(`      ${a.description.replace(/\n/g, '\n      ')}`)
+        }
         if (pid) {
           const prof = readProfile(root, pid, uid)
           if (prof) {
-            out(`  档案（${pid}）：${prof.sketch || '（无素描）'}`)
+            out(`  人物素描：${prof.sketch || '（无）'}`)
             if (prof.first_met) out(`  第一次：${String(prof.first_met).slice(0, 19)}`)
           } else {
-            out(`  档案（${pid}）：还没有——说明这个角色还没跟 TA 打过交道`)
+            out(`  人物素描：还没有`)
           }
         }
         return EXIT.OK
@@ -1314,7 +1338,6 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
           return EXIT.CONFIG
         }
         const patch = { __reason: '手动编辑人物档案' }
-        if (flags.display) patch.display = String(flags.display)
         if (flags['first-meet']) patch.first_met = localIso()
         if (Object.keys(patch).length > 1) writeProfile(root, pid, uid, patch, { actor: 'human:editor' })
         // 素描走印象层：600 字节上限、进版本历史、记下为什么改（和模型写的是同一份历史）
@@ -1335,56 +1358,75 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       if (sub === 'merge') {
         const from = _[2]
         const into = _[3]
-        if (!from || !into) {
-          err('用法：yuanling person merge <fromUid> <intoUid>')
+        const sketch = String(flags.sketch ?? '').trim()
+        if (!from || !into || !sketch) {
+          err('用法：yuanling person merge <fromPerson> <intoPerson> --sketch "合并后的一句话" [--reason "..."]')
           return EXIT.CONFIG
         }
-        const r = mergePeople(root, from, into)
-        out(`✓ 已把 ${r.absorbed} 并进 ${r.uid}（原记录里保留了 merges，可追溯）`)
+        const fromRec = loadPersons(root, pid).persons?.[from]
+        const intoRec = loadPersons(root, pid).persons?.[into]
+        if (!fromRec || !intoRec) {
+          err('人物不存在')
+          return EXIT.CONFIG
+        }
+        const r = mergeAccounts(root, pid, {
+          accounts: [...(intoRec.accounts ?? []), ...(fromRec.accounts ?? [])],
+          intoPerson: into,
+          sketch,
+          reason: String(flags.reason ?? '合并人物'),
+          actor: 'human:editor',
+        })
+        out(`✓ 已把 ${from} 的账户并进 ${r.person}（账户权重未变，人物权重已重算）`)
         return EXIT.OK
       }
 
       if (sub === 'split') {
         const uid = _[2]
-        if (!uid || !flags.platform || !flags.id) {
-          err('用法：yuanling person split <uid> --platform qq --id 12345')
+        const acct = flags.account ? String(flags.account) : ''
+        if (!uid || (!acct && !(flags.platform && flags.id))) {
+          err('用法：yuanling person split <uid> --account acct_xxx  或  --platform qq --id 12345')
           return EXIT.CONFIG
         }
-        const r = splitIdentity(root, uid, flags.platform, flags.id)
-        out(`✓ 已把 ${flags.platform}:${flags.id} 拆到新人物 ${r.uid}`)
+        let target = acct
+        if (!target) {
+          const hit = findByIdentity(root, flags.platform, flags.id, pid)
+          target = hit?.acct
+        }
+        if (!target) {
+          err('找不到这个账户')
+          return EXIT.CONFIG
+        }
+        const r = splitPerson(root, pid, { person: uid, accounts: [target], actor: 'human:editor' })
+        out(`✓ 已把 ${target} 拆到新人物 ${r.to}`)
         return EXIT.OK
       }
 
       if (sub === 'account') {
         const uid = _[2]
         if (!uid) {
-          err('用法：yuanling person account <uid> [--text "QQ：12345"]')
+          err('用法：yuanling person account <personUid|acctUid> [--nicknames "a b"] [--description "..."]')
           return EXIT.CONFIG
         }
-        const text = flags.text === undefined ? null : String(flags.text)
-        if (text === null) {
-          const data = loadIdentities(root)
-          const person = data.people[uid]
-          if (!person) {
-            err(`没有这个人物：${uid}`)
-            return EXIT.CONFIG
-          }
-          const rows = accountTextsOf(person)
-          if (!rows.length) out('（还没有账户信息）')
-          for (const row of rows) {
-            out(`· ${row.text}`)
-            for (const it of row.parsed ?? []) out(`    解析：${it.platform}:${it.id}`)
-            for (const s of row.unparsed ?? []) out(`    没认出：${s}`)
+        const person = loadPersons(root, pid).persons?.[uid]
+        if (person) {
+          for (const a of accountsForPerson(root, pid, uid)) {
+            out(`${a.uid}  ${a.platform}:${a.nativeId}  昵称：${(a.nicknames ?? []).join(' ')}  权重 ${a.weight ?? 0}${a.friend ? '  〔好友〕' : ''}`)
+            if (a.description) out(`  描述：${a.description.replace(/\n/g, ' / ')}`)
           }
           return EXIT.OK
         }
-        const r = setAccountTexts(root, uid, text, { autoLink: !flags['no-link'] })
-        const parsed = r.texts.flatMap((x) => x.parsed)
-        out(`✓ 已保存账户信息（解析出 ${parsed.length} 个账号）`)
-        for (const it of parsed) out(`  ${it.platform}:${it.id}`)
-        for (const it of r.linked) out(`  + 已绑定 ${it.platform}:${it.id}`)
-        for (const c of r.conflicts) out(`  ! ${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
-        for (const s of r.unparsed) out(`  没认出：${s}`)
+        const card = loadAccount(root, pid, uid)
+        if (!card) {
+          err(`没有这个账户：${uid}`)
+          return EXIT.CONFIG
+        }
+        if (flags.nicknames !== undefined) setAccountNicknames(root, pid, uid, String(flags.nicknames))
+        if (flags.description !== undefined) setAccountDescription(root, pid, uid, String(flags.description))
+        const fresh = loadAccount(root, pid, uid)
+        out(`${fresh.uid}  ${fresh.platform}:${fresh.nativeId}`)
+        out(`  昵称：${(fresh.nicknames ?? []).join(' ')}`)
+        out(`  描述：${fresh.description || '（空）'}`)
+        out(`  权重：${fresh.weight ?? 0}（${fresh.stats?.messages ?? 0} 条 / ${fresh.stats?.activeDays ?? 0} 天）`)
         return EXIT.OK
       }
 

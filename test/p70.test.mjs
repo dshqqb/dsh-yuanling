@@ -18,9 +18,9 @@ import {
   writeProfile,
   loadIdentities,
   findByIdentity,
-  personNameOwner,
   addCandidate,
 } from '../src/core/entities.js'
+import { createAccountWithPerson } from '../src/core/accounts.js'
 import { ensureGroupScene, readGroupIdentity } from '../src/core/channels.js'
 import { ensureGroup, readGroup } from '../src/core/groups.js'
 import { noteGroupMember } from '../src/core/groups.js'
@@ -34,7 +34,8 @@ before(() => {
   scaffold(root, {})
 })
 
-const idPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'identities.json')
+const idPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'accounts.json')
+const personsPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'persons.json')
 const groupIdPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'group-identities.json')
 
 test('骨架：身份登记在人格目录里，system/ 不再有', () => {
@@ -67,15 +68,13 @@ test('不同人格的账号认知互不干扰：同一个 QQ 号是两张不同�
   assert.equal(loadIdentities(root).people[pB.uid], undefined, 'A 不认识 B 建的那张卡')
 })
 
-test('名称唯一只在人格内成立（不同人格可以有同名人物）', () => {
-  const other = readMarker(root).personas.find((p) => p.id === 'other')
-  assert.ok(other)
+test('账户昵称允许同名（人物没有 display，称呼由账户昵称合并）', () => {
   switchPersona(root, 'other')
-  // other 里已经有一个「张三个人」，同人格内再建同名要失败
-  assert.throws(() => createPerson(root, { display: '张三个人' }), /已经有人用了/)
+  // 同一个昵称可以出现在多个账户上，不再有“人物名唯一”这道闸
+  const a = createAccountWithPerson(root, 'other', { platform: 'qq', nativeId: 'aaa111', nickname: '同名' })
+  const b = createAccountWithPerson(root, 'other', { platform: 'qq', nativeId: 'bbb222', nickname: '同名' })
+  assert.notEqual(a.person, b.person)
   switchPersona(root, 'yuanling')
-  // yuanling 里也有一个「张三个人」——两个人格各有一张，互不冲突
-  assert.ok(personNameOwner(root, '张三个人'))
 })
 
 test('群体：同一个 QQ 群在不同人格里是不同编号（各叫各的）', () => {

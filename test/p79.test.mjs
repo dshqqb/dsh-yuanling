@@ -1,7 +1,4 @@
-// test/p79.test.mjs —— 好友关系：适配器说"他是好友"，核心记在身份上（2026-11-12）
-//
-// 用户定：她应该知道自己聊的人是不是好友。好友关系是**平台事实**，按身份条目存
-// （同一个人的两个号可以一个是好友一个不是），不进 raw、不猜。
+// test/p79.test.mjs —— 好友关系是账户卡上的平台事实（2026-11-13）
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -10,7 +7,8 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { ingest } from '../src/core/inbox.js'
-import { findByIdentity, loadIdentities, readProfile } from '../src/core/entities.js'
+import { findByIdentity, readProfile } from '../src/core/entities.js'
+import { accountForNative, ensureAccount, ensurePersonForAccount, loadAccount, setAccountFriend } from '../src/core/accounts.js'
 import { contextFor } from '../src/core/memory.js'
 import { localIso } from '../src/core/fsx.js'
 
@@ -49,25 +47,27 @@ function send({ channel, actorId, actorName, text = '你好', friend = false, re
   })
 }
 
-test('私聊好友：身份上记 friend + remark，只写有变化的一次', () => {
+test('私聊好友：账户上记 friend + 备注写进描述', () => {
   send({ channel: 'private:70001', actorId: '70001', actorName: '小李', friend: true, remark: '老李' })
-  const uid = findByIdentity(root, 'qq', '70001').uid
-  const entry = loadIdentities(root).people[uid].identities.find((x) => x.id === '70001')
-  assert.equal(entry.friend, true)
-  assert.equal(entry.remark, '老李')
-
-  // 备注没变时不重写（身份文件不做流水账）
-  const before = JSON.stringify(loadIdentities(root).people[uid])
-  send({ channel: 'private:70001', actorId: '70001', actorName: '小李', friend: true, remark: '老李' })
-  assert.equal(JSON.stringify(loadIdentities(root).people[uid]), before)
+  const acct = accountForNative(root, PID, 'qq', '70001')
+  const card = loadAccount(root, PID, acct)
+  assert.equal(card.friend, true)
+  assert.match(card.description, /好友备注：老李/)
 })
 
-test('不是好友：不写 friend，也不写 remark', () => {
+test('备注没变时不重复追加（账户描述不做流水账）', () => {
+  const acct = accountForNative(root, PID, 'qq', '70001')
+  const before = loadAccount(root, PID, acct).description
+  send({ channel: 'private:70001', actorId: '70001', actorName: '小李', friend: true, remark: '老李' })
+  assert.equal(loadAccount(root, PID, acct).description, before)
+})
+
+test('不是好友：friend=false，描述不被写', () => {
   send({ channel: 'private:70002', actorId: '70002', actorName: '陌生人' })
-  const uid = findByIdentity(root, 'qq', '70002').uid
-  const entry = loadIdentities(root).people[uid].identities.find((x) => x.id === '70002')
-  assert.equal(entry.friend, undefined)
-  assert.equal(entry.remark, undefined)
+  const acct = accountForNative(root, PID, 'qq', '70002')
+  const card = loadAccount(root, PID, acct)
+  assert.equal(card.friend, false)
+  assert.equal(card.description, '')
 })
 
 test('注入：人物卡里有 QQ 号 + 好友 + 备注', () => {
@@ -78,22 +78,20 @@ test('注入：人物卡里有 QQ 号 + 好友 + 备注', () => {
   assert.match(ctx, /好友（备注「老李」）/)
 })
 
-test('群里说话的好友：影子卡上也记好友（关系是平台事实，不是"认识"）', () => {
+test('群里说话的好友：账户上记好友，但仍然是影子（不建档）', () => {
   send({ channel: 'group:80001', actorId: '70003', actorName: '群友', friend: true, remark: '同事' })
-  const uid = findByIdentity(root, 'qq', '70003').uid
-  const entry = loadIdentities(root).people[uid].identities.find((x) => x.id === '70003')
-  assert.equal(entry.friend, true)
-  assert.equal(entry.remark, '同事')
-  // 只是群里说话、没 @ 她：仍然是影子（不建档）
-  assert.equal(readProfile(root, PID, uid), null)
+  const acct = accountForNative(root, PID, 'qq', '70003')
+  const card = loadAccount(root, PID, acct)
+  assert.equal(card.friend, true)
+  assert.match(card.description, /好友备注：同事/)
+  assert.equal(readProfile(root, PID, findByIdentity(root, 'qq', '70003').uid), null)
 })
 
-test('好友关系按身份存：同一个人两个号可以一个是一个不是', () => {
-  // 手动给 70001 再挂一个 b 站号（不是好友）
-  const uid = findByIdentity(root, 'qq', '70001').uid
-  const data = loadIdentities(root)
-  data.people[uid].identities.push({ platform: 'bili', id: 'bili-1', state: 'observed', confidence: 1, evidence: [], linked_at: localIso() })
-  fs.writeFileSync(path.join(root, 'personas', PID, 'entities', 'identities.json'), JSON.stringify(data, null, 2))
-  const entry = loadIdentities(root).people[uid].identities.find((x) => x.platform === 'bili')
-  assert.equal(entry.friend, undefined)
+test('好友关系按账户存：两个号可以一个是一个不是', () => {
+  const first = findByIdentity(root, 'qq', '70001')
+  const r = ensureAccount(root, PID, { platform: 'bili', nativeId: 'bili-1', nickname: '小李B站' })
+  ensurePersonForAccount(root, PID, r.acct)
+  setAccountFriend(root, PID, r.acct, false)
+  assert.equal(loadAccount(root, PID, r.acct).friend, false)
+  assert.equal(loadAccount(root, PID, first.acct).friend, true)
 })

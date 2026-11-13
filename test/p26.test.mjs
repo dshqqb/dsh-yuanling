@@ -45,8 +45,8 @@ test('manifest：id 格式不对被拒', () => {
 test('manifest：api 主版本不符 → 拒；次版本高于核心 → 拒', () => {
   assert.equal(checkApi('2.0').ok, false, '主版本变了就是不兼容')
   assert.equal(checkApi('0.9').ok, false, '主版本 0 也不行')
-  assert.equal(checkApi('1.8').ok, false, '次版本高于核心实现的不行')
-  assert.equal(checkApi('1.7').ok, true, 'v1.7 是当前实现（ingest 回执带 items）')
+  assert.equal(checkApi('1.9').ok, false, '次版本高于核心实现的不行')
+  assert.equal(checkApi('1.8').ok, true, 'v1.8 是当前实现（manifest.app）')
   assert.equal(checkApi('1.6').ok, true, 'v1.6 的模块仍然兼容（egress.request）')
   assert.equal(checkApi('1.0').ok, true)
   assert.match(validateManifest({ ...GOOD, api: '2.0' }).errors[0].message, /主版本/)
@@ -200,4 +200,16 @@ test('untar：特殊成员（符号链接）被拒，不静默跳过', () => {
 test('untar：空归档不抛，返回空列表', () => {
   const { entries } = untar(Buffer.alloc(1024))
   assert.deepEqual(entries, [])
+})
+
+test('manifest：app 只允许小写字母和数字（v1.8）', () => {
+  const ok = validateManifest({ ...GOOD, app: 'milan' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.manifest.app, 'milan')
+
+  assert.equal(validateManifest({ ...GOOD, app: 'MiLan' }).ok, false, '大写不行')
+  assert.equal(validateManifest({ ...GOOD, app: 'mi-lan' }).ok, false, '连字符不行')
+  assert.equal(validateManifest({ ...GOOD, app: '米聊' }).ok, false, '中文不行')
+  assert.equal(validateManifest({ ...GOOD, app: 'a' }).ok, false, '至少 2 字符')
+  assert.equal(validateManifest({ ...GOOD, app: 'a'.repeat(25) }).ok, false, '最多 24 字符')
 })

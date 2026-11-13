@@ -18,7 +18,6 @@ import {
   loadIdentities,
   personForChannel,
   splitIdentity,
-  PLATFORMS,
 } from './entities.js'
 import { listEntries, entryRel, addFact } from './memory.js'
 import { writeTracked } from './version.js'
@@ -57,7 +56,7 @@ export function claimIdentity(
 ) {
   const p = String(platform)
   const i = String(id)
-  if (!PLATFORMS.includes(p)) throw new Error(`不认识的平台：${p}`)
+  if (!/^[a-z0-9]{2,24}$/.test(p)) throw new Error(`不认识的平台：${p}（只允许小写字母/数字）`)
   if (!i) throw new Error('缺少账号 id')
   if (!src) throw new Error('身份主张要有证据指针（谁在哪儿说的）')
 

@@ -14,7 +14,21 @@ import path from 'node:path'
 import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall, addFact } from './src/core/memory.js'
-import { loadIdentities, createPerson, setAccountTexts, renamePersonAuto } from './src/core/entities.js'
+import {
+  loadAccount,
+  labelOfPerson,
+  listAccounts,
+  loadPersons,
+  ensureAccount,
+  ensurePersonForAccount,
+  personForAccount,
+  setAccountNicknames,
+  setAccountDescription,
+  setAccountFriend,
+  mergeAccounts,
+  splitPerson,
+  renamePersonAuto,
+} from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
 import { resolveChannel } from './src/core/channels.js'
 import { readStyle, addStyleLine, removeStyleLine } from './src/core/style.js'
@@ -90,23 +104,55 @@ const TOOLS = [
     },
   },
   {
-    name: 'yuanling_person_account',
+    name: 'yuanling_account',
     description:
-      '把学到的**账户信息**写回人物档案（不是"她对这个人的印象"——印象用 yuanling_observe）。\n' +
-      '**只在对方自述、或有明确证据时调用**——别从一句玩笑里推断账号。\n' +
-      '一个人可以有多条账户信息（QQ / 微信 / 贴吧各一句）。用 texts 数组一次交多句，或用 text 交一句。\n' +
-      '默认**追加**（不改别人已写的）；要整组改写才传 replace:true。\n' +
-      '已经属于别人的账号不会被抢，只会报冲突。',
+      '看 / 写**账户卡**：一个账户 = 一个平台上的一个号（QQ / 微信 / 贴吧…）。\n' +
+      '昵称只放昵称（可以多个，空格分隔）；好友备注、对这个号的短印象放 description。\n' +
+      '给 platform + nativeId 时没有账户就新建，并自动建一张 1:1 人物卡；给 uid 时改已有账户。\n' +
+      '**只在对方自述、或有明确证据时写**。人物素描用 yuanling_observe；两个账户是同一人用 yuanling_person_merge。',
     inputSchema: {
       type: 'object',
       properties: {
-        uid: { type: 'string', description: '人物 id（person_xxx）。和 display 二选一，优先 uid。' },
-        display: { type: 'string', description: '显示名；没有对应人物时会新建一个。' },
-        text: { type: 'string', description: '一条账户信息（例："QQ 号是 12345"），≤2000 字' },
-        texts: { type: 'array', items: { type: 'string' }, description: '多条账户信息（一条一句）' },
-        replace: { type: 'boolean', description: 'true = 用这次的交替换全部账户信息；默认 false = 追加' },
-        autoLink: { type: 'boolean', description: '是否自动绑定未被占用的账号，默认 true' },
+        uid: { type: 'string', description: '账户 id（acct_xxx）；改已有账户时用' },
+        platform: { type: 'string', description: 'qq / wechat / tieba / bili …' },
+        nativeId: { type: 'string', description: '平台原生号' },
+        nicknames: { type: 'array', items: { type: 'string' }, description: '昵称（可多个）' },
+        nickname: { type: 'string', description: '单个昵称（空格分隔多个）' },
+        description: { type: 'string', description: '账户描述（好友备注也写这里），≤600 字' },
+        friend: { type: 'boolean', description: '是不是好友（平台事实）' },
       },
+    },
+  },
+  {
+    name: 'yuanling_person_merge',
+    description:
+      '把两个或多个账户合并成一个人物。**必须显式给 sketch**（合并后对这个人的一句话描述）；\n' +
+      '账户自己的权重/昵称/描述不变，只改人物归属与人物权重。适合"这两个号是同一个人"有证据时。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        accounts: { type: 'array', items: { type: 'string' }, description: '账户 id（acct_xxx）列表' },
+        intoPerson: { type: 'string', description: '并入的人物 id（可选；不给就取第一个账户现有人物）' },
+        sketch: { type: 'string', description: '合并后的人物素描（必填）' },
+        reason: { type: 'string', description: '为什么合并' },
+        evidence: { type: 'string', description: '证据：raw/…ndjson#ULID' },
+      },
+      required: ['accounts', 'sketch', 'reason'],
+    },
+  },
+  {
+    name: 'yuanling_person_split',
+    description:
+      '从一个人物里拆出若干账户，成为新人物。原素描跟主账户走；新人物保留一份带标注的副本。账户权重不变。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        person: { type: 'string', description: '要拆的人物 id' },
+        accounts: { type: 'array', items: { type: 'string' }, description: '要拆走的账户 id 列表（不能是全部）' },
+        primary: { type: 'string', description: '新人物的主账户（可选）' },
+        reason: { type: 'string', description: '为什么拆分' },
+      },
+      required: ['person', 'accounts'],
     },
   },
   {
@@ -356,7 +402,7 @@ function formatFacts(rows) {
 function formatIdentityResult(uid, display, r) {
   const parsed = r.texts.flatMap((x) => x.parsed)
   const unparsed = r.unparsed ?? []
-  const lines = [`✓ 已写入 ${display ?? uid}（${uid}）的账户信息（现共 ${r.texts.length} 条）`]
+  const lines = [`✓ 已写入 ${display ?? uid}（${uid}）的账户卡（现共 ${r.texts.length} 条）`]
   if (parsed.length) lines.push(`识别：${parsed.map((x) => `${x.platform}:${x.id}`).join('、')}`)
   if (r.linked.length) lines.push(`新绑定：${r.linked.map((x) => `${x.platform}:${x.id}`).join('、')}`)
   for (const c of r.conflicts) lines.push(`冲突：${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
@@ -401,12 +447,11 @@ function resolveGroupGid(root, args) {
 }
 
 function formatGroupDetail(root, pid, g) {
-  const people = loadIdentities(root).people ?? {}
   const lines = [`${g.name || '（未命名）'}  ${g.gid}`]
   lines.push(`权重 ${g.weight}${g.tier === 'important' ? '  〔重要群体〕' : ''}`)
   if (g.feature) lines.push(`特征：${g.feature}`)
   if (g.members.length) {
-    const names = g.members.slice(0, 10).map((uid) => people[uid]?.display ?? uid)
+    const names = g.members.slice(0, 10).map((uid) => labelOfPerson(root, pid, uid))
     lines.push(`常出现的人（${g.memberCount}）：${names.join('、')}${g.members.length > 10 ? ' …' : ''}`)
   } else {
     lines.push('常出现的人：还没归集（管理台点「重新归集成员」，或 yuanling group members）')
@@ -520,28 +565,76 @@ async function callTool(root, name, args = {}) {
     return { text: formatFacts(rows), count: rows.length }
   }
 
-  if (name === 'yuanling_person_account') {
-    const texts = (Array.isArray(args.texts) ? args.texts : args.text ? [args.text] : [])
-      .map((t) => String(t ?? '').trim())
-      .filter(Boolean)
-    if (!texts.length) throw new Error('缺少 text 或 texts（用自然语言写清楚账号）')
-    for (const t of texts) if (t.length > MAX_IDENTITY_TEXT) throw new Error(`账户信息太长（≤${MAX_IDENTITY_TEXT} 字）`)
-
-    let uid = String(args.uid ?? '').trim() || null
-    let display = null
-    if (!uid && args.display) {
-      display = String(args.display).trim()
-      const hit = Object.values(loadIdentities(root).people ?? {}).find((p) => p.display === display)
-      uid = hit ? hit.uid : createPerson(root, { display }).uid
+  if (name === 'yuanling_account') {
+    let acct = String(args.uid ?? '').trim() || null
+    if (!acct) {
+      const platform = String(args.platform ?? '').trim()
+      const nativeId = String(args.nativeId ?? '').trim()
+      if (!platform || !nativeId) throw new Error('需要 uid（已有账户），或 platform + nativeId（新建账户）')
+      const r = ensureAccount(root, pid, { platform, nativeId, nickname: String(args.nickname ?? '').trim() })
+      acct = r.acct
+      ensurePersonForAccount(root, pid, acct)
     }
-    if (!uid) throw new Error('需要 uid 或 display')
+    const card = loadAccount(root, pid, acct)
+    if (!card) throw new Error(`账户不存在：${acct}`)
+    if (args.nicknames !== undefined || args.nickname !== undefined) {
+      const names = Array.isArray(args.nicknames)
+        ? args.nicknames
+        : String(args.nicknames ?? args.nickname ?? '').split(/\s+/)
+      setAccountNicknames(root, pid, acct, names)
+    }
+    if (typeof args.description === 'string') {
+      if (Buffer.byteLength(args.description, 'utf8') > 600) throw new Error('账户描述最多 600 字节')
+      setAccountDescription(root, pid, acct, args.description, { actor: 'model:account' })
+    }
+    if (args.friend !== undefined) setAccountFriend(root, pid, acct, Boolean(args.friend))
 
-    const data = loadIdentities(root)
-    if (!data.people?.[uid]) throw new Error(`人物不存在：${uid}`)
-    display = display ?? data.people[uid].display ?? uid
+    const fresh = loadAccount(root, pid, acct)
+    const person = personForAccount(root, pid, acct)
+    const lines = [
+      `账户 ${fresh.uid}  ${fresh.platform}:${fresh.nativeId}`,
+      `昵称：${(fresh.nicknames ?? []).join(' ')}${fresh.friend ? '  〔好友〕' : ''}`,
+      `权重：${fresh.weight ?? 0}（统计 ${fresh.stats?.messages ?? 0} 条 / ${fresh.stats?.activeDays ?? 0} 天）`,
+      `描述：${fresh.description || '（空）'}`,
+      person ? `属于人物：${labelOfPerson(root, pid, person.uid)}（${person.uid}）` : '还没有人物卡',
+    ]
+    return { text: lines.join('\n'), acct: fresh.uid, person: person?.uid ?? null }
+  }
 
-    const r = setAccountTexts(root, uid, texts, { autoLink: args.autoLink !== false, replace: args.replace === true })
-    return { text: formatIdentityResult(uid, display, r), linked: r.linked.length, conflicts: r.conflicts.length }
+  if (name === 'yuanling_person_merge') {
+    const accounts = (Array.isArray(args.accounts) ? args.accounts : []).map(String).filter(Boolean)
+    if (!accounts.length) throw new Error('缺少 accounts（账户 id 列表）')
+    const sketch = String(args.sketch ?? '').trim()
+    if (!sketch) throw new Error('合并必须显式写一句 sketch（合并后对这个人的描述）')
+    const reason = String(args.reason ?? '').trim()
+    if (!reason) throw new Error('合并要带 reason：为什么认定是同一人')
+    if (sketch.length > MAX_IDENTITY_TEXT) throw new Error('sketch 太长')
+    const r = mergeAccounts(root, pid, {
+      accounts,
+      intoPerson: String(args.intoPerson ?? ''),
+      sketch,
+      reason,
+      evidence: args.evidence ?? null,
+      actor: 'model:person',
+    })
+    return {
+      text: `✓ 已合并 ${accounts.length} 个账户 → ${labelOfPerson(root, pid, r.person)}（${r.person}）\n描述：${sketch}`,
+      person: r.person,
+    }
+  }
+
+  if (name === 'yuanling_person_split') {
+    const r = splitPerson(root, pid, {
+      person: String(args.person ?? '').trim(),
+      accounts: (Array.isArray(args.accounts) ? args.accounts : []).map(String).filter(Boolean),
+      primary: String(args.primary ?? ''),
+      actor: 'model:person',
+    })
+    return {
+      text: `✓ 已拆出 ${r.accounts.length} 个账户 → ${labelOfPerson(root, pid, r.to)}（${r.to}）；原人物保留其余账户`,
+      from: r.from,
+      to: r.to,
+    }
   }
 
   if (name === 'yuanling_group') {
@@ -786,7 +879,7 @@ async function handle(req) {
         serverInfo: SERVER_INFO,
         instructions:
           '这是原灵（yuanling）的长期记忆。**每轮对话开始时先调用 yuanling_context**——不调用就等于失忆；' +
-          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_person_account 写回账户信息；' +
+          '需要具体细节时再用 yuanling_recall；对方自述账号时用 yuanling_account 写回账户卡；' +
           '对某个人或某个群有了新印象，用 yuanling_observe 整段写回去（必须带 reason，旧版能回滚）。\n' +
           '把 [惦记] 里的事真的问出来了，用 yuanling_purpose {action:"mentioned"} 回报——不回报系统会以为你没提。',
       })

@@ -90,7 +90,8 @@ test('scaffold：建出根级七项与关键文件', () => {
     P.consoleToken,
     'personas/yuanling/persona/SELF.md',
     // 身份登记已按人格：除原始层外，人格数据都在 personas/<id>/ 下
-    'personas/yuanling/entities/identities.json',
+    'personas/yuanling/entities/accounts.json',
+    'personas/yuanling/entities/persons.json',
     'personas/yuanling/entities/group-identities.json',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), `缺少 ${rel}`)

@@ -24,7 +24,7 @@ const SIDES = {
     read: (root, pid, id) => readProfile(root, pid, id),
     write: (root, pid, id, patch, opts) => writeProfile(root, pid, id, patch, opts),
     field: 'sketch',
-    missing: (id) => `还没有 ${id} 的人物档案——先建卡（yuanling_person_account），再写印象`,
+    missing: (id) => `还没有 ${id} 的人物档案——先建账户卡（yuanling_account），再写印象`,
   },
   group: {
     label: '群体',

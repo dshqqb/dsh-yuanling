@@ -13,7 +13,8 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { ingest } from '../src/core/inbox.js'
-import { findByIdentity, loadIdentities, readProfile, renamePersonAuto } from '../src/core/entities.js'
+import { findByIdentity, readProfile, renamePersonAuto } from '../src/core/entities.js'
+import { loadAccount } from '../src/core/accounts.js'
 import { isShadow } from '../src/core/channels.js'
 import { localIso } from '../src/core/fsx.js'
 
@@ -50,12 +51,10 @@ test('私聊：第一次说话就建档（影子卡转正），名字用 QQ 昵�
   assert.equal(isShadow(root, uid), false, '说话过的人不再是影子')
   const profile = readProfile(root, PID, uid)
   assert.ok(profile, '要有一份档案')
-  assert.equal(profile.display, '小李')
   assert.ok(profile.first_met, '要记初识时间')
   assert.equal(profile.sketch, '', '素描留空，等她自己写')
-  const person = loadIdentities(root).people[uid]
-  assert.equal(person.identities[0].platform, 'qq')
-  assert.equal(person.identities[0].id, '50001')
+  const card = loadAccount(root, PID, findByIdentity(root, 'qq', '50001').acct)
+  assert.equal(card.nicknames[0], '小李')
 })
 
 test('私聊：第二条不再重写档案（不制造假版本）', () => {
@@ -108,32 +107,34 @@ test('群聊：引用回复她 → 建档（要能翻回那条 bot 消息）', (
   assert.equal(isShadow(root, uid), false)
 })
 
-test('两个同名影子先后转正：第二个自动加标识，不失败', () => {
+test('两个同名影子先后转正：昵称允许相同（人物没有名字）', () => {
   send({ channel: 'group:60005', actorId: '60005', actorName: '老王', text: '在' })
   send({ channel: 'group:60006', actorId: '60006', actorName: '老王', text: '在' })
   send({ channel: 'private:60005', actorId: '60005', actorName: '老王', text: '你好' })
   send({ channel: 'private:60006', actorId: '60006', actorName: '老王', text: '你好' })
-  const a = readProfile(root, PID, uidOf('60005')).display
-  const b = readProfile(root, PID, uidOf('60006')).display
-  assert.notEqual(a, b, '两张路人卡不能同名')
-  assert.match(b, /^\(QQ/, '第二个要带平台/号标识')
+  const a = loadAccount(root, PID, findByIdentity(root, 'qq', '60005').acct)
+  const b = loadAccount(root, PID, findByIdentity(root, 'qq', '60006').acct)
+  assert.ok(a.nicknames.includes('老王'))
+  assert.ok(b.nicknames.includes('老王'))
+  assert.notEqual(findByIdentity(root, 'qq', '60005').uid, findByIdentity(root, 'qq', '60006').uid)
 })
 
-test('她能给人物改名（撞名自动加标识）', () => {
+test('她给账户加称呼（renamePersonAuto 是账户昵称门面）', () => {
   const uid = uidOf('50001')
   const r = renamePersonAuto(root, PID, uid, '小李（同事）', { reason: '她自己起的名字' })
-  assert.equal(r.display, '小李（同事）')
-  assert.equal(readProfile(root, PID, uid).display, '小李（同事）')
-  assert.equal(loadIdentities(root).people[uid].display, '小李（同事）', '名字只存一份')
+  assert.deepEqual(r.nicknames, ['小李', '小李（同事）'])
+  const card = loadAccount(root, PID, r.acct)
+  assert.ok(card.nicknames.includes('小李（同事）'))
 })
 
-test('她给影子卡改名 = 直接转正（改名就是写档案）', () => {
+test('她给影子卡改名 = 直接转正', () => {
   send({ channel: 'group:60007', actorId: '60007', actorName: '路人甲', text: '路过' })
   const uid = uidOf('60007')
   assert.equal(isShadow(root, uid), true)
   renamePersonAuto(root, PID, uid, '甲哥', { reason: '她在群里认识了他' })
   assert.equal(isShadow(root, uid), false)
-  assert.equal(readProfile(root, PID, uid).display, '甲哥')
+  const card = loadAccount(root, PID, findByIdentity(root, 'qq', '60007').acct)
+  assert.ok(card.nicknames.includes('甲哥'))
 })
 
 test('她自己的话（role=bot）不建档、不改名', () => {

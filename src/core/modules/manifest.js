@@ -4,7 +4,7 @@
 // 校验规则逐条对应 §3.3，宁可拒装，也不让一个坏的 manifest 进注册表。
 export const API_MAJOR = 1
 // v1.7：`ingest` 回执按条带 items（canonical channel / directed）——模块靠它开 DSH 回合、做 egress。
-export const API_MINOR = 7
+export const API_MINOR = 8
 
 /** §3.2 id 保留字：模块 id 会成为 raw 的来源名，撞名会污染原始层。 */
 export const RESERVED_IDS = [
@@ -322,6 +322,12 @@ export function validateManifest(raw) {
     }
   }
 
+  // app（v1.8）：模块对接的 App 标识。只允许小写字母/数字；不是给人看的名字。
+  if (raw.app !== undefined) {
+    if (!isString(raw.app)) err('app', 'BAD_FORMAT', 'app 必须是字符串')
+    else if (!/^[a-z0-9]{2,24}$/.test(raw.app)) err('app', 'BAD_FORMAT', 'app 只能由小写字母和数字组成，2~24 字符')
+  }
+
   // config.schema 只允许 JSON Schema 子集
   if (raw.config !== undefined) {
     if (raw.config?.schema === undefined) err('config.schema', 'MISSING', '声明了 config 就必须给 schema')
@@ -338,6 +344,7 @@ export function validateManifest(raw) {
       version: raw.version,
       minCore: raw.minCore ?? null,
       api: raw.api,
+      app: raw.app ?? null,
       kind: raw.kind ?? 'gateway',
       entry: { command: cmd },
       capabilities: raw.capabilities ?? [],
