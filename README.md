@@ -419,10 +419,10 @@ yuanling module uninstall qq --yes        # 卸载（删目录与配置）
 
 | 模块 | 库的网址 | 干什么 |
 |---|---|---|
-| `bili` | `https://gitee.com/dshqqb/dsh-yuanling-bili`（[GitHub 镜像](https://github.com/dshqqb/dsh-yuanling-bili)）· `app: "bili"` | 只读：搜视频、拉官方字幕；她可以主动向它要数据。管理台里会多出「规则」「点赞记录」两页 |
+| `bili` | `https://gitee.com/dshqqb/dsh-yuanling-bili`（[GitHub 镜像](https://github.com/dshqqb/dsh-yuanling-bili)）· `app: "bilibili"` | 只读：搜视频、拉官方字幕；她可以主动向它要数据。管理台里会多出「规则」「点赞记录」两页 |
 | `qq` | 本地 `dsh-yuanling-qq 0.2.2`（仓库尚未建）· `app: "qq"` | OneBot v11 网关（SnowLuma 已真机跑通，NapCat 可选）：收消息入 raw、主动开口（outbox）、**回复**（私聊每条；群里只在她被 @ / 引用回复 / 被叫名字时回，并 @ 回说话人）；随消息上报群名与"是不是好友" |
 
-**模块上报 App（v1.8）**：模块在 manifest 里写 `app`（只允许小写字母/数字，如 `qq`/`bili`/`milan`），
+**模块上报 App（v1.8）**：模块在 manifest 里写 `app`（只允许小写字母/数字，如 `qq`/`bilibili`/`milan`），
 安装时记进 `system/modules.json`。多个模块可以接同一个 App（NapCat/SnowLuma 都写 `qq`）；
 账户卡的 `platform` 用这个值，新建账户的下拉从已装模块上报的 app 读取，不在列表里可以手填。
 不再单独维护 app 表——`modules.json` 是唯一权威，读时反转即可。
