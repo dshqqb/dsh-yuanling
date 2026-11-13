@@ -8,7 +8,7 @@ import path from 'node:path'
 import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso, ulid } from '../src/core/fsx.js'
-import { createPerson, linkIdentity, writeProfile, readProfile, setPinned, loadIdentities } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile, readProfile, setPinned, loadIdentities } from './helpers.mjs'
 import {
   WEIGHT,
   interactionStats,
@@ -97,12 +97,12 @@ test('refresh：写入权重；没变化就不写版本', () => {
   assert.equal(row.changed, true)
   assert.equal(readProfile(root, PID, uid).weight, row.weight)
 
-  const rel = `personas/${PID}/entities/people/${uid}.json`
+  const rel = `personas/${PID}/entities/cards/${uid}.json`
   const before = history(root, rel).length
 
   const second = refreshWeights(root, PID)
   assert.equal(second.find((x) => x.uid === uid).changed, false, '值没变不该再写')
-  assert.equal(history(root, rel).length, before, '不该产生新版本')
+  assert.equal(history(root, rel).length, before, '权重不写版本历史')
 })
 
 test('manual 入口已经不存在：权重只能靠互动推演', async () => {
@@ -136,13 +136,13 @@ test('重点名单里落盘权重照样更新（取消重点时拿到的是最�
   assert.ok(prof.weight > 0, '重点人物的落盘权重也要跟着互动走')
 })
 
-test('refresh：没有档案的人不参与（她还没认识他）', () => {
+test('refresh：每张卡都参与（每张卡就是一个账户）', () => {
   const root = tmpRoot()
   const p = createPerson(root, { display: '没档案' })
   linkIdentity(root, p.uid, { platform: 'qq', id: '777' })
 
   const rows = refreshWeights(root, PID)
-  assert.equal(rows.length, 0)
+  assert.equal(rows.length >= 1, true)
 })
 
 test('权重不决定谁进上下文——它只管列表排序', () => {

@@ -23,7 +23,6 @@ import {
   parseChannel,
   personForAccount,
   personForChannel,
-  readProfile,
   currentAdmin,
 } from './entities.js'
 import { groupsForContext, groupCardLine, readGroup, gidForChannel } from './groups.js'
@@ -752,11 +751,7 @@ export function resolveParticipants(
   for (const item of participants ?? []) {
     if (!item) continue
     if (typeof item === 'string') {
-      if (item.startsWith('person_')) push(item)
-      else if (item.startsWith('acct_')) {
-        const person = personForAccount(root, pid, item)
-        push(person?.uid)
-      }
+      if (/^(person_|card_|acct_)/.test(item)) push(item)
     } else if (item.platform && item.id) {
       push(findByIdentity(root, item.platform, item.id, pid)?.uid)
     } else if (item.uid) {
@@ -788,24 +783,21 @@ export function resolveParticipants(
     .slice(0, maxPeople)
 }
 
-/** 一张人物卡压缩成一行，硬上限 PERSON_BUDGET_BYTES。 */
+/** 一张人物卡压缩成一行；人物描述不设上限（用户定：人物卡第一优先级）。 */
 function personCardLine(row) {
   const display = row.display || row.uid
   const name = row.admin ? `★${display}` : display
   const accts = (row.accounts ?? []).map((a) => `${a.platform}:${a.nativeId}`).join('、')
   const head = accts ? `${name}（${accts}）` : name
   const bits = [head]
-  if (row.friend) {
-    const rem = (row.accounts ?? []).flatMap((a) => String(a.description ?? '').split('\n')).find((l) => l.startsWith('好友备注：'))
-    bits.push(rem ? `好友（${rem.replace(/^好友备注：/, '备注「') + '」'}）` : '好友')
-  }
-  const desc = (row.accounts ?? []).map((a) => String(a.description ?? '').split('\n').filter((l) => !l.startsWith('好友备注：')).join(' ')).filter(Boolean).join(' / ')
+  const descLines = (row.accounts ?? []).flatMap((a) => String(a.description ?? '').split('\n')).filter(Boolean)
+  const friendRem = descLines.find((l) => l.startsWith('好友备注：'))
+  if (friendRem) bits.push(`好友（备注「${friendRem.replace(/^好友备注：/, '')}」）`)
+  const desc = descLines.filter((l) => !l.startsWith('好友备注：')).join(' / ')
   if (desc) bits.push(desc)
-  if (row.sketch) bits.push(String(row.sketch))
   if (row.firstMet) bits.push(`初识 ${String(row.firstMet).slice(0, 10)}`)
 
   let s = bits.join(' · ')
-  while (byteLen(s) > PERSON_BUDGET_BYTES) s = s.slice(0, -1)
   return `[人物] ${s}`
 }
 
@@ -991,12 +983,10 @@ export function contextFor(
 ) {
   // 人物卡按"谁在场"检索：私聊只有对方，群聊是被 @ 的人和最近发言人
   const people = resolveParticipants(root, pid, { channel, participants, maxPeople })
+  // 人物卡是第一优先级：人物卡先算，剩下的预算才给记忆；人物卡本身不因预算被截断。
   const personLines = people.map(personCardLine)
   const peopleBytes = personLines.reduce((n, s) => n + byteLen(s) + 1, 0)
-
-  // 给在场的人留预算，但最多占一半——记忆永远是主体
-  const reserve = Math.min(peopleBytes, Math.floor(budget / 2))
-  const card = buildCard(root, pid, { budget: Math.max(1024, budget - reserve), now })
+  const card = buildCard(root, pid, { budget: Math.max(1024, budget - peopleBytes), now })
 
   const lines = [card]
 
@@ -1021,13 +1011,8 @@ export function contextFor(
     }
   }
 
-  // 一条一条塞人物卡，塞不下的丢排在后面的（越靠后越只是路过）
-  const kept = []
-  for (const line of personLines) {
-    const trial = [...lines, ...kept, line].join('\n')
-    if (byteLen(trial) > budget) break
-    kept.push(line)
-  }
+  // 人物卡不截断：超出预算就让记忆卡/群体卡让位
+  const kept = [...personLines]
 
   // 提到的（但不在场）的人：3.5「涉及到该人物时」。排在场者之后，最多 2 张。
   // 昵称撞车时用"这个群里的人"裁决；裁决不了就跳过——宁可不给，也不给错人。
@@ -1048,8 +1033,6 @@ export function contextFor(
           const row = rows.get(uid)
           if (!row || !row.hasProfile) continue // 没认识的人不硬编
           const line = personCardLine(row)
-          const trial = [...lines, ...kept, line].join('\n')
-          if (byteLen(trial) > budget) break
           kept.push(line)
         }
       }

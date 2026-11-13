@@ -11,7 +11,7 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord, today } from '../src/core/raw.js'
-import { createPerson, linkIdentity } from '../src/core/entities.js'
+import { createPerson, linkIdentity } from './helpers.mjs'
 import { contextFor } from '../src/core/memory.js'
 import { legacySceneIdentity, sceneRecordKeys } from '../src/core/channels.js'
 import {

@@ -10,28 +10,24 @@ import { loadEffectiveRules, recentRefusals, rulePaths, ruleFieldSpec, writeGlob
 import { shield, unshield } from './shield.js'
 import { listProposals, approve, reject, rollback, scan as scanProposals, mayEvolve } from './proposals.js'
 import {
-  readProfile,
-  writeProfile,
   listPeopleForUi,
   setPinned,
   movePinned,
   setAdmin,
   currentAdmin,
-  ensurePersonProfile,
 } from './entities.js'
 import {
   labelOfPerson,
-  listAccounts,
-  loadAccount,
-  loadPersons,
-  createAccountWithPerson,
-  setAccountNicknames,
-  setAccountDescription,
-  setAccountFriend,
-  mergeAccounts,
-  splitPerson,
+  readCard as readEntityCard,
+  listCards,
+  setCardNicknames,
+  setCardDescription,
+  setCardPersonFields,
+  mergeCards,
+  splitCard,
   personForAccount,
-  parseIdentityText,
+  mainOf,
+  ensureCard,
 } from './accounts.js'
 import { listDays, readDay, today, listScenes } from './raw.js'
 import { resolveChannel } from './channels.js'
@@ -39,7 +35,7 @@ import { writePrefs, readPrefs } from './prefs.js'
 import { policyView, writePolicy } from './policy.js'
 import { readOutbox, dropOutbox, planProactive } from './proactive.js'
 import { readAudience, audienceView, setAudienceMode, setAudienceMember, removeAudienceMember } from './audience.js'
-import { refreshWeights, pinWeight } from './weights.js'
+import { pinWeight } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
@@ -101,29 +97,39 @@ function sceneReport(root, scene) {
   const c = resolveChannel(root, scene)
   if (c.kind === 'private') {
     if (c.personUid) {
-      const prof = readProfile(root, readMarker(root)?.active, c.personUid)
-      if (!prof) {
+      const main = mainOf(root, readMarker(root)?.active, c.personUid)
+      const card = readEntityCard(root, readMarker(root)?.active, main)
+      if (!card) {
         return {
           sceneInfo: {
             resolved: true,
             kind: 'private',
             personUid: c.personUid,
-            reason: '解析到了人物，但这个人还没有档案（她还没认识他），所以注入里没有人物卡',
+            reason: '解析到了卡，但卡文件不存在',
           },
         }
       }
-      if (!prof.sketch) {
+      if (card.tier === 'shadow') {
         return {
           sceneInfo: {
             resolved: true,
             kind: 'private',
             personUid: c.personUid,
-            // 有档案（账号、初识、好友）但还没写素描：卡会注入，只是内容少
-            reason: '会带上这个人的卡（有账号与初识，还没有写素描）',
+            reason: '这是路人卡（只在群里见过），注入里不会带人物卡',
           },
         }
       }
-      return { sceneInfo: { resolved: true, kind: 'private', personUid: c.personUid, reason: '会带上这个人的画像' } }
+      if (!card.description) {
+        return {
+          sceneInfo: {
+            resolved: true,
+            kind: 'private',
+            personUid: c.personUid,
+            reason: '会带上这张卡（有账号与初识，账户描述还是空的）',
+          },
+        }
+      }
+      return { sceneInfo: { resolved: true, kind: 'private', personUid: c.personUid, reason: '会带上这张人物卡' } }
     }
     return {
       sceneInfo: {
@@ -642,28 +648,20 @@ export function handleApi(root, url) {
     const g = readGroupLive(root, pid, gid)
     if (!g) return { status: 404, body: { ok: false, error: '没有这个群体' } }
     const members = g.members.map((uid) => {
-      return { uid, display: labelOfPerson(root, pid, uid), accounts: listAccounts(root, pid).filter((a) => personForAccount(root, pid, a.uid)?.uid === uid).map((a) => ({ platform: a.platform, id: a.nativeId })) }
+      return { uid, display: labelOfPerson(root, pid, uid), accounts: listCards(root, pid).filter((a) => personForAccount(root, pid, a.id)?.id === mainOf(root, pid, uid)).map((a) => ({ platform: a.app, id: a.account })) }
     })
     return { status: 200, body: { ok: true, group: g, members } }
   }
 
   if (pathname === '/api/people') {
-    // 顺手按互动重算落盘权重：她聊得多，下次打开这页权重就涨了。
-    // 只在值变了的时候写盘（weights.js 自己判断），所以不会刷出一堆版本。
-    try {
-      refreshWeights(root, pid)
-    } catch {
-      /* 权重算不出来不该让页面打不开 */
-    }
-    const data = loadPersons(root, pid)
-    const all = Object.values(data.persons ?? {})
+    const all = listCards(root, pid)
     const aud = readAudience(root, pid).people
     const people = listPeopleForUi(root, pid).map((p) => ({
       ...p,
       audience: aud.allow.includes(p.uid) ? 'allow' : aud.deny.includes(p.uid) ? 'deny' : null,
     }))
     // 生效权重：重点人物按名次 110 起，其余用落盘互动分
-    const pinned = people.filter((p) => p.pinned).sort((a, b) => Number(a.pin_rank ?? 0) - Number(b.pin_rank ?? 0))
+    const pinned = people.filter((p) => p.pinned).sort((a, b) => Number(a.pinRank ?? 0) - Number(b.pinRank ?? 0))
     const pinRank = new Map(pinned.map((p, i) => [p.uid, i]))
     for (const p of people) {
       p.storedWeight = p.weight
@@ -685,7 +683,7 @@ export function handleApi(root, url) {
         ok: true,
         admin: currentAdmin(root),
         people,
-        pending: data.pending ?? [],
+        pending: [],
         shadowCount: shadow.length,
         prefs: readPrefs(root, pid),
       },
@@ -693,19 +691,19 @@ export function handleApi(root, url) {
   }
 
   if (pathname === '/api/accounts') {
-    const accounts = listAccounts(root, pid).map((a) => {
-      const person = personForAccount(root, pid, a.uid)
+    const accounts = listCards(root, pid).map((a) => {
+      const person = personForAccount(root, pid, a.id)
       return {
-        uid: a.uid,
-        platform: a.platform,
-        nativeId: String(a.nativeId),
+        uid: a.id,
+        platform: a.app,
+        app: a.app,
+        nativeId: String(a.account),
         nicknames: a.nicknames ?? [],
         description: a.description ?? '',
-        friend: Boolean(a.friend),
         weight: Number(a.weight ?? 0),
         stats: a.stats ?? null,
         created: a.created,
-        person: person ? { uid: person.uid, display: labelOfPerson(root, pid, person.uid) } : null,
+        person: person ? { uid: person.id, display: labelOfPerson(root, pid, person.id) } : null,
       }
     })
     return { status: 200, body: { ok: true, accounts } }
@@ -714,15 +712,15 @@ export function handleApi(root, url) {
   if (pathname === '/api/account') {
     const uid = searchParams.get('uid')
     if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-    const a = loadAccount(root, pid, uid)
+    const a = readEntityCard(root, pid, uid)
     if (!a) return { status: 404, body: { ok: false, error: '没有这个账户' } }
     const person = personForAccount(root, pid, uid)
     return {
       status: 200,
       body: {
         ok: true,
-        account: { ...a, nativeId: String(a.nativeId) },
-        person: person ? { uid: person.uid, display: labelOfPerson(root, pid, person.uid) } : null,
+        account: { ...a, app: a.app, nativeId: String(a.account) },
+        person: person ? { uid: person.id, display: labelOfPerson(root, pid, person.id) } : null,
       },
     }
   }
@@ -730,18 +728,18 @@ export function handleApi(root, url) {
   if (pathname === '/api/person') {
     const uid = searchParams.get('uid')
     if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-    const person = loadPersons(root, pid).persons?.[uid]
+    const main = mainOf(root, pid, uid)
+    const person = readEntityCard(root, pid, main)
     if (!person) return { status: 404, body: { ok: false, error: '没有这个人物' } }
     // 生效权重/名次和列表同一口径（重点名单按名次，其余按互动分）
-    const row = listPeopleForUi(root, pid).find((p) => p.uid === uid) ?? null
+    const row = listPeopleForUi(root, pid).find((p) => p.uid === main) ?? null
     return {
       status: 200,
       body: {
         ok: true,
-        person: { ...person, display: labelOfPerson(root, pid, uid) },
+        person: { ...person, uid: main, display: labelOfPerson(root, pid, main) },
         accounts: row?.accounts ?? [],
-        accountTexts: (row?.accounts ?? []).map((a) => a.description).filter(Boolean),
-        profile: readProfile(root, pid, uid),
+        description: row?.description ?? '',
         weight: row,
       },
     }
@@ -958,21 +956,18 @@ export function handleApiWrite(root, url, body) {
     }
 
     if (pathname === '/api/account/create') {
-      const platform = String(b.platform ?? '').trim()
-      const nativeId = String(b.nativeId ?? b.id ?? '').trim()
+      const app = String(b.platform ?? b.app ?? '').trim()
+      const account = String(b.nativeId ?? b.account ?? b.id ?? '').trim()
       const nickname = String(b.nickname ?? b.display ?? '').trim()
-      if (!platform || !nativeId || !nickname) {
+      if (!app || !account || !nickname) {
         return { status: 400, body: { ok: false, error: '需要 platform / nativeId / nickname' } }
       }
-      const r = createAccountWithPerson(root, pid, {
-        platform,
-        nativeId,
-        nicknames: String(nickname).split(/\s+/).filter(Boolean),
-        description: String(b.description ?? ''),
-        friend: Boolean(b.friend),
-      })
-      if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有账户卡了', acct: r.acct, person: r.person } }
-      return { status: 200, body: { ok: true, acct: r.acct, person: r.person } }
+      const r = ensureCard(root, pid, { app, account, nicknames: nickname.split(/\s+/).filter(Boolean) })
+      if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有卡了', acct: r.cardId } }
+      if (typeof b.description === 'string' && b.description.trim()) {
+        setCardDescription(root, pid, r.cardId, b.description, { actor: 'human:editor' })
+      }
+      return { status: 200, body: { ok: true, acct: r.cardId, person: mainOf(root, pid, r.cardId) } }
     }
 
     if (pathname === '/api/account/update') {
@@ -980,34 +975,22 @@ export function handleApiWrite(root, url, body) {
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
       if (b.nicknames !== undefined || b.nickname !== undefined) {
         const names = Array.isArray(b.nicknames) ? b.nicknames : String(b.nicknames ?? b.nickname ?? '').split(/\s+/)
-        setAccountNicknames(root, pid, uid, names)
+        setCardNicknames(root, pid, uid, names)
       }
-      if (typeof b.description === 'string') setAccountDescription(root, pid, uid, b.description, { actor: 'human:editor' })
-      if (b.friend !== undefined) setAccountFriend(root, pid, uid, Boolean(b.friend))
-      return { status: 200, body: { ok: true, account: { ...loadAccount(root, pid, uid), nativeId: String(loadAccount(root, pid, uid)?.nativeId ?? '') } } }
+      if (typeof b.description === 'string') setCardDescription(root, pid, uid, b.description, { actor: 'human:editor' })
+      const card = readEntityCard(root, pid, uid)
+      return { status: 200, body: { ok: true, account: { ...card, nativeId: String(card?.account ?? '') } } }
     }
 
     if (pathname === '/api/person/merge') {
-      const accounts = Array.isArray(b.accounts) ? b.accounts.map(String) : []
-      const r = mergeAccounts(root, pid, {
-        accounts,
-        intoPerson: b.intoPerson ? String(b.intoPerson) : '',
-        sketch: String(b.sketch ?? ''),
-        reason: String(b.reason ?? '管理台合并'),
-        actor: 'human:editor',
-        evidence: b.evidence ? { src: String(b.evidence) } : null,
-      })
-      return { status: 200, body: { ok: true, person: r.person, accounts: r.accounts, from: r.from } }
+      const cards = Array.isArray(b.accounts) ? b.accounts.map(String) : []
+      const r = mergeCards(root, pid, cards)
+      return { status: 200, body: { ok: true, person: r.main, accounts: r.members } }
     }
 
     if (pathname === '/api/person/split') {
-      const r = splitPerson(root, pid, {
-        person: String(b.person ?? b.uid ?? ''),
-        accounts: Array.isArray(b.accounts) ? b.accounts.map(String) : [],
-        primary: b.primary ? String(b.primary) : '',
-        actor: 'human:editor',
-      })
-      return { status: 200, body: { ok: true, from: r.from, to: r.to, accounts: r.accounts } }
+      const r = splitCard(root, pid, String((Array.isArray(b.accounts) ? b.accounts[0] : '') ?? ''))
+      return { status: 200, body: { ok: true, to: r.main, accounts: r.members } }
     }
 
     // 主动开口：手动算一轮（调试/演示用），以及"不要她说这句"
@@ -1042,8 +1025,8 @@ export function handleApiWrite(root, url, body) {
       const uid = String(b.uid ?? '')
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
       const pinned = b.pinned === undefined ? true : Boolean(b.pinned)
-      const profile = setPinned(root, pid, uid, pinned)
-      return { status: 200, body: { ok: true, pinned: profile.pinned, rank: profile.pin_rank ?? null } }
+      const card = setPinned(root, pid, uid, pinned)
+      return { status: 200, body: { ok: true, pinned: card.pinned, rank: card.pinRank ?? null } }
     }
 
     if (pathname === '/api/person/move') {
@@ -1055,28 +1038,16 @@ export function handleApiWrite(root, url, body) {
 
     if (pathname === '/api/person/create') {
       const nickname = String(b.nickname ?? b.display ?? '').trim()
-      let platform = String(b.platform ?? '').trim()
-      let nativeId = String(b.nativeId ?? b.id ?? '').trim()
-      if (!platform || !nativeId) {
-        const parsed = parseIdentityText(String(b.accountText ?? b.identityText ?? b.identity ?? ''))
-        const first = parsed.items[0]
-        if (!first) return { status: 400, body: { ok: false, error: '需要 platform + nativeId，或一段能认出的账户信息' } }
-        platform = first.platform
-        nativeId = first.id
-      }
+      const app = String(b.platform ?? b.app ?? '').trim()
+      const account = String(b.nativeId ?? b.account ?? b.id ?? '').trim()
+      if (!app || !account) return { status: 400, body: { ok: false, error: '需要 platform + nativeId' } }
       if (!nickname) return { status: 400, body: { ok: false, error: '需要昵称' } }
-      const r = createAccountWithPerson(root, pid, {
-        platform,
-        nativeId,
-        nicknames: nickname.split(/\s+/).filter(Boolean),
-        description: String(b.description ?? ''),
-      })
-      if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有账户卡了' } }
-      if (typeof b.sketch === 'string' && b.sketch.trim()) {
-        ensurePersonProfile(root, pid, r.person)
-        setImpression(root, pid, 'person', r.person, { text: b.sketch, reason: '新建人物时写素描', actor: 'human:editor' })
+      const r = ensureCard(root, pid, { app, account, nicknames: nickname.split(/\s+/).filter(Boolean) })
+      if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有卡了' } }
+      if (typeof b.description === 'string' && b.description.trim()) {
+        setCardDescription(root, pid, r.cardId, b.description, { actor: 'human:editor' })
       }
-      return { status: 200, body: { ok: true, acct: r.acct, uid: r.person, person: r.person } }
+      return { status: 200, body: { ok: true, acct: r.cardId, uid: r.cardId, person: mainOf(root, pid, r.cardId) } }
     }
 
     // 人格级偏好（切人格就会变的那部分设置）
@@ -1106,12 +1077,14 @@ export function handleApiWrite(root, url, body) {
     if (pathname === '/api/person') {
       const uid = String(b.uid ?? '')
       if (!uid) return { status: 400, body: { ok: false, error: '缺少 uid' } }
-      // 人物卡没有 display；昵称在账户卡上改（/api/account/update）。
-      ensurePersonProfile(root, pid, uid)
-      if (typeof b.sketch === 'string') {
-        setImpression(root, pid, 'person', uid, { text: b.sketch, reason: '管理台手动修改', actor: 'human:editor' })
+      const main = mainOf(root, pid, uid)
+      const card = readEntityCard(root, pid, main)
+      if (!card) return { status: 404, body: { ok: false, error: '没有这个人物' } }
+      if (card.tier === 'shadow') setCardPersonFields(root, pid, main, { tier: null })
+      if (typeof b.description === 'string') {
+        setCardDescription(root, pid, main, b.description, { actor: 'human:editor', reason: '管理台修改账户描述' })
       }
-      return { status: 200, body: { ok: true, profile: readProfile(root, pid, uid) } }
+      return { status: 200, body: { ok: true, person: readEntityCard(root, pid, main) } }
     }
 
     // ── 模块管理 ─────────────────────────────────────────────────────────

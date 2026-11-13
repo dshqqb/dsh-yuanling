@@ -13,8 +13,8 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { ingest } from '../src/core/inbox.js'
-import { findByIdentity, readProfile, renamePersonAuto } from '../src/core/entities.js'
-import { loadAccount } from '../src/core/accounts.js'
+import { findByIdentity, readProfile, renamePersonAuto } from './helpers.mjs'
+import { readCard } from '../src/core/accounts.js'
 import { isShadow } from '../src/core/channels.js'
 import { localIso } from '../src/core/fsx.js'
 
@@ -53,15 +53,15 @@ test('私聊：第一次说话就建档（影子卡转正），名字用 QQ 昵�
   assert.ok(profile, '要有一份档案')
   assert.ok(profile.first_met, '要记初识时间')
   assert.equal(profile.sketch, '', '素描留空，等她自己写')
-  const card = loadAccount(root, PID, findByIdentity(root, 'qq', '50001').acct)
+  const card = readCard(root, PID, findByIdentity(root, 'qq', '50001').acct)
   assert.equal(card.nicknames[0], '小李')
 })
 
-test('私聊：第二条不再重写档案（不制造假版本）', () => {
+test('私聊：第二条不重写账户描述', () => {
   const uid = uidOf('50001')
-  const before = readProfile(root, PID, uid).updated_at
+  const before = readProfile(root, PID, uid).sketch
   send({ channel: 'private:50001', actorId: '50001', actorName: '小李', text: '还在吗' })
-  assert.equal(readProfile(root, PID, uid).updated_at, before)
+  assert.equal(readProfile(root, PID, uid).sketch, before)
 })
 
 test('群聊：只是说话 → 仍是影子卡，不建档', () => {
@@ -69,7 +69,7 @@ test('群聊：只是说话 → 仍是影子卡，不建档', () => {
   const uid = uidOf('60001')
   assert.ok(uid, '影子卡要建（不然同一个人每条都串号）')
   assert.equal(isShadow(root, uid), true)
-  assert.equal(readProfile(root, PID, uid), null, '旁听的人不写档案')
+  assert.equal(readProfile(root, PID, uid)?.tier, 'shadow', '旁听的人不写人物描述')
 })
 
 test('群聊：@ 她 → 建档', () => {
@@ -112,8 +112,8 @@ test('两个同名影子先后转正：昵称允许相同（人物没有名字�
   send({ channel: 'group:60006', actorId: '60006', actorName: '老王', text: '在' })
   send({ channel: 'private:60005', actorId: '60005', actorName: '老王', text: '你好' })
   send({ channel: 'private:60006', actorId: '60006', actorName: '老王', text: '你好' })
-  const a = loadAccount(root, PID, findByIdentity(root, 'qq', '60005').acct)
-  const b = loadAccount(root, PID, findByIdentity(root, 'qq', '60006').acct)
+  const a = readCard(root, PID, findByIdentity(root, 'qq', '60005').acct)
+  const b = readCard(root, PID, findByIdentity(root, 'qq', '60006').acct)
   assert.ok(a.nicknames.includes('老王'))
   assert.ok(b.nicknames.includes('老王'))
   assert.notEqual(findByIdentity(root, 'qq', '60005').uid, findByIdentity(root, 'qq', '60006').uid)
@@ -123,7 +123,7 @@ test('她给账户加称呼（renamePersonAuto 是账户昵称门面）', () => 
   const uid = uidOf('50001')
   const r = renamePersonAuto(root, PID, uid, '小李（同事）', { reason: '她自己起的名字' })
   assert.deepEqual(r.nicknames, ['小李', '小李（同事）'])
-  const card = loadAccount(root, PID, r.acct)
+  const card = readCard(root, PID, r.uid)
   assert.ok(card.nicknames.includes('小李（同事）'))
 })
 
@@ -133,7 +133,7 @@ test('她给影子卡改名 = 直接转正', () => {
   assert.equal(isShadow(root, uid), true)
   renamePersonAuto(root, PID, uid, '甲哥', { reason: '她在群里认识了他' })
   assert.equal(isShadow(root, uid), false)
-  const card = loadAccount(root, PID, findByIdentity(root, 'qq', '60007').acct)
+  const card = readCard(root, PID, findByIdentity(root, 'qq', '60007').acct)
   assert.ok(card.nicknames.includes('甲哥'))
 })
 

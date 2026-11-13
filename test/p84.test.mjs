@@ -39,8 +39,8 @@ test('account/create：建账户 + 自动 1:1 人物', async () => {
   const r = await post('/api/account/create', { platform: 'qq', nativeId: '88801', nickname: '小甲', description: '测试' })
   assert.equal(r.status, 200)
   const body = await r.json()
-  assert.match(body.acct, /^acct_/)
-  assert.match(body.person, /^person_/)
+  assert.match(body.acct, /^card_/)
+  assert.match(body.person, /^card_/)
 
   const list = await (await get('/api/accounts')).json()
   const card = list.accounts.find((a) => a.uid === body.acct)
@@ -58,23 +58,16 @@ test('account/update：改昵称与描述', async () => {
   assert.match(one.account.description, /甲哥/)
 })
 
-test('person/merge：合并两个账户，不给 sketch 报 400', async () => {
+test('person/merge：合并两个账户（不需要 sketch）', async () => {
   const a = await (await get('/api/accounts')).json()
   const first = a.accounts[0].uid
-  const r2 = await post('/api/account/create', { platform: 'bili', nativeId: 'bili-888', nickname: '小甲B站' })
+  const r2 = await post('/api/account/create', { platform: 'bilibili', nativeId: 'bili-888', nickname: '小甲B站' })
   const second = (await r2.json()).acct
 
-  const bad = await post('/api/person/merge', { accounts: [first, second], intoPerson: a.accounts[0].person.uid })
-  assert.equal(bad.status, 400)
-
-  const ok = await post('/api/person/merge', {
-    accounts: [first, second],
-    intoPerson: a.accounts[0].person.uid,
-    sketch: '同一个人：QQ 与 B 站',
-    reason: '测试',
-  })
+  const ok = await post('/api/person/merge', { accounts: [first, second], reason: '测试' })
   assert.equal(ok.status, 200)
-  const one = await (await get(`/api/person?uid=${encodeURIComponent(a.accounts[0].person.uid)}`)).json()
+  const main = (await ok.json()).person
+  const one = await (await get(`/api/person?uid=${encodeURIComponent(main)}`)).json()
   assert.equal(one.accounts.length, 2)
 })
 

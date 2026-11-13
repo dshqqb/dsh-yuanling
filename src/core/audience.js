@@ -14,7 +14,7 @@ import fsSync from 'node:fs'
 import { readJson } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
-import { labelOfPerson, loadPersons, readPersonProfile } from './accounts.js'
+import { listPeopleForUi } from './entities.js'
 import { readGroup } from './groups.js'
 
 export const AUDIENCE_KINDS = ['people', 'groups']
@@ -60,10 +60,10 @@ function assertKind(kind) {
  */
 export function isExempt(root, pid, kind, id) {
   if (kind === 'people') {
-    const person = loadPersons(root, pid).persons?.[id]
-    if (!person) return false
-    if (person.tier === 'admin') return true
-    return Boolean(readPersonProfile(root, pid, id)?.pinned)
+    const row = listPeopleForUi(root, pid).find((p) => p.uid === id)
+    if (!row) return false
+    if (row.admin) return true
+    return Boolean(row.pinned)
   }
   if (kind === 'groups') return readGroup(root, pid, id)?.tier === 'important'
   return false
@@ -149,19 +149,15 @@ export function audienceView(root, pid, kind) {
   const one = doc[kind]
 
   if (kind === 'people') {
-    const rows = Object.values(loadPersons(root, pid).persons ?? {})
-      .filter((x) => x.tier !== 'shadow')
-      .map((x) => ({
-        id: x.uid,
-        name: labelOfPerson(root, pid, x.uid) || x.uid,
-        exempt: isExempt(root, pid, 'people', x.uid),
-        why: x.tier === 'admin' ? '管理员' : readPersonProfile(root, pid, x.uid)?.pinned ? '重要人物' : '',
-      }))
+    const rows = listPeopleForUi(root, pid).map((x) => ({
+      id: x.uid,
+      name: x.display || x.uid,
+      exempt: Boolean(x.admin || x.pinned),
+      why: x.admin ? '管理员' : x.pinned ? '重要人物' : '',
+    }))
     const byId = new Map(rows.map((r) => [r.id, r]))
     const decorate = (id) => byId.get(id) ?? { id, name: id, exempt: false, why: '' }
-    // 豁免的人**只出现在 auto 里**：哪怕之前手动加过白名单，后来升成管理员/重要人物，
-    // 也不再算"手动项"——否则胶囊后面会挂一个删不掉的 ×（用户踩过）。
-    const allow = one.allow.filter((id) => !isExempt(root, pid, 'people', id)).map(decorate)
+    const allow = one.allow.filter((id) => !byId.get(id)?.exempt).map(decorate)
     const deny = one.deny.map(decorate)
     return {
       mode: one.mode,

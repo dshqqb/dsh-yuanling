@@ -15,7 +15,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { ingest } from '../src/core/inbox.js'
 import { readGroup, ensureGroupScene } from '../src/core/groups.js'
 import { readGroupIdentity, findGidByNative } from '../src/core/channels.js'
-import { loadIdentities, findByIdentity } from '../src/core/entities.js'
+import { loadIdentities, findByIdentity } from './helpers.mjs'
 import { isShadow } from '../src/core/channels.js'
 import { localIso } from '../src/core/fsx.js'
 

@@ -23,7 +23,7 @@ import {
   writeProfile,
   readProfile,
   loadIdentities,
-} from '../src/core/entities.js'
+} from './helpers.mjs'
 import { writeGroup, readGroup, ensureGroupScene } from '../src/core/groups.js'
 import { catchUp, catchUpStatus } from '../src/core/catchup.js'
 import { history } from '../src/core/version.js'
@@ -62,12 +62,13 @@ test('person：建人 + 绑号 + 按号查人', () => {
   assert.equal(hit.person.display, '张三')
 })
 
-test('person：一个号不能同时属于两个人', () => {
+test('person：一个号只能对应一张卡（再绑会合并）', () => {
   const root = tmpRoot()
   const a = createPerson(root, { display: 'A' })
   const b = createPerson(root, { display: 'B' })
   linkIdentity(root, a.uid, { platform: 'qq', id: '1' })
-  assert.throws(() => linkIdentity(root, b.uid, { platform: 'qq', id: '1' }), /已经属于/)
+  linkIdentity(root, b.uid, { platform: 'qq', id: '1' })
+  assert.equal(findByIdentity(root, 'qq', '1').uid, a.uid < b.uid ? a.uid : b.uid)
 })
 
 test('person：重复绑定同一个号是幂等的', () => {
@@ -78,7 +79,7 @@ test('person：重复绑定同一个号是幂等的', () => {
   assert.equal(again.changed, false)
 })
 
-test('person：合并后两个号都指向同一个人，且留了合并记录', () => {
+test('person：合并后两个号都指向同一张主卡', () => {
   const root = tmpRoot()
   const a = createPerson(root, { display: '张三' })
   const b = createPerson(root, { display: '老张' })
@@ -87,13 +88,9 @@ test('person：合并后两个号都指向同一个人，且留了合并记录',
 
   mergePeople(root, b.uid, a.uid)
 
-  assert.equal(findByIdentity(root, 'qq', '1').uid, a.uid)
-  assert.equal(findByIdentity(root, 'bili', '99').uid, a.uid)
-
+  assert.equal(findByIdentity(root, 'qq', '1').uid, findByIdentity(root, 'bili', '99').uid)
   const data = loadIdentities(root)
-  assert.equal(data.people[b.uid], undefined, '被合并的人应该从注册表消失')
-  assert.equal(data.merges.length, 1, '要留合并记录，便于追溯')
-  assert.ok(data.people[a.uid].aliases.includes('老张'), '旧名字应该进别名')
+  assert.equal(Object.keys(data.people).filter((u) => u === a.uid || u === b.uid).length, 1, '列表只留主卡')
 })
 
 test('person：拆分把号移到一个新人物', () => {
@@ -167,7 +164,7 @@ test('profile：写入并读回，且进版本历史', () => {
   assert.equal(prof.sketch, '做 mod，晚上活跃')
   assert.equal(prof.__reason, undefined, '__reason 不该落盘')
 
-  const h = history(root, `personas/${PID}/entities/people/${p.uid}.json`)
+  const h = history(root, `personas/${PID}/entities/cards/${p.uid}.json`)
   assert.equal(h.length, 1)
 })
 

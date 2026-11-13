@@ -15,18 +15,15 @@ import { resolveRoot, validateRoot, P } from './src/core/paths.js'
 import { readMarker } from './src/core/persona.js'
 import { contextFor, recall, addFact } from './src/core/memory.js'
 import {
-  loadAccount,
   labelOfPerson,
-  listAccounts,
-  loadPersons,
-  ensureAccount,
-  ensurePersonForAccount,
+  listCards,
+  readCard,
+  ensureCard,
   personForAccount,
-  setAccountNicknames,
-  setAccountDescription,
-  setAccountFriend,
-  mergeAccounts,
-  splitPerson,
+  setCardNicknames,
+  setCardDescription,
+  mergeCards,
+  splitCard,
   renamePersonAuto,
 } from './src/core/entities.js'
 import { readGroupLive, writeGroup, ensureGroup, gidForChannel, ensureGroupScene, findGidByNative, CHANNEL_PLATFORM, GROUP_KINDS } from './src/core/groups.js'
@@ -38,7 +35,8 @@ import { refreshDrives, readDrives, driveName, addDrive, adjustDrive, removeDriv
 import { listSources, readConsoleRuntime, renderFetched, clipText } from './src/core/modules/sources.js'
 
 const SERVER_INFO = { name: 'yuanling', version: '0.2.0' }
-const MAX_IDENTITY_TEXT = 2000
+const MAX_ACCOUNT_DESC = 2000
+
 
 /** 数据根目录：--root 参数 > YUANLING_HOME > 默认位置。 */
 function rootFromArgv(argv = process.argv.slice(2)) {
@@ -108,51 +106,43 @@ const TOOLS = [
     description:
       '看 / 写**账户卡**：一个账户 = 一个平台上的一个号（QQ / 微信 / 贴吧…）。\n' +
       '昵称只放昵称（可以多个，空格分隔）；好友备注、对这个号的短印象放 description。\n' +
-      '给 platform + nativeId 时没有账户就新建，并自动建一张 1:1 人物卡；给 uid 时改已有账户。\n' +
-      '**只在对方自述、或有明确证据时写**。人物素描用 yuanling_observe；两个账户是同一人用 yuanling_person_merge。',
+      '给 platform + nativeId 时没有卡就新建；给 uid 时改已有账户卡。\n' +
+      '**只在对方自述、或有明确证据时写**。人物描述由各账户描述合并；两个账户是同一人用 yuanling_person_merge。',
     inputSchema: {
       type: 'object',
       properties: {
-        uid: { type: 'string', description: '账户 id（acct_xxx）；改已有账户时用' },
-        platform: { type: 'string', description: 'qq / wechat / tieba / bili …' },
+        uid: { type: 'string', description: '账户卡 id（card_xxx）；改已有账户时用' },
+        platform: { type: 'string', description: 'qq / wechat / tieba / bilibili …' },
         nativeId: { type: 'string', description: '平台原生号' },
         nicknames: { type: 'array', items: { type: 'string' }, description: '昵称（可多个）' },
         nickname: { type: 'string', description: '单个昵称（空格分隔多个）' },
-        description: { type: 'string', description: '账户描述（好友备注也写这里），≤600 字' },
-        friend: { type: 'boolean', description: '是不是好友（平台事实）' },
+        description: { type: 'string', description: '账户描述（好友备注也写这里），≤2000 字符' },
       },
     },
   },
   {
     name: 'yuanling_person_merge',
     description:
-      '把两个或多个账户合并成一个人物。**必须显式给 sketch**（合并后对这个人的一句话描述）；\n' +
-      '账户自己的权重/昵称/描述不变，只改人物归属与人物权重。适合"这两个号是同一个人"有证据时。',
+      '把两个或多个账户合并成一个人物（账户卡 id 列表）。账户自己的权重/昵称/描述不变；\n' +
+      '合并后所有卡 id 写进 id 最小那张卡的成员表，列表只显示它。',
     inputSchema: {
       type: 'object',
       properties: {
-        accounts: { type: 'array', items: { type: 'string' }, description: '账户 id（acct_xxx）列表' },
-        intoPerson: { type: 'string', description: '并入的人物 id（可选；不给就取第一个账户现有人物）' },
-        sketch: { type: 'string', description: '合并后的人物素描（必填）' },
-        reason: { type: 'string', description: '为什么合并' },
-        evidence: { type: 'string', description: '证据：raw/…ndjson#ULID' },
+        accounts: { type: 'array', items: { type: 'string' }, description: '账户卡 id 列表' },
       },
-      required: ['accounts', 'sketch', 'reason'],
+      required: ['accounts'],
     },
   },
   {
     name: 'yuanling_person_split',
     description:
-      '从一个人物里拆出若干账户，成为新人物。原素描跟主账户走；新人物保留一份带标注的副本。账户权重不变。',
+      '把一张账户卡从当前人物里拆出来，成为独立人物。账户权重/描述/昵称原样跟着卡走。',
     inputSchema: {
       type: 'object',
       properties: {
-        person: { type: 'string', description: '要拆的人物 id' },
-        accounts: { type: 'array', items: { type: 'string' }, description: '要拆走的账户 id 列表（不能是全部）' },
-        primary: { type: 'string', description: '新人物的主账户（可选）' },
-        reason: { type: 'string', description: '为什么拆分' },
+        accounts: { type: 'array', items: { type: 'string' }, description: '要拆出的账户卡 id（一次一张）' },
       },
-      required: ['person', 'accounts'],
+      required: ['accounts'],
     },
   },
   {
@@ -247,20 +237,20 @@ const TOOLS = [
   {
     name: 'yuanling_observe',
     description:
-      '写 / 读"她对某人或某个地方的印象"。人物和群体用同一套规则：**整段覆盖**（印象是"现在怎么看他"，不是日记）、' +
-      '旧版本只留在版本历史里（随时能回滚）、每次写必须带一句 reason、上限 600 字节（就是注入预算，超了页面上也只会被截断）。\n' +
+      '写 / 读"她对某个账户或某个地方的印象"。账户和群体用同一套规则：**整段覆盖**、' +
+      '旧版本只留在版本历史里（随时能回滚）、每次写必须带一句 reason；账户描述 ≤2000 字符，群体描述 ≤600 字节。\n' +
       '不传 text 就是只读；加 withHistory 能看到这份印象一路是怎么变的（每一版的时间、原因、原文）——' +
       '想知道"我为什么现在这么看他"，就读这个，别自己编。',
     inputSchema: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['person', 'group'], description: '写谁/哪里：person 或 group' },
-        id: { type: 'string', description: '人物 uid（person_xxx）或群体 gid（qq:123456）' },
+        kind: { type: 'string', enum: ['person', 'group'], description: '写谁/哪里：person（账户卡）或 group' },
+        id: { type: 'string', description: '账户卡 id（card_xxx）或群体 gid（grp_xxx）' },
         name: {
           type: 'string',
-          description: '可选：给这个人改个名字（只对 person；撞名会自动加平台/号标识）。群名请用 yuanling_group',
+          description: '可选：给这个人加一个昵称（只对 person）。群名请用 yuanling_group',
         },
-        text: { type: 'string', description: '整段印象（≤600 字节）。不传就只读' },
+        text: { type: 'string', description: '整段印象（账户 ≤2000 字符，群体 ≤600 字节）。不传就只读' },
         reason: { type: 'string', description: '这次为什么改——会写进版本历史，以后能回看' },
         evidence: { type: 'string', description: '可选：raw/2026-11/07/qq.ndjson#01JCV…，必须真能解析到' },
         withHistory: { type: 'boolean', description: '连历史一起返回（默认最近 10 版）' },
@@ -397,18 +387,6 @@ function formatFacts(rows) {
         `   id：${r.fact?.id ?? ''}｜kind：${r.fact?.kind ?? 'fact'}`,
     )
     .join('\n')
-}
-
-function formatIdentityResult(uid, display, r) {
-  const parsed = r.texts.flatMap((x) => x.parsed)
-  const unparsed = r.unparsed ?? []
-  const lines = [`✓ 已写入 ${display ?? uid}（${uid}）的账户卡（现共 ${r.texts.length} 条）`]
-  if (parsed.length) lines.push(`识别：${parsed.map((x) => `${x.platform}:${x.id}`).join('、')}`)
-  if (r.linked.length) lines.push(`新绑定：${r.linked.map((x) => `${x.platform}:${x.id}`).join('、')}`)
-  for (const c of r.conflicts) lines.push(`冲突：${c.platform}:${c.id} 已属于 ${c.owner}，没有抢`)
-  if (unparsed.length) lines.push(`没认出：${unparsed.join(' / ')}`)
-  if (!parsed.length) lines.push('（这段话里没识别出账号）')
-  return lines.join('\n')
 }
 
 /**
@@ -571,69 +549,49 @@ async function callTool(root, name, args = {}) {
       const platform = String(args.platform ?? '').trim()
       const nativeId = String(args.nativeId ?? '').trim()
       if (!platform || !nativeId) throw new Error('需要 uid（已有账户），或 platform + nativeId（新建账户）')
-      const r = ensureAccount(root, pid, { platform, nativeId, nickname: String(args.nickname ?? '').trim() })
-      acct = r.acct
-      ensurePersonForAccount(root, pid, acct)
+      const r = ensureCard(root, pid, { app: platform, account: nativeId, nickname: String(args.nickname ?? '').trim() })
+      acct = r.cardId
     }
-    const card = loadAccount(root, pid, acct)
+    const card = readCard(root, pid, acct)
     if (!card) throw new Error(`账户不存在：${acct}`)
     if (args.nicknames !== undefined || args.nickname !== undefined) {
       const names = Array.isArray(args.nicknames)
         ? args.nicknames
         : String(args.nicknames ?? args.nickname ?? '').split(/\s+/)
-      setAccountNicknames(root, pid, acct, names)
+      setCardNicknames(root, pid, acct, names)
     }
     if (typeof args.description === 'string') {
-      if (Buffer.byteLength(args.description, 'utf8') > 600) throw new Error('账户描述最多 600 字节')
-      setAccountDescription(root, pid, acct, args.description, { actor: 'model:account' })
+      if ([...String(args.description)].length > MAX_ACCOUNT_DESC) throw new Error(`账户描述最多 ${MAX_ACCOUNT_DESC} 个字符`)
+      setCardDescription(root, pid, acct, args.description, { actor: 'model:account' })
     }
-    if (args.friend !== undefined) setAccountFriend(root, pid, acct, Boolean(args.friend))
 
-    const fresh = loadAccount(root, pid, acct)
+    const fresh = readCard(root, pid, acct)
     const person = personForAccount(root, pid, acct)
     const lines = [
-      `账户 ${fresh.uid}  ${fresh.platform}:${fresh.nativeId}`,
-      `昵称：${(fresh.nicknames ?? []).join(' ')}${fresh.friend ? '  〔好友〕' : ''}`,
+      `账户 ${fresh.id}  ${fresh.app}:${fresh.account}`,
+      `昵称：${(fresh.nicknames ?? []).join(' ')}`,
       `权重：${fresh.weight ?? 0}（统计 ${fresh.stats?.messages ?? 0} 条 / ${fresh.stats?.activeDays ?? 0} 天）`,
       `描述：${fresh.description || '（空）'}`,
-      person ? `属于人物：${labelOfPerson(root, pid, person.uid)}（${person.uid}）` : '还没有人物卡',
+      person ? `属于人物：${labelOfPerson(root, pid, person.id)}（${person.id}）` : '还没有人物卡',
     ]
-    return { text: lines.join('\n'), acct: fresh.uid, person: person?.uid ?? null }
+    return { text: lines.join('\n'), acct: fresh.id, person: person?.id ?? null }
   }
 
   if (name === 'yuanling_person_merge') {
     const accounts = (Array.isArray(args.accounts) ? args.accounts : []).map(String).filter(Boolean)
     if (!accounts.length) throw new Error('缺少 accounts（账户 id 列表）')
-    const sketch = String(args.sketch ?? '').trim()
-    if (!sketch) throw new Error('合并必须显式写一句 sketch（合并后对这个人的描述）')
-    const reason = String(args.reason ?? '').trim()
-    if (!reason) throw new Error('合并要带 reason：为什么认定是同一人')
-    if (sketch.length > MAX_IDENTITY_TEXT) throw new Error('sketch 太长')
-    const r = mergeAccounts(root, pid, {
-      accounts,
-      intoPerson: String(args.intoPerson ?? ''),
-      sketch,
-      reason,
-      evidence: args.evidence ?? null,
-      actor: 'model:person',
-    })
+    const r = mergeCards(root, pid, accounts)
     return {
-      text: `✓ 已合并 ${accounts.length} 个账户 → ${labelOfPerson(root, pid, r.person)}（${r.person}）\n描述：${sketch}`,
-      person: r.person,
+      text: `✓ 已合并 ${accounts.length} 个账户 → ${labelOfPerson(root, pid, r.main)}（${r.main}）`,
+      person: r.main,
     }
   }
 
   if (name === 'yuanling_person_split') {
-    const r = splitPerson(root, pid, {
-      person: String(args.person ?? '').trim(),
-      accounts: (Array.isArray(args.accounts) ? args.accounts : []).map(String).filter(Boolean),
-      primary: String(args.primary ?? ''),
-      actor: 'model:person',
-    })
+    const r = splitCard(root, pid, (Array.isArray(args.accounts) ? args.accounts[0] : ''))
     return {
-      text: `✓ 已拆出 ${r.accounts.length} 个账户 → ${labelOfPerson(root, pid, r.to)}（${r.to}）；原人物保留其余账户`,
-      from: r.from,
-      to: r.to,
+      text: `✓ 已拆出 → ${labelOfPerson(root, pid, r.main)}（${r.main}）`,
+      to: r.main,
     }
   }
 

@@ -9,7 +9,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso } from '../src/core/fsx.js'
 import { addFact } from '../src/core/memory.js'
-import { createPerson, linkIdentity } from '../src/core/entities.js'
+import { createPerson, linkIdentity } from './helpers.mjs'
 import { listen, readToken } from '../src/core/server.js'
 import { styleRel } from '../src/core/proposals.js'
 
@@ -158,15 +158,15 @@ test('people：列表与编辑素描', async () => {
   const list = await (await fetch(`${url}/api/people`, { headers: { 'x-yuanling-token': token } })).json()
   assert.ok(list.people.some((p) => p.uid === personUid))
 
-  const res = await post('/api/person', { uid: personUid, sketch: '说话短，爱用草', display: '张三' })
+  const res = await post('/api/person', { uid: personUid, description: '说话短，爱用草' })
   const r = await res.json()
   assert.equal(r.ok, true)
-  assert.equal(r.profile.sketch, '说话短，爱用草')
+  assert.equal(r.person.description, '说话短，爱用草')
 
   const one = await (await fetch(`${url}/api/person?uid=${encodeURIComponent(personUid)}`, {
     headers: { 'x-yuanling-token': token },
   })).json()
-  assert.equal(one.profile.sketch, '说话短，爱用草')
+  assert.equal(one.person.description, '说话短，爱用草')
 })
 
 test('写操作：未知路径 404', async () => {

@@ -9,7 +9,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso } from '../src/core/fsx.js'
 import { addFact, listEntries } from '../src/core/memory.js'
-import { findByIdentity, createPerson, listCandidates, confirmCandidate } from '../src/core/entities.js'
+import { findByIdentity, createPerson, listCandidates, confirmCandidate } from './helpers.mjs'
 import {
   extractClaims,
   claimIdentity,

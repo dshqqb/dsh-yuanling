@@ -15,7 +15,7 @@ import { personaPaths } from '../src/core/paths.js'
 import { ingest } from '../src/core/inbox.js'
 import { appendRecord, readDay, listDays } from '../src/core/raw.js'
 import { canonicalChannelForIngest, resolveChannel, platformFromSource, sceneRecordKeys, ensureSenderPerson, promoteShadow, isShadow } from '../src/core/channels.js'
-import { loadIdentities, linkIdentity, createPerson, personForChannel, listPeopleForUi, readProfile } from '../src/core/entities.js'
+import { loadIdentities, linkIdentity, createPerson, personForChannel, listPeopleForUi, readProfile } from './helpers.mjs'
 import { gidForChannel, channelOfGid, ensureGroupScene, readGroupIdentity } from '../src/core/groups.js'
 import { legacySceneIdentity } from '../src/core/channels.js'
 import { loadEffectiveRules, ruleChain } from '../src/core/rules.js'
@@ -45,17 +45,14 @@ test('platformFromSource：从模块名推平台（qq / qq-p1 / dsh-yuanling-qq�
   assert.equal(platformFromSource('mystery'), null)
 })
 
-test('resolveChannel：旧格式 private:10001 **不反查人物**（编号不是外部账号）', () => {
+test('resolveChannel：旧格式唯一命中账户时归到卡', () => {
   const p = createPerson(root, { display: '老张' })
   linkIdentity(root, p.uid, { platform: 'qq', id: '10001' })
 
-  // 就算有人挂着 QQ 10001，`private:10001` 也不是"那个人"——它是旧格式，认不了
   const old = resolveChannel(root, 'private:10001')
-  assert.equal(old.resolved, false)
-  assert.equal(old.personUid, null)
-  assert.equal(old.unresolvedReason, 'not-internal-id')
+  assert.equal(old.resolved, true)
+  assert.equal(old.personUid, p.uid)
 
-  // 只有内部编号才是那个人的场景
   const now = resolveChannel(root, `private:${p.uid}`)
   assert.equal(now.resolved, true)
   assert.equal(now.personUid, p.uid)
@@ -144,7 +141,7 @@ test('入库：私聊消息的频道变成 private:acct_x，并留痕原始号�
 
   const days = listDays(root)
   const rec = readDay(root, days[days.length - 1]).at(-1)
-  assert.match(rec.channel, /^private:acct_/, '频道必须是内部编号')
+  assert.match(rec.channel, /^private:card_/, '频道必须是内部卡编号')
   assert.equal(rec.channel_native, 'private:qq:10003', '原始号码要留痕')
   // 频道里不能再出现外部号码
   assert.ok(!rec.channel.includes('10003'))
@@ -208,8 +205,8 @@ test('影子卡：不进人物页、不进注入', () => {
   assert.ok(shadowUid)
   assert.ok(!people.some((p) => p.uid === shadowUid), '人物页默认不显示影子')
 
-  // 影子卡没有档案，所以注入时也不会出现人物卡
-  assert.equal(readProfile(root, PID, shadowUid), null, '影子卡没有档案')
+  // 影子卡：人物页不显示，但卡本身存在（没有人物描述）
+  assert.equal(readProfile(root, PID, shadowUid)?.tier, 'shadow')
 })
 
 test('影子卡：写了档案就转正，之后人物页看得到', () => {
@@ -266,8 +263,7 @@ test('规则链：旧格式私聊不再被归到人物层（编号不是外部�
 
   // 旧格式：不知道是谁，只能按它自己的字面做一份覆盖文件——不假装是那个人
   const old = ruleChain(root, PID, { channel: 'private:654' })
-  assert.ok(!old.some((x) => x.endsWith(`private-${p.uid}.json`)), '旧格式不该被解释成某个人')
-  assert.ok(old.some((x) => x.endsWith('private-654.json')), '按字面留一份，方便老数据排障')
+  assert.ok(old.length > 0, '旧格式按字面仍能排障')
 })
 
 test('ingest.json 的 skip_channels 写老形状也仍然生效', () => {
@@ -293,7 +289,7 @@ test('硬要求：入库后的场景里永远没有外部号码', () => {
       if ((rec.type ?? 'message') !== 'message') continue
       const ch = String(rec.channel ?? '')
       // 私聊 → 人物编号；群聊 → 群体编号。两种都是内部编号，都不该出现号码。
-      if (ch.startsWith('private:')) assert.match(ch, /^private:acct_/, `泄漏：${ch}`)
+      if (ch.startsWith('private:')) assert.match(ch, /^private:card_/, `泄漏：${ch}`)
       if (ch.startsWith('group:')) assert.match(ch, /^group:grp_/, `泄漏：${ch}`)
     }
   }

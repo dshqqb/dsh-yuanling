@@ -13,7 +13,7 @@ import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel, noteGroupMember } from './groups.js'
 import { ensureSenderPerson, isShadow, canonicalChannelForIngest, platformFromSource } from './channels.js'
-import { noteAccountMessage } from './accounts.js'
+import { noteCardMessage } from './accounts.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
@@ -21,7 +21,7 @@ import { noteGroupMessage, herNames, isReplyToHer } from './engage.js'
 import { noteSelfNameCandidate, herPlatformIds, addressesHer } from './selfname.js'
 import { addFact } from './memory.js'
 import { parseChannel } from './channels.js'
-import { ensurePersonProfile, findByIdentity, noteFriendship } from './entities.js'
+import { recognizeCard, findByIdentity, noteFriendship } from './entities.js'
 /**
  * 从一条刚入库的消息里提炼事实。
  *
@@ -233,7 +233,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
         // 账户权重是基础数据：每条私聊都更新这个账户的统计（群聊不算）
         if (canonical.acct && !isBot && parseChannel(channel).kind === 'private') {
           try {
-            noteAccountMessage(root, readMarker(root)?.active, canonical.acct, { ts: item.ts ? String(item.ts) : null })
+            noteCardMessage(root, readMarker(root)?.active, canonical.acct, { ts: item.ts ? String(item.ts) : null })
           } catch {
             /* 统计失败不该让消息丢掉 */
           }
@@ -295,11 +295,8 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
           if (pid && actorId && !isBot && directed) {
             const platform = platformFromSource(source) ?? 'qq'
             const hit = findByIdentity(root, platform, String(actorId))
-            if (hit) {
-              ensurePersonProfile(root, pid, hit.uid, {
-                firstMet: item.ts ? String(item.ts) : null,
-              })
-            }
+            if (hit) recognizeCard(root, pid, hit.uid)
+
           }
         } catch {
           /* 建路人卡失败不该让一条消息丢掉 */

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
-import { createPerson, linkIdentity, personProfileRel, readProfile, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, personProfileRel, readProfile, writeProfile } from './helpers.mjs'
 import { writeGroup, readGroup, groupRel, ensureGroupScene, ensureGroup } from '../src/core/groups.js'
 import { setImpression, readImpression, impressionHistory, renderImpression, IMPRESSION_MAX_BYTES } from '../src/core/impressions.js'
 import { history } from '../src/core/version.js'
@@ -72,12 +72,12 @@ test('人物：第二版是覆盖，不是拼接（旧话不会留在新印象�
   assert.ok(!cur.includes('备份'), '印象是"现在怎么看他"，不是日记')
 })
 
-test(`人物：超过 ${IMPRESSION_MAX_BYTES} 字节直接拒，且不写盘`, () => {
+test('人物：超过 2000 字符直接拒，且不写盘', () => {
   const root = tmpRoot()
   const p = createPerson(root, { display: '张三' })
   writeProfile(root, PID, p.uid, { sketch: '原样' })
 
-  const tooLong = '啊'.repeat(IMPRESSION_MAX_BYTES) // 中文 3 字节/字，肯定超
+  const tooLong = '啊'.repeat(2001)
   assert.throws(() => setImpression(root, PID, 'person', p.uid, { text: tooLong, reason: '想写长一点' }), /太长/)
   assert.equal(readProfile(root, PID, p.uid).sketch, '原样', '拒掉的时候不能留下半截内容')
 })
@@ -317,7 +317,7 @@ test('observe：缺 reason / 超长 → 明确报错，不静默截断', async (
   assert.equal(noReason.result.isError, true)
   assert.match(noReason.result.content.map((c) => c.text).join('\n'), /reason/)
 
-  const tooLong = await tool('yuanling_observe', { kind: 'person', id: uid, text: '啊'.repeat(300), reason: '想写长点' })
+  const tooLong = await tool('yuanling_observe', { kind: 'person', id: uid, text: '啊'.repeat(2001), reason: '想写长点' })
   assert.equal(tooLong.result.isError, true)
   assert.match(tooLong.result.content.map((c) => c.text).join('\n'), /太长/)
 })

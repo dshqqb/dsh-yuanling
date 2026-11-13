@@ -2,7 +2,6 @@
 //
 // 用户定的（2026-11-11，Q33=B）：**除原始层之外，所有人格相关数据都在 `personas/<id>/` 下**，
 // 复制粘贴这一个目录就能迁移人格。所以：
-//   · 人物 ↔ 账号（identities.json）现在**每个格一份**——"这个号是谁"是她的认知，会有误差；
 //   · 群体 ↔ 平台群号（group-identities.json）同理；
 //   · 在场状态（engage.json）也按人格存。
 //
@@ -26,9 +25,7 @@ export function requirePid(root, pid = null) {
 }
 
 export const personaFile = {
-  identities: (pid) => `personas/${pid}/entities/identities.json`,
-  accounts: (pid) => `personas/${pid}/entities/accounts.json`,
-  persons: (pid) => `personas/${pid}/entities/persons.json`,
+  cards: (pid) => `personas/${pid}/entities/cards.json`,
   groupIdentities: (pid) => `personas/${pid}/entities/group-identities.json`,
   engage: (pid) => `personas/${pid}/state/engage.json`,
 }

@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 import { putMedia, mediaTmpDir } from '../src/core/media.js'
 import { requestEgress, readEgress, EGRESS_MAX_MEDIA } from '../src/core/egress.js'
 

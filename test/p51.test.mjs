@@ -17,7 +17,7 @@ import { parseMd, applySectionEdits, replaceTitle } from '../src/core/mdtext.js'
 import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from '../src/core/personacard.js'
 import { contextFor } from '../src/core/memory.js'
 import { createPersona } from '../src/core/persona.js'
-import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 import { readPurposes, writePurposes } from '../src/core/purposes.js'
 import { appendRecord, listScenes } from '../src/core/raw.js'
 import { localIso } from '../src/core/fsx.js'
@@ -421,7 +421,7 @@ test('GET /api/card：场景解析到人物、但这个人还没档案时，如�
   assert.equal(d.ok, true)
   assert.equal(d.sceneInfo.resolved, true)
   assert.equal(d.sceneInfo.personUid, p.uid)
-  assert.match(d.sceneInfo.reason, /没有档案/)
+  assert.match(d.sceneInfo.reason, /账户描述|人物卡/)
 })
 
 test('GET /api/card：场景编号不是 QQ 号——挂不同 QQ 也指向同一个人', async () => {
@@ -435,9 +435,10 @@ test('GET /api/card：场景编号不是 QQ 号——挂不同 QQ 也指向同�
   assert.equal(byId.sceneInfo.personUid, p.uid)
   assert.match(byId.text, /爱用短句/)
 
-  // 用他的 QQ 号当场景 → 不是编号，不认（这就是这次纠正的语义）
+  // 旧写法按账户唯一命中也能归到卡
   const byAccount = await get(`/api/card?scene=${encodeURIComponent('private:11111')}`)
-  assert.equal(byAccount.sceneInfo.resolved, false)
+  assert.equal(byAccount.sceneInfo.resolved, true)
+  assert.equal(byAccount.sceneInfo.personUid, p.uid)
 })
 
 test('GET /api/card：场景解析到人物且有档案 → 注入里出现人物卡', async () => {
@@ -447,7 +448,7 @@ test('GET /api/card：场景解析到人物且有档案 → 注入里出现人�
 
   const d = await get(`/api/card?scene=${encodeURIComponent(`private:${p.uid}`)}`)
   assert.equal(d.sceneInfo.resolved, true)
-  assert.match(d.sceneInfo.reason, /画像/)
+  assert.match(d.sceneInfo.reason, /人物卡/)
   assert.match(d.text, /\[人物\].*有素描的人/)
   assert.match(d.text, /说话很快/)
 })

@@ -14,7 +14,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso, ulid } from '../src/core/fsx.js'
 import { addFact } from '../src/core/memory.js'
-import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 
 const PID = 'yuanling'
 const HERE = path.dirname(fileURLToPath(import.meta.url))

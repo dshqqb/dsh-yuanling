@@ -27,7 +27,7 @@ import { pinWeight } from './weights.js'
 import { autoUniqueName } from './names.js'
 import { personaFile, requirePid } from './scope.js'
 import { mentionedGroups } from './aliases.js'
-import { labelOfPerson, listAccounts, personForAccount } from './accounts.js'
+import { labelOfPerson, listCards, personForAccount } from './accounts.js'
 
 export { CHANNEL_PLATFORM, GROUP_KINDS }
 
@@ -393,9 +393,9 @@ export function collectMembers(root, pid, gid, { days = MEMBER_SCAN_DAYS, now = 
 
   // 只留能对上人物卡的
   const byCue = new Map()
-  for (const card of listAccounts(root, pid)) {
-    const person = personForAccount(root, pid, card.uid)
-    if (person) byCue.set(`${card.platform}:${card.nativeId}`, person.uid)
+  for (const card of listCards(root, pid)) {
+    const person = personForAccount(root, pid, card.id)
+    if (person) byCue.set(`${card.app}:${card.account}`, person.id)
   }
 
   const rows = []

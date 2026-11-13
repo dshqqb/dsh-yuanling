@@ -13,7 +13,7 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { createPersona, switchPersona } from '../src/core/persona.js'
-import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 import { setImpression } from '../src/core/impressions.js'
 import { createGroupWithCard, writeGroup } from '../src/core/groups.js'
 import { appendRecord } from '../src/core/raw.js'

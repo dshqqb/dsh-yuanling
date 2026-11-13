@@ -7,28 +7,28 @@
 //   ③ 每次写必须记下"为什么改"，模型下次能读回自己的印象是怎么变的。
 //   ④ 硬上限 600 字节（就是注入预算）：超了**直接拒**，不静默截断。
 //
-// 这一层只管"那段话"：人物存 `sketch`，群体存 `feature`。
+// 这一层只管"那段话"：人物存账户卡的 `description`，群体存 `feature`。
 // 身份（账号归属）走 entities.js，成员走 groups.js，不在这里。
 import { history, readBlob } from './version.js'
-import { personProfileRel, readProfile, writeProfile } from './entities.js'
+import { cardRel, mainOf, readCard, setCardDescription } from './accounts.js'
 import { groupRel, readGroup, writeGroup } from './groups.js'
 import { resolvePointer } from './pointer.js'
 
-/** 印象的硬上限，和注入侧的人/群卡预算一致。 */
+/** 群体印象的硬上限；人物账户描述上限是 2000 字符。 */
 export const IMPRESSION_MAX_BYTES = 600
 
 const SIDES = {
   person: {
     label: '人物',
-    rel: (pid, id) => personProfileRel(pid, id),
-    read: (root, pid, id) => readProfile(root, pid, id),
-    write: (root, pid, id, patch, opts) => writeProfile(root, pid, id, patch, opts),
-    field: 'sketch',
-    missing: (id) => `还没有 ${id} 的人物档案——先建账户卡（yuanling_account），再写印象`,
+    rel: (root, pid, id) => cardRel(pid, mainOf(root, pid, id)),
+    read: (root, pid, id) => readCard(root, pid, mainOf(root, pid, id)),
+    write: (root, pid, id, patch, opts) => setCardDescription(root, pid, mainOf(root, pid, id), patch.description, opts),
+    field: 'description',
+    missing: (id) => `还没有 ${id} 这张卡——先建账户卡（yuanling_account），再写印象`,
   },
   group: {
     label: '群体',
-    rel: (pid, id) => groupRel(pid, id),
+    rel: (root, pid, id) => groupRel(pid, id),
     read: (root, pid, id) => readGroup(root, pid, id),
     write: (root, pid, id, patch, opts) => writeGroup(root, pid, id, patch, opts),
     field: 'feature',
@@ -77,11 +77,10 @@ export function setImpression(root, pid, kind, id, { text, reason, evidence = nu
 
   const body = String(text ?? '').trim()
   if (!body) throw new Error('印象不能为空——真要表达"还没什么印象"，就写一句那样的话')
-  const bytes = Buffer.byteLength(body, 'utf8')
-  if (bytes > IMPRESSION_MAX_BYTES) {
-    throw new Error(
-      `印象太长：${bytes} 字节 > ${IMPRESSION_MAX_BYTES}。这是注入预算，写超了也会被截断，所以干脆不写——删掉细节再试`,
-    )
+  const limit = kind === 'person' ? 2000 : IMPRESSION_MAX_BYTES
+  const size = kind === 'person' ? [...body].length : Buffer.byteLength(body, 'utf8')
+  if (size > limit) {
+    throw new Error(`印象太长：${size} > ${limit}${kind === 'person' ? ' 个字符' : ' 字节'}`)
   }
 
   const why = String(reason ?? '').trim()
@@ -100,9 +99,7 @@ export function setImpression(root, pid, kind, id, { text, reason, evidence = nu
   const fullReason = evOk ? `${why}（证据：${evOk}）` : why
   const before = String(cur[side.field] ?? '')
 
-  // 内容没变就**真的不写**。
-  //
-  // 以前这里是无条件 side.write：`writeProfile` 每次都会把 `updated_at` 改成当前时间，
+  // 内容没变就**真的不写**。以前每次写都会把 `updated_at` 改成当前时间，
   // 于是"同样的文本"也能拼出一个内容不同的文件 → 写盘 → 版本历史里多一条假记录。
   // 它之所以多数时候没暴露，是因为时间戳只到秒：同一秒内两次写出来的 JSON 一模一样，
   // hash 相同才被 writeTracked 的幂等挡掉。一旦跨过秒边界（机器忙的时候特别容易），
@@ -120,7 +117,8 @@ export function setImpression(root, pid, kind, id, { text, reason, evidence = nu
     }
   }
 
-  side.write(root, pid, id, { [side.field]: body, __reason: fullReason }, { actor, reason: fullReason })
+  const payload = side.field === 'feature' ? { feature: body, __reason: fullReason } : { description: body, __reason: fullReason }
+  side.write(root, pid, id, payload, { actor, reason: fullReason })
 
   return {
     kind: String(kind),
@@ -142,7 +140,7 @@ export function setImpression(root, pid, kind, id, { text, reason, evidence = nu
  */
 export function impressionHistory(root, pid, kind, id, { limit = 10 } = {}) {
   const side = sideOf(kind)
-  const rel = side.rel(pid, id)
+  const rel = side.rel(root, pid, id)
   const rows = []
   for (const e of history(root, rel)) {
     const buf = readBlob(root, rel, e.hash)
@@ -153,7 +151,7 @@ export function impressionHistory(root, pid, kind, id, { limit = 10 } = {}) {
     } catch {
       continue
     }
-    rows.push({ at: e.ts, actor: e.actor ?? '', reason: e.reason ?? '', text: String(obj?.[side.field] ?? '') })
+    rows.push({ at: e.ts, actor: e.actor ?? '', reason: e.reason ?? '', text: String(obj?.[side.field] ?? obj?.description ?? '') })
   }
   const n = Math.max(1, Number(limit) || 10)
   return { total: rows.length, entries: rows.slice(-n) }

@@ -183,7 +183,6 @@ export function personaPaths(id) {
     interests: `${base}/self/interests.json`,
     purposes: `${base}/self/purposes.json`,
     actions: `${base}/self/actions.ndjson`,
-    people: `${base}/entities/people`,
     groups: `${base}/entities/groups`,
     spaces: `${base}/spaces`,
     journal: `${base}/journal`,

@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, linkIdentity, writeProfile, loadIdentities } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile, loadIdentities } from './helpers.mjs'
 import { listen, readToken } from '../src/core/server.js'
 
 const PID = 'yuanling'
@@ -132,14 +132,15 @@ test('pin：重点人物按名次给分（110 起，越靠前越高），取消�
 })
 
 test('create：新增人物必须能认出账户，否则拒绝', async () => {
-  const bad = await post('/api/person/create', { display: '张三', identityText: '他在某处' })
+  const bad = await post('/api/person/create', { display: '张三' })
   assert.equal(bad.status, 400)
-  assert.match((await bad.json()).error, /没认出|账户/)
+  assert.match((await bad.json()).error, /platform|nativeId|账户/)
 
   const ok = await post('/api/person/create', {
     display: '李四',
-    identityText: 'QQ 号是 88888',
-    sketch: '说话很快',
+    platform: 'qq',
+    nativeId: '88888',
+    description: '说话很快',
   })
   assert.equal(ok.status, 200)
   const created = await ok.json()

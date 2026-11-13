@@ -20,7 +20,6 @@ export function dirList(personaId) {
     pp.base,
     pp.persona,
     pp.self.replace(/\/SELF\.md$/, ''),
-    pp.people,
     pp.groups,
     pp.spaces,
     pp.journal,
@@ -61,8 +60,7 @@ export function fileList({ personaId, name, now }) {
     ['README.md', () => T.dataReadme()],
     [P.manifest, () => JSON.stringify(manifestStub(now), null, 2) + '\n'],
     // 身份登记**按人格**：复制 personas/<id>/ 就能迁移人格，system/ 里不再留人格数据
-    [personaFile.accounts(personaId), () => JSON.stringify({ _comment: '账户卡注册表：一个平台上的一个号一张卡。', version: 1, accounts: {}, byNative: {} }, null, 2) + '\n'],
-    [personaFile.persons(personaId), () => JSON.stringify({ _comment: '人物卡注册表：只是“这些账户是同一个人”的归组。', version: 1, persons: {} }, null, 2) + '\n'],
+    [personaFile.cards(personaId), () => JSON.stringify({ _comment: '人物卡注册表：每张卡对应一个账户，members 是主卡成员表。', version: 1, cards: {}, byAccount: {} }, null, 2) + '\n'],
     [personaFile.groupIdentities(personaId), () => JSON.stringify({ _comment: '这个角色认知里的"哪个群是哪个群"（平台 + 原生号）。', version: 1, groups: {}, byNative: {} }, null, 2) + '\n'],
     [P.shields, () => JSON.stringify({ _comment: '墓碑登记。全局生效，可撤销。', version: 1, redactions: [] }, null, 2) + '\n'],
     [pp.manifest, () => JSON.stringify(T.personaJson({ id: personaId, name, now }), null, 2) + '\n'],

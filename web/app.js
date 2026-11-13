@@ -1075,7 +1075,6 @@ function personCard(p, { onMove } = {}) {
   const tags = el('span')
   if (p.admin) tags.append(el('span', 'tag purple', '管理员'))
   if (p.pinned) tags.append(el('span', 'tag ok', `重要 #${Number(p.rank ?? 0) + 1}`))
-  if (p.friend) tags.append(el('span', 'tag ok', '好友'))
   tags.append(el('span', p.weightKind === 'pinned' ? 'tag ok' : 'tag', String(p.weight)))
   head.append(tags, document.createTextNode(p.display))
 
@@ -1088,7 +1087,7 @@ function personCard(p, { onMove } = {}) {
     .join(' / ')
   body.append(
     head,
-    el('div', 's', [names, accts, firstMet, p.sketch ? p.sketch.slice(0, 40) : '', desc ? `账户：${desc}` : ''].filter(Boolean).join(' · ')),
+    el('div', 's', [names, accts, firstMet, p.description ? p.description.slice(0, 40) : '', desc ? `账户：${desc}` : ''].filter(Boolean).join(' · ')),
     el('div', 's muted small', `权重 ${p.weight} = ${(p.accounts ?? []).map((a) => `${a.nativeId}:${a.weight}`).join(' + ') || '0'}`),
   )
   n.append(body)
@@ -1142,10 +1141,6 @@ function personCard(p, { onMove } = {}) {
   for (const a of p.accounts ?? []) {
     acts.append(mkBtn(`账户 ${a.nativeId}`, 'small ghost', () => openAccountEditor(a)))
   }
-  if ((p.accounts ?? []).length < 2) {
-    // 新账户一律先建独立人物；要并到这个人，用「合并」
-    acts.append(mkBtn('新增账户', 'small ghost', () => openAccountCreate(null)))
-  }
   acts.append(mkBtn('合并', 'small ghost', () => openMergeDialog(p)))
   if ((p.accounts ?? []).length > 1) acts.append(mkBtn('拆分', 'small ghost', () => openSplitDialog(p)))
   n.append(acts)
@@ -1163,11 +1158,10 @@ async function openAccountEditor(a) {
         key: 'description',
         label: '账户描述',
         type: 'textarea',
-        rows: 4,
+        rows: 6,
         value: card.description ?? '',
-        hint: '好友备注写在这里（自动维护成「好友备注：…」一行）；不是人物素描',
+        hint: '好友备注写在这里（「好友备注：…」一行）；上限 2000 字。人物描述由所有账户描述合并而成',
       },
-      { key: 'friend', label: '是好友', type: 'select', options: [['false', '不是'], ['true', '是']], value: card.friend ? 'true' : 'false' },
       { label: '权重（只读）', type: 'static', value: `${card.weight ?? 0} · 统计 ${card.stats?.messages ?? 0} 条 / ${card.stats?.activeDays ?? 0} 天` },
     ],
     onSubmit: async (v) => {
@@ -1175,7 +1169,6 @@ async function openAccountEditor(a) {
         uid: a.uid,
         nicknames: String(v.nicknames ?? '').split(/\s+/).filter(Boolean),
         description: v.description,
-        friend: v.friend === 'true',
       })
       await loadPeople()
     },
@@ -1189,12 +1182,12 @@ async function openPersonEditor(p) {
     title: `${d2.person.display}（${p.uid}）`,
     fields: [
       { label: '账户', type: 'static', value: (d2.accounts ?? []).map((a) => `${a.platform}:${a.nativeId}`).join('、') || '无' },
-      { label: '初识', type: 'static', value: d2.profile?.first_met ? String(d2.profile.first_met).slice(0, 10) : '—' },
-      { key: 'sketch', label: '人物描述', type: 'textarea', rows: 5, value: d2.profile?.sketch || '', hint: '她对“这个人”的整体描述；不要写账号，账号在上面的账户卡里' },
+      { label: '初识', type: 'static', value: d2.person?.firstMet ? String(d2.person.firstMet).slice(0, 10) : '—' },
+      { key: 'description', label: '主卡账户描述', type: 'textarea', rows: 6, value: d2.person?.description || '', hint: '人物描述由所有成员卡的账户描述合并而成；这里改的是主卡自己的账户描述' },
       weightField(row),
     ],
     onSubmit: async (v) => {
-      await postApi('/api/person', { uid: p.uid, sketch: v.sketch })
+      await postApi('/api/person', { uid: p.uid, description: v.description })
       await loadPeople()
     },
   })
@@ -1202,37 +1195,26 @@ async function openPersonEditor(p) {
 
 async function openAccountCreate(person) {
   const apps = (await api('/api/apps')).apps ?? []
+  if (!apps.length) throw new Error('还没有模块上报 App；先安装一个模块')
   const options = apps.map((a) => [a.app, `${a.app}（${a.modules.map((m) => m.name ?? m.id).join('、')}）`])
-  options.push(['__custom__', '其他（手动输入）'])
   openModal({
-    title: person ? `给「${person.display}」新建账户` : '新增账户（会自动创建人物卡）',
+    title: '新建人物',
     okText: '创建',
     fields: [
-      { key: 'platform', label: 'App（已装模块上报）', type: 'select', options, value: options[0][0] },
-      {
-        key: 'custom',
-        label: '没在列表里？手动填 App 标识',
-        placeholder: '小写字母/数字，例如 milan',
-        hint: '填了这里就忽略上面的下拉；规范交给模块作者自觉，核心只校验格式',
-      },
-      { key: 'nativeId', label: '平台原生号', placeholder: 'QQ 号 / 微信号 / 米聊号' },
-      { key: 'nickname', label: '昵称（空格分隔可多个）' },
-      { key: 'description', label: '账户描述', type: 'textarea', rows: 3, placeholder: '好友备注 / 对这个号的短印象' },
-      { key: 'sketch', label: '人物描述（可选）', type: 'textarea', rows: 3 },
+      { key: 'platform', label: 'App', type: 'select', options, value: options[0][0] },
+      { key: 'nativeId', label: '账户（id 或账户名）', placeholder: 'QQ 号 / B 站 UID / 米聊号' },
+      { key: 'nickname', label: '账户昵称（空格分隔可多个）' },
+      { key: 'description', label: '账户描述', type: 'textarea', rows: 4, placeholder: '好友备注 / 对这个号的印象（≤2000 字）' },
     ],
     onSubmit: async (v) => {
-      const custom = String(v.custom ?? '').trim()
-      const platform = custom || String(v.platform ?? '')
-      if (platform === '__custom__' || !/^[a-z0-9]{2,24}$/.test(platform)) {
-        throw new Error('App 标识只能是小写字母和数字，2~24 字符')
-      }
-      const r = await postApi('/api/account/create', {
+      const platform = String(v.platform ?? '')
+      if (!/^[a-z0-9]{2,24}$/.test(platform)) throw new Error('App 标识只能是小写字母和数字')
+      await postApi('/api/account/create', {
         platform,
         nativeId: v.nativeId,
         nickname: v.nickname,
         description: v.description,
       })
-      if (v.sketch && v.sketch.trim()) await postApi('/api/person', { uid: r.person, sketch: v.sketch })
       await loadPeople()
     },
   })
@@ -1244,15 +1226,12 @@ async function openMergeDialog(person) {
     title: `合并账户 → ${person.display}`,
     okText: '合并',
     fields: [
-      { key: 'accounts', label: '要合并进来的账户 uid（一行一个，含当前账户）', type: 'textarea', rows: 3, value: accounts.join('\n') },
-      { key: 'sketch', label: '合并后的人物描述（必填）' },
+      { key: 'accounts', label: '要合并进来的卡 id（一行一个，含当前卡）', type: 'textarea', rows: 3, value: accounts.join('\n') },
       { key: 'reason', label: '为什么合并（理由）' },
     ],
     onSubmit: async (v) => {
       await postApi('/api/person/merge', {
         accounts: String(v.accounts ?? '').split(/\s+/).filter(Boolean),
-        intoPerson: person.uid,
-        sketch: v.sketch,
         reason: v.reason,
       })
       await loadPeople()
@@ -1265,14 +1244,12 @@ async function openSplitDialog(person) {
     title: `拆分「${person.display}」`,
     okText: '拆分',
     fields: [
-      { key: 'accounts', label: '要拆出去的账户 uid（一行一个）', type: 'textarea', rows: 3 },
-      { key: 'primary', label: '新人物的主账户 uid（可空）' },
+      { key: 'accounts', label: '要拆出去的卡 id（一行一个）', type: 'textarea', rows: 3 },
     ],
     onSubmit: async (v) => {
       await postApi('/api/person/split', {
         person: person.uid,
         accounts: String(v.accounts ?? '').split(/\s+/).filter(Boolean),
-        primary: v.primary,
       })
       await loadPeople()
     },

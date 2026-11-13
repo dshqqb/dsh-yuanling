@@ -1,6 +1,4 @@
-// test/p81.test.mjs —— 账户卡 / 人物卡（2026-11-13）
-//
-// 一个账户 = 一个平台上的一个号；昵称可多个；人物只是账户的归组。
+// test/p81.test.mjs —— 人物卡（每账户一张 + 主卡成员表）。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -9,20 +7,20 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import {
-  createAccountWithPerson,
-  setAccountNicknames,
-  setAccountDescription,
-  mergeAccounts,
-  splitPerson,
-  loadAccount,
-  listAccounts,
-  personForAccount,
-  accountsForPerson,
-  labelOfPerson,
+  createCard,
+  setCardDescription,
+  setCardNicknames,
+  mergeCards,
+  splitCard,
+  listCards,
+  mainOf,
+  groupOf,
+  personDescription,
   personWeight,
-  setAccountFriend,
+  labelOfPerson,
+  CARD_DESC_MAX_CHARS,
 } from '../src/core/accounts.js'
-import { listPeopleForUi, readProfile, writeProfile, setPinned } from '../src/core/entities.js'
+import { listPeopleForUi, setPinned, setAdmin, currentAdmin } from '../src/core/entities.js'
 
 const PID = 'yuanling'
 let root
@@ -32,84 +30,70 @@ before(() => {
   scaffold(root, {})
 })
 
-test('账户卡：一个号一张卡，昵称可以多个', () => {
-  const r = createAccountWithPerson(root, PID, {
-    platform: 'qq',
-    nativeId: '10001',
-    nicknames: ['老王', '老老王'],
-    description: '爱喝茶',
-  })
-  const card = loadAccount(root, PID, r.acct)
-  assert.deepEqual(card.nicknames, ['老王', '老老王'])
-  assert.equal(card.description, '爱喝茶')
-  assert.equal(personForAccount(root, PID, r.acct).uid, r.person)
-  assert.equal(labelOfPerson(root, PID, r.person), '老王 / 老老王')
+test('卡：一个 app+account 一张，昵称多个', () => {
+  const c = createCard(root, PID, { app: 'qq', account: '10001', nicknames: ['老王', '老老王'], description: '爱喝茶' })
+  assert.deepEqual(c.nicknames, ['老王', '老老王'])
+  assert.equal(c.description, '爱喝茶')
+  assert.equal(labelOfPerson(root, PID, c.id), '老王 / 老老王')
+  assert.throws(() => createCard(root, PID, { app: 'qq', account: '10001' }), /已经有卡/)
 })
 
-test('账户卡：改昵称、描述、好友', () => {
-  const acct = listAccounts(root, PID).find((a) => a.nativeId === '10001').uid
-  setAccountNicknames(root, PID, acct, ['老王', '王叔'])
-  setAccountDescription(root, PID, acct, '好友备注：王叔\n爱喝茶')
-  setAccountFriend(root, PID, acct, true)
-  const card = loadAccount(root, PID, acct)
-  assert.deepEqual(card.nicknames, ['老王', '王叔'])
-  assert.match(card.description, /好友备注：王叔/)
-  assert.equal(card.friend, true)
+test('描述：2000 字符上限', () => {
+  const c = createCard(root, PID, { app: 'qq', account: '10002', nicknames: ['甲'] })
+  setCardDescription(root, PID, c.id, '啊'.repeat(CARD_DESC_MAX_CHARS))
+  assert.throws(() => setCardDescription(root, PID, c.id, '啊'.repeat(CARD_DESC_MAX_CHARS + 1)), /2000/)
 })
 
-test('合并：账户权重不变，人物权重求和，必须给 sketch', () => {
-  const qq = listAccounts(root, PID).find((a) => a.platform === 'qq')
-  const b = createAccountWithPerson(root, PID, { platform: 'bili', nativeId: '老王bili', nickname: '老王' })
-  const qqWeight = loadAccount(root, PID, qq.uid).weight
-  const bWeight = loadAccount(root, PID, b.acct).weight
-
-  const m = mergeAccounts(root, PID, {
-    accounts: [qq.uid, b.acct],
-    sketch: '同一个人：QQ 和 B 站',
-    reason: '本人在私聊里说的',
-  })
-  assert.equal(personForAccount(root, PID, qq.uid).uid, m.person)
-  assert.equal(personForAccount(root, PID, b.acct).uid, m.person)
-  assert.equal(accountsForPerson(root, PID, m.person).length, 2)
-  assert.equal(loadAccount(root, PID, qq.uid).weight, qqWeight, '账户权重不能变')
-  assert.equal(loadAccount(root, PID, b.acct).weight, bWeight, '账户权重不能变')
-  assert.equal(readProfile(root, PID, m.person).sketch, '同一个人：QQ 和 B 站')
-  assert.equal(personWeight(root, PID, m.person), Math.min(100, qqWeight + bWeight))
-})
-
-test('合并：不给 sketch 直接拒绝', () => {
-  const accts = listAccounts(root, PID).map((a) => a.uid)
-  assert.throws(() => mergeAccounts(root, PID, { accounts: accts, reason: '想合并' }), /sketch/)
-})
-
-test('拆分：原描述跟主账户走，新人物保留带标注的副本；账户权重不变', () => {
-  const accts = listAccounts(root, PID)
-  const qq = accts.find((a) => a.platform === 'qq').uid
-  const bili = accts.find((a) => a.platform === 'bili').uid
-  const person = personForAccount(root, PID, qq).uid
-  const qqWeight = loadAccount(root, PID, qq).weight
-  const r = splitPerson(root, PID, { person, accounts: [bili] })
-  assert.notEqual(personForAccount(root, PID, bili).uid, person)
-  assert.equal(loadAccount(root, PID, qq).weight, qqWeight)
-  assert.match(readProfile(root, PID, r.to).sketch, /拆分前/)
-  assert.match(readProfile(root, PID, person).sketch, /同一个人/)
-})
-
-test('人物列表带昵称与账户（页面显示用）', () => {
+test('合并：成员表写在 id 最小的卡上；列表只显示主卡', () => {
+  const qq = createCard(root, PID, { app: 'qq', account: '20001', nicknames: ['大甲'], description: 'QQ 描述' })
+  const bili = createCard(root, PID, { app: 'bilibili', account: '20002', nicknames: ['大甲B'], description: 'B 描述' })
+  const r = mergeCards(root, PID, [qq.id, bili.id])
+  assert.equal(r.main, [qq.id, bili.id].sort()[0])
+  const main = listCards(root, PID).find((c) => c.id === r.main)
+  assert.deepEqual(main.members.sort(), [qq.id, bili.id].sort())
+  assert.equal(groupOf(root, PID, bili.id).length, 2)
+  assert.equal(personDescription(root, PID, qq.id), 'QQ 描述\nB 描述')
   const rows = listPeopleForUi(root, PID)
-  const wang = rows.find((x) => (x.nicknames ?? []).includes('老王'))
-  assert.ok(wang)
-  assert.ok(wang.accounts.length >= 1)
-  assert.ok(wang.accounts[0].nativeId)
+  assert.ok(rows.some((x) => x.uid === r.main))
+  assert.ok(!rows.some((x) => x.uid === (r.main === qq.id ? bili.id : qq.id)))
 })
 
-test('熟人/重要人物计数来自列表本身（移动就少一个）', () => {
-  const r = createAccountWithPerson(root, PID, { platform: 'qq', nativeId: '40001', nickname: '熟人甲' })
-  writeProfile(root, PID, r.person, { sketch: '认识的人' })
-  const before = listPeopleForUi(root, PID)
-  const restBefore = before.filter((x) => !x.admin && !x.pinned).length
-  setPinned(root, PID, r.person, true)
-  const after = listPeopleForUi(root, PID)
-  assert.equal(after.filter((x) => !x.admin && !x.pinned).length, restBefore - 1)
-  assert.equal(after.filter((x) => x.pinned && !x.admin).length, 1)
+test('权重：账户各自记，人物 = 求和封顶 100', () => {
+  const a = createCard(root, PID, { app: 'qq', account: '21001', nicknames: ['甲'] })
+  const b = createCard(root, PID, { app: 'bilibili', account: '21002', nicknames: ['乙'] })
+  const r = mergeCards(root, PID, [a.id, b.id])
+  for (const c of groupOf(root, PID, r.main)) {
+    const card = c
+    card.weight = 60
+    fs.writeFileSync(path.join(root, 'personas', PID, 'entities', 'cards', `${card.id}.json`), JSON.stringify(card, null, 2))
+  }
+  assert.equal(personWeight(root, PID, r.main), 100)
+})
+
+test('拆分：移除成员后两张独立卡', () => {
+  const a = createCard(root, PID, { app: 'qq', account: '22001', nicknames: ['甲'] })
+  const b = createCard(root, PID, { app: 'bilibili', account: '22002', nicknames: ['乙'] })
+  mergeCards(root, PID, [a.id, b.id])
+  const r = splitCard(root, PID, b.id)
+  assert.equal(mainOf(root, PID, b.id), b.id)
+  assert.equal(groupOf(root, PID, r.main).length, 1)
+  assert.equal(groupOf(root, PID, a.id).length, 1)
+})
+
+test('管理员/重要人物只在主卡上，主卡换人时搬走', () => {
+  const a = createCard(root, PID, { app: 'qq', account: '30001', nicknames: ['甲'] })
+  const b = createCard(root, PID, { app: 'bilibili', account: '30002', nicknames: ['乙'] })
+  setPinned(root, PID, a.id, true)
+  setAdmin(root, a.id)
+  assert.equal(currentAdmin(root).id, a.id)
+  mergeCards(root, PID, [b.id, a.id])
+  const main = mainOf(root, PID, a.id)
+  assert.equal(main, [a.id, b.id].sort()[0])
+  assert.equal(currentAdmin(root).id, main)
+})
+
+test('昵称修改只影响该卡', () => {
+  const c = createCard(root, PID, { app: 'qq', account: '40001', nicknames: ['阿四'] })
+  setCardNicknames(root, PID, c.id, ['阿四', '四哥'])
+  assert.deepEqual(listCards(root, PID).find((x) => x.id === c.id).nicknames, ['阿四', '四哥'])
 })

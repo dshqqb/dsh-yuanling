@@ -12,8 +12,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, createPersonAuto, findByIdentity, linkIdentity, writeProfile } from '../src/core/entities.js'
-import { loadAccount } from '../src/core/accounts.js'
+import { createPerson, createPersonAuto, findByIdentity, linkIdentity, writeProfile } from './helpers.mjs'
+import { readCard } from '../src/core/accounts.js'
 import { setImpression } from '../src/core/impressions.js'
 import { createGroupWithCard, readGroup, writeGroup } from '../src/core/groups.js'
 import { appendRecord } from '../src/core/raw.js'
@@ -48,7 +48,7 @@ test('她自动建卡：昵称重复也允许（人物没有名字，称呼由�
   const a = mkPerson('主人', 90000)
   const auto = createPersonAuto(root, { display: '主人', platform: 'qq', nativeId: '90001' })
   assert.notEqual(auto.uid, a.uid)
-  assert.ok(loadAccount(root, PID, findByIdentity(root, 'qq', '90001').acct).nicknames.includes('主人'))
+  assert.ok(readCard(root, PID, findByIdentity(root, 'qq', '90001').acct).nicknames.includes('主人'))
 
   const auto2 = createPersonAuto(root, { display: '主人', platform: 'qq', nativeId: '90002' })
   assert.notEqual(auto2.uid, auto.uid)

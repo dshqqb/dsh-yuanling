@@ -9,7 +9,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { appendRecord } from '../src/core/raw.js'
 import { localIso, ulid } from '../src/core/fsx.js'
 import { addFact, buildCard, contextFor, resolveParticipants, CARD_BUDGET_BYTES, PERSON_BUDGET_BYTES, MAX_PEOPLE_PER_CONTEXT } from '../src/core/memory.js'
-import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 
 const PID = 'yuanling'
 const bytes = (s) => Buffer.byteLength(s, 'utf8')
@@ -141,14 +141,15 @@ test('contextFor：没档案的人只发言也不带卡（她还不认识他）'
   assert.ok(!ctx.includes('[人物]'))
 })
 
-test('contextFor：单张人物卡不超过 600 字节', () => {
+test('contextFor：人物描述不设上限（人物卡第一优先级）', () => {
   const root = tmpRoot()
-  mkPerson(root, { display: '长素描', qq: '12345', sketch: '很长的描述'.repeat(200) })
+  const long = '很长的描述'.repeat(200)
+  mkPerson(root, { display: '长素描', qq: '12345', sketch: long })
   say(root, { id: '12345', channel: 'private:12345' })
 
   const ctx = contextFor(root, PID, { channel: 'private:12345' })
-  const line = ctx.split('\n').find((l) => l.startsWith('[人物]')).replace('[人物] ', '')
-  assert.ok(bytes(line) <= PERSON_BUDGET_BYTES, `单卡 ${bytes(line)} 字节，超过 ${PERSON_BUDGET_BYTES}`)
+  const line = ctx.split('\n').find((l) => l.startsWith('[人物]'))
+  assert.ok(line.includes(long), '长描述应完整出现，不再按 600 字节截断')
 })
 
 test('resolveParticipants：显式传入的参与者优先，且去重', () => {
@@ -164,7 +165,7 @@ test('resolveParticipants：显式传入的参与者优先，且去重', () => {
   assert.deepEqual(list.map((x) => x.uid).sort(), [a, b].sort())
 })
 
-test('contextFor：预算不够时从后往前丢人物卡，记忆卡不丢', () => {
+test('contextFor：预算不够时人物卡优先，记忆让位', () => {
   const root = tmpRoot()
   for (let i = 1; i <= 3; i += 1) {
     mkPerson(root, { display: `人${i}`, qq: String(200 + i), sketch: '很长的素描'.repeat(30) })
@@ -173,6 +174,5 @@ test('contextFor：预算不够时从后往前丢人物卡，记忆卡不丢', (
 
   const ctx = contextFor(root, PID, { channel: 'group:999', budget: 400 })
   const personLines = ctx.split('\n').filter((l) => l.startsWith('[人物]'))
-  assert.ok(personLines.length < 3, '塞不下时该丢掉靠后的卡')
-  assert.match(ctx, /\[索引\]/, '记忆卡不能被人物卡挤掉')
+  assert.equal(personLines.length, 3, '人物卡不因预算被丢')
 })

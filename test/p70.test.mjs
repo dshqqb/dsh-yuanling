@@ -19,8 +19,8 @@ import {
   loadIdentities,
   findByIdentity,
   addCandidate,
-} from '../src/core/entities.js'
-import { createAccountWithPerson } from '../src/core/accounts.js'
+} from './helpers.mjs'
+import { ensureCard } from '../src/core/accounts.js'
 import { ensureGroupScene, readGroupIdentity } from '../src/core/channels.js'
 import { ensureGroup, readGroup } from '../src/core/groups.js'
 import { noteGroupMember } from '../src/core/groups.js'
@@ -34,8 +34,7 @@ before(() => {
   scaffold(root, {})
 })
 
-const idPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'accounts.json')
-const personsPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'persons.json')
+const idPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'cards.json')
 const groupIdPath = (r, pid) => path.join(r, 'personas', pid, 'entities', 'group-identities.json')
 
 test('骨架：身份登记在人格目录里，system/ 不再有', () => {
@@ -71,9 +70,9 @@ test('不同人格的账号认知互不干扰：同一个 QQ 号是两张不同�
 test('账户昵称允许同名（人物没有 display，称呼由账户昵称合并）', () => {
   switchPersona(root, 'other')
   // 同一个昵称可以出现在多个账户上，不再有“人物名唯一”这道闸
-  const a = createAccountWithPerson(root, 'other', { platform: 'qq', nativeId: 'aaa111', nickname: '同名' })
-  const b = createAccountWithPerson(root, 'other', { platform: 'qq', nativeId: 'bbb222', nickname: '同名' })
-  assert.notEqual(a.person, b.person)
+  const a = ensureCard(root, 'other', { app: 'qq', account: 'aaa111', nickname: '同名' })
+  const b = ensureCard(root, 'other', { app: 'qq', account: 'bbb222', nickname: '同名' })
+  assert.notEqual(a.cardId, b.cardId)
   switchPersona(root, 'yuanling')
 })
 

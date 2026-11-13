@@ -59,7 +59,7 @@ test('ingest：模块投进来的消息真的落到 raw，source 由核心盖章
   assert.equal(rows.length, 1)
   assert.equal(rows[0].source, 'fake-qq', 'source 必须是核心盖的章，不是模块自报的')
   assert.equal(rows[0].text, '今天加班到九点')
-  assert.match(rows[0].channel, /^private:acct_/, '频道要归到内部账户编号')
+  assert.match(rows[0].channel, /^private:card_/, '频道要归到内部卡编号')
 })
 
 test('ingest：脱敏与硬线照旧生效（不因为换了入口就绕过）', async () => {

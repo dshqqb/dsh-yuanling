@@ -126,7 +126,6 @@ export function createPersona(root, id, name = id, { from = null } = {}) {
   const dirs = [
     pp.base,
     pp.persona,
-    pp.people,
     pp.groups,
     pp.spaces,
     pp.journal,

@@ -89,13 +89,16 @@ export function canonical(obj) {
 
 /** 记录的内容指纹：同一内容重复投递时用它去重。 */
 export function recordHash(rec) {
+  const messageId = rec.ext?.message_id ? String(rec.ext.message_id) : ''
   const basis = {
     type: rec.type ?? 'message',
     source: rec.source ?? '',
     acct: rec.acct ?? '',
     channel: rec.channel ?? '',
     actor: rec.actor?.id ?? rec.actor?.name ?? '',
-    ts: rec.ts ?? '',
+    // 有稳定消息 id 时按 id 去重；没有才退回“同一秒的同一句话”
+    message_id: messageId,
+    ts: messageId ? '' : (rec.ts ?? ''),
     text: rec.text ?? '',
   }
   return sha256(Buffer.from(canonical(basis), 'utf8'))

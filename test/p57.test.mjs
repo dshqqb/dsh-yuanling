@@ -8,7 +8,7 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { createPersona } from '../src/core/persona.js'
-import { createAccountWithPerson, listAccounts } from '../src/core/accounts.js'
+import { ensureCard, listCards } from '../src/core/accounts.js'
 import { createGroupWithCard, writeGroup, readGroup, groupNameOwner } from '../src/core/groups.js'
 
 const PID = 'yuanling'
@@ -20,9 +20,9 @@ before(() => {
 })
 
 test('账户昵称允许重名：两个号都叫“老王”也能各自建卡', () => {
-  createAccountWithPerson(root, PID, { platform: 'qq', nativeId: '1', nickname: '老王' })
-  createAccountWithPerson(root, PID, { platform: 'wechat', nativeId: 'wx1', nickname: '老王' })
-  const rows = listAccounts(root, PID).filter((a) => a.nicknames.includes('老王'))
+  ensureCard(root, PID, { app: 'qq', account: '1', nickname: '老王' })
+  ensureCard(root, PID, { app: 'wechat', account: 'wx1', nickname: '老王' })
+  const rows = listCards(root, PID).filter((a) => a.nicknames.includes('老王'))
   assert.equal(rows.length, 2)
 })
 
@@ -50,8 +50,8 @@ test('群体：改名撞到同人格里别的群会被拒绝', () => {
 })
 
 test('人物与群体可以同名（两个不同的类别）', () => {
-  const p = createAccountWithPerson(root, PID, { platform: 'qq', nativeId: '333333', nickname: '同名' })
-  assert.ok(p.person)
+  const p = ensureCard(root, PID, { app: 'qq', account: '333333', nickname: '同名' })
+  assert.ok(p.cardId)
   const g = createGroupWithCard(root, PID, { name: '同名', accountText: 'qq:444444' })
   assert.ok(g.gid)
 })

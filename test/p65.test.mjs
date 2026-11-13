@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, linkIdentity, writeProfile } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 import { writeGlobalRules } from '../src/core/rules.js'
 import { setAudienceMember, setAudienceMode } from '../src/core/audience.js'
 import { requestEgress, readEgress } from '../src/core/egress.js'

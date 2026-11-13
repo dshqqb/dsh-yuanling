@@ -11,12 +11,11 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
-  accountsForPerson,
+  groupOf,
   labelOfPerson,
-  loadPersons,
   nicknamesOfPerson,
-  readPersonProfile,
 } from './accounts.js'
+import { listPeopleForUi } from './entities.js'
 import { P } from './paths.js'
 import { readImpression } from './impressions.js'
 import { listGroups } from './groups.js'
@@ -80,14 +79,12 @@ function listFiles(dir, ext = '.json') {
   }
 }
 
-/** 人物索引依赖的文件：账户/人物注册表 + 账户卡 + 每个人物档案。 */
+/** 人物索引依赖的文件：卡片注册表 + 每张卡。 */
 function personStamp(root, pid) {
   const base = path.join(root, P.personas, pid)
   return statSignature([
-    path.join(base, 'entities', 'accounts.json'),
-    path.join(base, 'entities', 'persons.json'),
-    ...listFiles(path.join(base, 'entities', 'accounts')),
-    ...listFiles(path.join(base, 'entities', 'people')),
+    path.join(base, 'entities', 'cards.json'),
+    ...listFiles(path.join(base, 'entities', 'cards')),
   ])
 }
 
@@ -135,23 +132,18 @@ export function extractAliases(text, { max = 8 } = {}) {
   return out
 }
 
-/** 一张人物卡的全部"可被怎么称呼"：账户昵称 + 描述里认出的昵称。 */
+/** 一张人物卡的全部"可被怎么称呼"：成员卡昵称 + 描述里认出的昵称。 */
 function personAliases(root, pid, uid) {
-  const person = loadPersons(root, pid).persons?.[uid]
-  if (!person) return { names: [], aliases: [] }
-  const profile = readPersonProfile(root, pid, uid)
+  const cards = groupOf(root, pid, uid)
   const names = nicknamesOfPerson(root, pid, uid)
   const texts = []
-  for (const card of accountsForPerson(root, pid, uid)) {
-    if (card.description) texts.push(String(card.description))
-  }
+  for (const card of cards) if (card.description) texts.push(String(card.description))
   try {
     const imp = readImpression(root, pid, 'person', uid)
     if (imp?.text) texts.push(String(imp.text))
   } catch {
     /* 印象读不到不影响 */
   }
-  if (profile?.sketch) texts.push(String(profile.sketch))
   const aliases = []
   for (const t of texts) {
     for (const a of extractAliases(t)) if (!names.includes(a) && !aliases.includes(a)) aliases.push(a)
@@ -172,7 +164,7 @@ export function personMentionIndex(root, pid) {
   const hit = mentionCache.get(key)
   if (hit && hit.stamp === stamp) return hit.index
 
-  const data = loadPersons(root, pid)
+  const rows = listPeopleForUi(root, pid)
   const map = new Map()
   const add = (key, uid, kind) => {
     const k = String(key ?? '').trim()
@@ -183,12 +175,10 @@ export function personMentionIndex(root, pid) {
     if (kind === 'name') hit.kind = 'name'
     map.set(k, hit)
   }
-  for (const person of Object.values(data.persons ?? {})) {
-    if (person.tier === 'shadow') continue
-    if (!readPersonProfile(root, pid, person.uid)) continue
-    const { names, aliases } = personAliases(root, pid, person.uid)
-    for (const n of names) add(n, person.uid, 'name')
-    for (const a of aliases) add(a, person.uid, 'alias')
+  for (const row of rows) {
+    const { names, aliases } = personAliases(root, pid, row.uid)
+    for (const n of names) add(n, row.uid, 'name')
+    for (const a of aliases) add(a, row.uid, 'alias')
   }
   if (hit) cacheInvalidations += 1
   mentionCache.set(key, { stamp, index: map })

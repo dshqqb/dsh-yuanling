@@ -23,8 +23,9 @@ import {
   movePinned,
   pinnedPeople,
   setAdmin,
-} from '../src/core/entities.js'
-import { createAccountWithPerson, labelOfPerson, loadPersons } from '../src/core/accounts.js'
+  listPeopleForUi,
+} from './helpers.mjs'
+import { ensureCard, labelOfPerson } from '../src/core/accounts.js'
 import { pinWeight, effectivePersonWeight, SEED_WEIGHT } from '../src/core/weights.js'
 import {
   createGroupWithCard,
@@ -67,9 +68,9 @@ test('生效权重：重点用名次分，普通用落盘分；落盘值始终�
 })
 
 test('新建账户：自动建人物；新账户权重 0；素描可写', () => {
-  const r = createAccountWithPerson(root, PID, { platform: 'qq', nativeId: '10010', nickname: '小明' })
-  writeProfile(root, PID, r.person, { sketch: '话少' })
-  const prof = readProfile(root, PID, r.person)
+  const r = ensureCard(root, PID, { app: 'qq', account: '10010', nickname: '小明' })
+  writeProfile(root, PID, r.cardId, { sketch: '话少' })
+  const prof = readProfile(root, PID, r.cardId)
   assert.equal(prof.weight, 0, '账户还没互动，人物权重从 0 起')
   assert.equal(prof.sketch, '话少')
 })
@@ -185,8 +186,7 @@ test('偏好：温柔开关按人格存、只认已知字段', () => {
 })
 
 test('注入：勾了「更温柔」才多一行 [对象]，而且叫得出管理员的名字', () => {
-  const data = loadPersons(root, PID)
-  const admin = Object.values(data.persons)[0]
+  const admin = listPeopleForUi(root, PID)[0]
   setAdmin(root, admin.uid)
   const adminName = labelOfPerson(root, PID, admin.uid)
 

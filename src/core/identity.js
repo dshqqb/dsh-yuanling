@@ -9,16 +9,7 @@
 //   ② 推断（昵称/同群）只生成候选，永不自动合并。
 //   ③ 纠错走 split + 关闭旧主张，全程留痕。
 import { localIso } from './fsx.js'
-import {
-  addCandidate,
-  createPerson,
-  createPersonAuto,
-  findByIdentity,
-  linkIdentity,
-  loadIdentities,
-  personForChannel,
-  splitIdentity,
-} from './entities.js'
+import { addCandidate, ensureCard, findByIdentity, mainOf, mergeCards, personForChannel, splitCard } from './entities.js'
 import { listEntries, entryRel, addFact } from './memory.js'
 import { writeTracked } from './version.js'
 import { listDays, readDay } from './raw.js'
@@ -68,22 +59,23 @@ export function claimIdentity(
     return { state: 'pending', uid: null, identity: { platform: p, id: i }, added: r.added }
   }
 
-  // 先确定"本人"是谁：私聊频道里的 qq 号；没有就建一个
+  // 先确定"本人"是谁：私聊频道里的 qq 号；没有就建一张卡
   const speakerId = String(channel).split(':')[1]
   let uid = personForChannel(root, channel)
   if (!uid) {
-    // 自动建卡：撞名就自动加标识（(QQ) 主人），不把人卡流程卡死
-    const person = createPersonAuto(root, { display: '主人', platform: 'qq', nativeId: speakerId })
-    uid = person.uid
-    if (speakerId) linkIdentity(root, uid, { platform: 'qq', id: speakerId })
+    const r = ensureCard(root, pid, { app: 'qq', account: speakerId, nickname: '主人' })
+    uid = r.cardId
   }
 
   const existing = findByIdentity(root, p, i)
   if (existing) {
-    return { state: 'confirmed', uid: existing.uid, identity: { platform: p, id: i }, changed: false }
+    if (existing.uid !== mainOf(root, pid, uid)) mergeCards(root, pid, [uid, existing.acct])
+    return { state: 'confirmed', uid: mainOf(root, pid, uid), identity: { platform: p, id: i }, changed: false }
   }
 
-  linkIdentity(root, uid, { platform: p, id: i, state: 'confirmed', confidence: 1, evidence: [src] })
+  const created = ensureCard(root, pid, { app: p, account: i, nickname: '主人' })
+  mergeCards(root, pid, [uid, created.cardId])
+  uid = mainOf(root, pid, uid)
 
   const fact = addFact(root, pid, {
     topic: '身份',
@@ -191,7 +183,7 @@ export function correctIdentity(root, pid, { uid, platform, id, reason = '', evi
   if (!current) throw new Error(`没有找到 ${p}:${i} 的归属`)
   if (uid && current.uid !== uid) throw new Error(`这个账号实际属于 ${current.uid}，不是 ${uid}`)
 
-  const moved = splitIdentity(root, current.uid, p, i)
+  const moved = splitCard(root, pid, current.acct)
 
   // 关闭旧主张
   const closed = []
@@ -217,7 +209,7 @@ export function correctIdentity(root, pid, { uid, platform, id, reason = '', evi
   logChange(root, {
     kind: 'identity_correction',
     from: current.uid,
-    to: moved.uid,
+    to: current.acct,
     platform: p,
     id: i,
     reason,
@@ -225,5 +217,5 @@ export function correctIdentity(root, pid, { uid, platform, id, reason = '', evi
     closed_facts: closed,
   })
 
-  return { from: current.uid, to: moved.uid, closedFacts: closed }
+  return { from: current.uid, to: current.acct, closedFacts: closed }
 }

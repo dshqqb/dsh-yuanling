@@ -11,9 +11,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, linkIdentity, writeProfile, readProfile, setAdmin } from '../src/core/entities.js'
+import { createPerson, linkIdentity, writeProfile, readProfile, setAdmin } from './helpers.mjs'
 import { createGroupWithCard, setGroupTier } from '../src/core/groups.js'
-import { setPinned } from '../src/core/entities.js'
+import { setPinned } from './helpers.mjs'
 import {
   canReply,
   setAudienceMode,

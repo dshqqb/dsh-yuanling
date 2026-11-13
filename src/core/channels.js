@@ -17,18 +17,18 @@
 // `group:123555`。认不出的标 unresolved，**不猜**。
 import path from 'node:path'
 import {
-  accountForNative,
-  accountsForPerson,
-  ensureAccount,
-  ensurePersonForAccount,
+  cardByAccount,
+  groupOf,
+  loadCard,
+  readCard,
+  writeCard,
+  mainOf,
+  ensureCard,
   labelOfPerson,
-  loadAccount,
-  loadPersons,
-  savePersons,
-  personForAccount,
   personWeight,
+  listCards,
 } from './accounts.js'
-import { isAccountUid, isPersonUid } from './accounts.js'
+import { isCardUid } from './accounts.js'
 import { writeJsonAtomic, readJson, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
@@ -82,130 +82,47 @@ export function appForModule(root, moduleId) {
  */
 export function nativeTargetFor(root, channel) {
   const scene = resolveChannel(root, channel)
-
   if (scene.kind === 'private' && scene.acct) {
-    const card = loadAccount(root, requirePid(root), scene.acct)
-    return card ? { platform: String(card.platform), id: String(card.nativeId) } : null
+    const card = loadCard(root, requirePid(root), scene.acct)
+    return card ? { platform: String(card.app), id: String(card.account) } : null
   }
-  if (scene.kind === 'private' && scene.personUid) {
-    // 兼容旧场景：拿主账户
-    const rec = loadPersons(root).persons?.[scene.personUid]
-    const card = rec?.primary ? loadAccount(root, requirePid(root), rec.primary) : null
-    return card ? { platform: String(card.platform), id: String(card.nativeId) } : null
-  }
-
   if (scene.gid) {
     const s = String(scene.gid)
     const i = s.indexOf(':')
     if (i <= 0) return null
     return { platform: s.slice(0, i), id: s.slice(i + 1) }
   }
-
   return null
 }
 
-/**
- * 场景编号是内部编号：`private:<acct_xxx>`（新）/ `private:<person_xxx>`（旧）。
- * 旧的 `private:<外部号>` 只有在能**唯一**反查到账户时才认；认不出就 unresolved，不猜。
- */
+/** 场景编号是内部卡 id：`private:card_xxx`；旧外部号只在唯一命中时认。 */
 export function resolveChannel(root, channel) {
   const raw = String(channel ?? '')
   const { kind, id } = parseChannel(raw)
+  const p = requirePid(root)
 
   if (kind === 'private') {
-    if (isAccountUid(id)) {
-      const card = loadAccount(root, requirePid(root), id)
-      if (!card) {
-        return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: false, legacy: false, unresolvedReason: 'account-missing' }
-      }
-      const person = personForAccount(root, id)
-      return {
-        raw,
-        kind,
-        id,
-        canonical: raw,
-        acct: id,
-        personUid: person?.uid ?? null,
-        gid: null,
-        nativeId: `${card.platform}:${card.nativeId}`,
-        resolved: true,
-        legacy: false,
-      }
+    if (isCardUid(id)) {
+      const card = readCard(root, p, id)
+      if (!card) return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: false, legacy: false, unresolvedReason: 'card-missing' }
+      const main = mainOf(root, p, id)
+      return { raw, kind, id, canonical: raw, acct: id, personUid: main, gid: null, nativeId: `${card.app}:${card.account}`, resolved: true, legacy: false }
     }
-    if (isPersonUid(id)) {
-      const rec = loadPersons(root).persons?.[id]
-      const acct = rec?.primary ?? rec?.accounts?.[0] ?? null
-      return {
-        raw,
-        kind,
-        id,
-        canonical: raw,
-        acct,
-        personUid: rec ? id : null,
-        gid: null,
-        nativeId: acct ? null : null,
-        resolved: Boolean(rec),
-        legacy: false,
-        unresolvedReason: rec ? undefined : 'person-missing',
-      }
-    }
-    // 旧格式：外部号当编号。按 qq/微信/贴吧等逐个查账户；唯一命中才认。
-    const platforms = ['qq', 'wechat', 'tieba', 'tg', 'dsh']
-    const hits = []
-    for (const platform of platforms) {
-      const acct = accountForNative(root, platform, id)
-      if (acct) hits.push({ platform, acct })
-    }
+    const hits = listCards(root, p).filter((c) => String(c.account) === String(id))
     if (hits.length === 1) {
-      const person = personForAccount(root, hits[0].acct)
-      return {
-        raw,
-        kind,
-        id,
-        canonical: raw,
-        acct: hits[0].acct,
-        personUid: person?.uid ?? null,
-        gid: null,
-        nativeId: `${hits[0].platform}:${id}`,
-        resolved: true,
-        legacy: true,
-      }
+      const card = hits[0]
+      return { raw, kind, id, canonical: raw, acct: card.id, personUid: mainOf(root, p, card.id), gid: null, nativeId: `${card.app}:${card.account}`, resolved: true, legacy: true }
     }
-    return {
-      raw,
-      kind,
-      id,
-      canonical: raw,
-      acct: null,
-      personUid: null,
-      gid: null,
-      nativeId: null,
-      resolved: false,
-      legacy: true,
-      unresolvedReason: hits.length ? 'ambiguous-native' : 'not-internal-id',
-    }
+    return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: false, legacy: true, unresolvedReason: hits.length ? 'ambiguous-native' : 'not-internal-id' }
   }
 
   if (GROUP_KINDS.has(kind)) {
     if (/^grp_/.test(id)) {
       return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: id, nativeId: null, resolved: true, legacy: false }
     }
-    return {
-      raw,
-      kind,
-      id,
-      canonical: raw,
-      acct: null,
-      personUid: null,
-      gid: null,
-      nativeId: null,
-      resolved: false,
-      legacy: true,
-      unresolvedReason: 'not-internal-id',
-    }
+    return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: false, legacy: true, unresolvedReason: 'not-internal-id' }
   }
 
-  // 不是人也不是地方：bili:video:BV1 / dsh:xxx / module:xxx —— 原样
   return { raw, kind, id, canonical: raw, acct: null, personUid: null, gid: null, nativeId: null, resolved: true, legacy: false }
 }
 
@@ -239,18 +156,10 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
   const { kind, id } = parseChannel(raw)
 
   if (kind === 'private') {
-    // 已经是账户编号 → 直接用
-    if (isAccountUid(id)) {
-      const person = personForAccount(root, id)
-      return { channel: raw, native: null, acct: id, personUid: person?.uid ?? null, gid: null }
+    if (isCardUid(id)) {
+      const card = readCard(root, requirePid(root), id)
+      return { channel: raw, native: null, acct: id, personUid: card ? mainOf(root, requirePid(root), id) : null, gid: null }
     }
-    // 旧内部人物编号 → 主账户
-    if (isPersonUid(id)) {
-      const rec = loadPersons(root).persons?.[id]
-      const acct = rec?.primary ?? rec?.accounts?.[0] ?? null
-      return { channel: acct ? `private:${acct}` : raw, native: null, acct, personUid: rec ? id : null, gid: null }
-    }
-    // 她自己的话不建卡
     if (!createPerson) return { channel: raw, native: raw, acct: null, personUid: null, gid: null }
     const platform = appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
     const r = ensureSenderAccount(root, { platform, nativeId: id, nickname: actorName || id })
@@ -277,39 +186,37 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
 export function ensureSenderAccount(root, { platform, nativeId, nickname = '', nicknames = null } = {}) {
   if (!nativeId) throw new Error('缺少账号 id，没法归人')
   const p = requirePid(root)
-  const r = ensureAccount(root, p, { platform: platform || 'unknown', nativeId, nickname, nicknames })
-  let person = personForAccount(root, p, r.acct)
+  const r = ensureCard(root, p, { app: platform || 'unknown', account: nativeId, nickname, nicknames })
+  const card = readCard(root, p, r.cardId)
   let createdPerson = false
-  if (!person) {
-    const uid = ensurePersonForAccount(root, p, r.acct)
+  if (r.created && card && !card.members?.length) {
+    card.tier = 'shadow'
+    card.updated_at = localIso()
+    writeCard(root, p, r.cardId, card)
     createdPerson = true
-    const data = loadPersons(root, p)
-    const rec = data.persons[uid]
-    const hasProfile = Boolean(readJson(path.join(root, P.personas, p, 'entities', 'people', `${uid}.json`), null))
-    if (rec && !hasProfile) rec.tier = 'shadow'
-    savePersons(root, data, p)
-    person = loadPersons(root, p).persons[uid]
   }
-  return { acct: r.acct, person: person.uid, createdAcct: r.created, createdPerson }
+  return { acct: r.cardId, person: mainOf(root, p, r.cardId), createdAcct: r.created, createdPerson }
 }
 
-/** 旧名门面：返回人物 uid。 */
 export function ensureSenderPerson(root, opts = {}) {
   return ensureSenderAccount(root, opts).person
 }
 
-/** 影子卡转正：有人写过素描 / 认过领 / 当了管理员，就不再是“路人”。 */
 export function promoteShadow(root, uid) {
-  const data = loadPersons(root)
-  const person = data.persons?.[uid]
-  if (!person || person.tier !== 'shadow') return false
-  delete person.tier
-  savePersons(root, data)
+  const p = requirePid(root)
+  const main = mainOf(root, p, uid)
+  const card = readCard(root, p, main)
+  if (!card || card.tier !== 'shadow') return false
+  card.tier = null
+  card.updated_at = localIso()
+  writeCard(root, p, main, card)
   return true
 }
 
 export function isShadow(root, uid) {
-  return loadPersons(root).persons?.[uid]?.tier === 'shadow'
+  const p = requirePid(root)
+  const main = mainOf(root, p, uid)
+  return readCard(root, p, main)?.tier === 'shadow'
 }
 
 // ── 群体身份（客观，跨人格共用）────────────────────────────────────────
@@ -401,18 +308,18 @@ export function sceneRecordKeys(root, channel) {
   const out = new Set([String(channel), c.raw, c.canonical])
 
   if (c.acct) {
-    const card = loadAccount(root, requirePid(root), c.acct)
+    const card = readCard(root, requirePid(root), c.acct)
     if (card) {
-      out.add(`private:${card.nativeId}`)
-      out.add(`private:${card.platform}:${card.nativeId}`)
+      out.add(`private:${card.account}`)
+      out.add(`private:${card.app}:${card.account}`)
     }
     out.add(`private:${c.acct}`)
-    if (c.personUid) out.add(`private:${c.personUid}`)
+    if (c.personUid && c.personUid !== c.acct) out.add(`private:${c.personUid}`)
   }
   if (!c.acct && c.personUid) {
-    for (const card of accountsForPerson(root, requirePid(root), c.personUid)) {
-      out.add(`private:${card.nativeId}`)
-      out.add(`private:${card.platform}:${card.nativeId}`)
+    for (const card of groupOf(root, requirePid(root), c.personUid)) {
+      out.add(`private:${card.account}`)
+      out.add(`private:${card.app}:${card.account}`)
     }
     out.add(`private:${c.personUid}`)
   }
