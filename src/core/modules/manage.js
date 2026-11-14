@@ -61,6 +61,8 @@ export function listModules(root) {
         version: e.version,
         api: e.api,
         app: e.app ?? manifest?.app ?? null,
+        // 老注册表没有这个字段：按"声明了 app 就默认有账户"推断，和 manifest 的缺省规则一致
+        accountSource: e.accountSource ?? manifest?.accountSource ?? Boolean(e.app ?? manifest?.app),
         kind: e.kind,
         source: e.source ?? null,
         repo: e.repo ?? null,

@@ -2273,10 +2273,6 @@ async function loadDiag() {
 // 键就是菜单 id。注意 shape 用的是 loadProposals——"人格塑造"就是原来那页提案，
 // 改名是为了让人看懂，不是重写。
 // ── 控制台对话 ────────────────────────────────────────────────────────
-function chatPrefix(mode) {
-  return mode === 'test' ? 'chat-test' : 'chat'
-}
-
 function appendChatBubble(mode, role, text, { test = mode === 'test', error = '' } = {}) {
   const log = $(mode === 'test' ? 'chat-test-log' : 'chat-log')
   if (!log) return null

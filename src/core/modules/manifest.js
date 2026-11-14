@@ -4,7 +4,7 @@
 // 校验规则逐条对应 §3.3，宁可拒装，也不让一个坏的 manifest 进注册表。
 export const API_MAJOR = 1
 // v1.7：`ingest` 回执按条带 items（canonical channel / directed）——模块靠它开 DSH 回合、做 egress。
-export const API_MINOR = 8
+export const API_MINOR = 9
 
 /** §3.2 id 保留字：模块 id 会成为 raw 的来源名，撞名会污染原始层。 */
 export const RESERVED_IDS = [
@@ -326,6 +326,20 @@ export function validateManifest(raw) {
   if (raw.app !== undefined) {
     if (!isString(raw.app)) err('app', 'BAD_FORMAT', 'app 必须是字符串')
     else if (!/^[a-z0-9]{2,24}$/.test(raw.app)) err('app', 'BAD_FORMAT', 'app 只能由小写字母和数字组成，2~24 字符')
+    // v1.9：来源名用 app，所以它和 id 一样不许撞保留字——`system` 会混进 system.ndjson
+    // （那是墓碑/纠错的系统事件文件），`dsh` 会混进控制台对话的来源。
+    else if (RESERVED_IDS.includes(raw.app)) err('app', 'RESERVED', `app「${raw.app}」是保留字（会撞 raw 的来源名）`)
+  }
+
+  // accountSource（v1.9）：这个模块接的数据源**有没有账户信息**。
+  // true 时必须给 app——"有账户"就意味着这些账户属于某个 App，不然人物卡拿什么当平台。
+  // 缺省按 app 是否存在推断（有 app = 有账户）：老模块不用改，也不会从「新增人物」里消失。
+  if (raw.accountSource !== undefined) {
+    if (typeof raw.accountSource !== 'boolean') err('accountSource', 'BAD_FORMAT', 'accountSource 必须是布尔')
+  }
+  const accountSource = raw.accountSource === undefined ? Boolean(raw.app) : raw.accountSource === true
+  if (accountSource && !raw.app) {
+    err('accountSource', 'MISSING_APP', 'accountSource=true 时必须声明 app：账户属于哪个 App')
   }
 
   // config.schema 只允许 JSON Schema 子集
@@ -345,6 +359,7 @@ export function validateManifest(raw) {
       minCore: raw.minCore ?? null,
       api: raw.api,
       app: raw.app ?? null,
+      accountSource,
       kind: raw.kind ?? 'gateway',
       entry: { command: cmd },
       capabilities: raw.capabilities ?? [],

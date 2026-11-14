@@ -1,6 +1,9 @@
-# PROTOCOL · 原灵模块协议（v1.8）
+# PROTOCOL · 原灵模块协议（v1.9）
 
-> 状态：**v1.8 已定稿（文档先行，核心实现待 A30）**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> 状态：**v1.9 已定稿并实现**。v1.0 于 2026-11-08 冻结，七条 spike 全过。
+> v1.9：⑫ manifest 增 `accountSource`——声明这个模块接的数据源**有没有账户信息**；
+> `true` 时 `app` 必填，且它的 app 才会出现在「新增人物」的 App 下拉里。同时定下 raw 的
+> **来源命名**：模块有 `app` 就用 `app`，没有才用模块 id；见 §3.7 / §1 第 1 条。
 > v1.8：⑪ manifest 增 `app`——模块声明自己对接的 App 标识（只允许小写字母/数字），
 > 安装时由核心记进模块注册表；见 §3.6 / §16。**不搞官方注册表，先只是模块自报的稳定标识。**
 > v1.7：⑩ `ingest` 回执按条带 `items[]`（canonical channel / directed / deduped / record）——模块靠它开 DSH 回合、做 `egress`；见 §5.1.5。
@@ -41,7 +44,7 @@
 
 | # | 边界 | 执行点 |
 |---|---|---|
-| 1 | 不能直接读 `raw/`，只能 `ingest()` | 落盘、脱敏、分片全在核心；**`source` 由核心按连接身份盖章，模块自报无效** |
+| 1 | 不能直接读 `raw/`，只能 `ingest()` | 落盘、脱敏、分片全在核心；**`source` 由核心按连接身份盖章，模块自报无效**。v1.9 起盖的是「模块的 `app`（有 app 时）或模块 id」，见 §3.7 |
 | 2 | 不能直接写记忆，只能 `propose.fact`（需 capability `propose.fact`） | 走查重 / 槽位 / 重要度全流程，事实带 `origin_module` |
 | 3 | 不能决定媒体存哪，只能 `media.put.file`，拿回内容寻址指针 | 路径由核心分配，模块只拿指针 |
 | 4 | **不能自己决定发什么**：内容由核心算，模块只投递 | 主动说的走 `outbox`（核心算好才交付）；回复走 `egress.request`（核心跑 `rules/action` + 名单 + 配额才放行）；被拒只记 refusal，**正文不落盘** |
@@ -148,9 +151,10 @@
 {
   "id": "qq",                              // 必填，^[a-z][a-z0-9-]{1,31}$，保留字见 §3.2
   "version": "1.2.0",                      // 必填，semver；更新比对用
-  "api": "1.8",                            // 主.次；主版本不符 → 拒装；次版本高于核心 → 拒装
+  "api": "1.9",                            // 主.次；主版本不符 → 拒装；次版本高于核心 → 拒装
   "minCore": "0.1.0",                      // 可选，模块要求的最低核心版本
   "app": "qq",                             // v1.8 可选：对接的 App 标识，^[a-z0-9]{2,24}$（见 §3.6）
+  "accountSource": true,                   // v1.9：这个数据源带账户信息；true 时 app 必填（见 §3.7）
   "kind": "gateway",                       // gateway | enricher | actuator（v1 无 ui）
   "transport": "stdio",                    // v1 只实现 stdio；http 见 §14
   "entry": {
@@ -327,15 +331,42 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
   纯工具模块（字幕、TTS、媒体处理）不声明。
 - 格式：`^[a-z0-9]{2,24}$`——**只允许小写字母和数字**，不带 `-` `_` `.`，不放中文。
   它是**稳定标识**，不是给人看的名字；显示名仍由 @name / `name` 字段负责。
+- 和 `id` 一样**不能是保留字**（`system` / `dsh` / `media` …，同 §3.2 那张表）：
+  v1.9 起 raw 的来源文件名就是它，`app: "system"` 会把模块消息混进 `system.ndjson`（墓碑/纠错事件）。
 - 语义：这个模块看到的账号属于哪个 App。账户卡的 `platform` 用同一个值；
   例如 QQ 网关写 `"app": "qq"`，米聊网关写 `"app": "milan"`。
 - **允许多个模块声明同一个 `app`**（NapCat 和 SnowLuma 都接 QQ）。
-  这不是冲突：App 是命名空间，模块只是通道；核心按 `app` 归账户，按模块记来源。
+  这不是冲突：App 是命名空间，模块只是通道；核心按 `app` 归账户，
+  raw 的来源也取 `app`（v1.9 起，见 §3.7）——几个通道因此合成一个来源。
 - 安装/更新时校验格式；把它记进 `system/modules.json` 的 `app` 字段（§16）。
 - **升级时改 `app` 属于语义变更**：已有账户会因此分裂，所以和 `routes` / `capabilities` 一样
   要重新走一次安装确认，不能静默通过。
 - 不声明 `app` 的模块仍可工作；它创建的账户由调用方显式给平台（管理台/API），
   核心不猜“模块 id 就是 App”。
+
+### 3.7 `accountSource`：这个数据源带不带账户信息（v1.9）
+
+```jsonc
+"accountSource": true
+```
+
+- **可选布尔**；缺省时按 `app` 是否存在推断（有 `app` = 有账户，老模块不用改）。
+- `true` 表示：这个模块接的数据源**有账户体系**，它的 `app` 可以拿来建人物卡
+  （「新增人物」的 App 下拉只列这一类；管理台、合并、群体加人都只认这张表）。
+- **`true` 时 `app` 必填**——"有账户"就意味着账户属于某个 App，否则人物卡没有平台可写。
+  校验在安装/更新时做（`MANIFEST` 的 `accountSource` / `MISSING_APP`）。
+- `false`（或显式写 `false`）表示它没有账户信息，例如字幕、搜索这类纯工具模块；
+  此时 `app` 可以为空，**也不进「新增人物」的 App 下拉**（即使写了 app）。
+- 它只影响"能不能建人物卡"，不影响 `ingest`：任何模块都能投消息，来源由核心盖章。
+
+**raw 里的来源命名（同一版定下）**：模块投进来的数据、以及 `source.fetch` 取回来的数据，
+写进 raw 时 `source` 取「模块的 `app`（有 app 时），否则模块 id」——
+
+- 有 `app` 时用 `app`：数据属于这个 App；多个都接 QQ 的模块天然合成一个来源，
+  心跳与来源页也按同一个名字归并。
+- 没有 `app` 时用模块 id（`bili` 这种），**不用 `name` 里的中文**——它会进文件名与频道号。
+- 平台解析仍按**模块 id** 查（模块可能声明 `app: "bilibili"` 而 id 是 `bili`），
+  所以核心在信封里另带 `originModule`，不让来源名反过来当模块名用。
 
 ## §4 传输与帧
 
@@ -383,7 +414,7 @@ v1.1 新增：`sources`——声明"我这儿有什么数据可以被要"（需 
 
 | op | 入参 | 出参 | 说明 |
 |---|---|---|---|
-| `ingest` | 复用 inbox 信封 `{v, source, acct, items[]}` | `{accepted, deduped, skipped, errors[], items?[]}` | 需 `ingest.message`；**`source` 以核心盖章为准**；单批 `items ≤ 100`；返回值即重试依据；v1.7 起回执带 `items`（见 §5.1.5） |
+| `ingest` | 复用 inbox 信封 `{v, source, acct, items[]}` | `{accepted, deduped, skipped, errors[], items?[]}` | 需 `ingest.message`；**`source` 以核心盖章为准**（v1.9 起是「模块的 `app` 或模块 id」，见 §3.7）；单批 `items ≤ 100`；返回值即重试依据；v1.7 起回执带 `items`（见 §5.1.5） |
 | `propose.fact` | `{topic, text, src, imp?}` | `{status: accepted\|deduped\|rejected, factId?}` | 需 `propose.fact`；`src` 必须可解析（先 `ingest` 再 `propose`）；落库带 `origin_module` |
 | `media.put.file` | `{path, mime, size?}` | `{ptr, hash, size, mime}` | 路径须在 `$YUANLING_TMP/` 内；≤20MB；mime 需在 `media.receive` ∩ 白名单；默认 20 次/分钟 |
 | `media.get` | `{ptr}` | `{path, mime, size, expires_at}` | 需 `media.read`；**不回字节**，返回临时文件路径；每次读取记模块日志 |
@@ -763,8 +794,9 @@ permissions 是**封闭的知情同意声明**，合法值就此两枚：
   "version": 1,
   "modules": {
     "qq": {
-      "id": "qq", "version": "1.2.0", "api": "1.8",
+      "id": "qq", "version": "1.2.0", "api": "1.9",
       "app": "qq",                          // v1.8：manifest.app 的快照；不声明则为 null
+      "accountSource": true,                // v1.9：这个数据源有没有账户信息（缺省按 app 推断）
       "repo": "https://github.com/dshqqb/dsh-yuanling-qq",
       "installedRef": "9f2c…",              // commit SHA
       "previousRepo": null,

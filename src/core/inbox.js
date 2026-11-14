@@ -12,7 +12,7 @@ import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
 import { ensureGroup, gidForChannel, noteGroupMember, noteGroupEngagement } from './groups.js'
-import { canonicalChannelForIngest, platformFromSource } from './channels.js'
+import { canonicalChannelForIngest, platformForModule } from './channels.js'
 import { cardByAccount, noteCardMessage } from './accounts.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
@@ -84,14 +84,20 @@ export function normalizeEnvelope(env) {
 /**
  * 摄入一个信封。
  *
+ * `originModule` 只由**核心自己**传（模块通道 / source.fetch）：v1.9 起 raw 的 `source`
+ * 可能是模块的 app，平台却要按模块 id 查；放在选项里而不是信封里，外部投递就伪造不了。
+ *
  * `withRecords` 是给 v1.1 的 `source.fetch` 用的：那条链路要把「刚落进哪一行」
  * 回给调用方（模型看到的是指针，不是计数）。默认不带，是因为 /inbox 的响应
  * 不该因为内部多了个需求就变大。
  *
  * @returns {{accepted:number, deduped:number, skipped:number, errors:string[], records?:Array}}
  */
-export function ingest(root, env, { now, maxBytes, withRecords = false, withItems = false } = {}) {
+export function ingest(root, env, { now, maxBytes, withRecords = false, withItems = false, originModule = '' } = {}) {
   const { source, acct, items } = normalizeEnvelope(env)
+  const origin = String(originModule ?? '').trim()
+  // 平台只算一次（读注册表有代价）：来源名是 app，模块 id 才查得到平台。
+  const modulePlatform = origin ? platformForModule(root, origin, source) : null
   const rules = loadIngestRules(root)
   const out = { accepted: 0, deduped: 0, skipped: 0, errors: [] }
   if (withRecords) out.records = []
@@ -111,7 +117,8 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
       try {
         canonical = canonicalChannelForIngest(root, {
           channel: channelIn,
-          source,
+          source: origin || source,
+          platform: modulePlatform,
           actorName: item.actor?.name ?? '',
           // 她自己的话不建人物卡（协议 §5.1.1 的 role:"bot"）
           createPerson: String(item.role ?? 'user') !== 'bot',
@@ -145,7 +152,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
       // 私聊：适配器说"这个号是好友"就记在身份上（群聊的在下面记完路人名册再记）。
       if (item.actor?.friend && canonical.personUid && item.actor?.id) {
         try {
-          noteFriendship(root, canonical.personUid, platformFromSource(source) ?? 'qq', String(item.actor.id), {
+          noteFriendship(root, canonical.personUid, modulePlatform ?? 'qq', String(item.actor.id), {
             remark: item.actor.remark ?? '',
           })
         } catch {
@@ -288,7 +295,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
           const gid = gidForChannel(root, channel)
           const actorId = item.actor?.id
           if (pid && gid && actorId && !isBot) {
-            const platform = platformFromSource(source) ?? 'qq'
+            const platform = modulePlatform ?? 'qq'
             const name = item.actor?.name ? String(item.actor.name) : ''
             const cardId = cardByAccount(root, pid, platform, String(actorId))
             // 没有卡就是"只在群里见过"：**什么都不记**（用户 2026-11-14 定，路人这个概念取消）。
@@ -317,7 +324,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
           const pid = readMarker(root)?.active
           const actorId = item.actor?.id
           if (pid && actorId && !isBot && directed) {
-            const platform = platformFromSource(source) ?? 'qq'
+            const platform = modulePlatform ?? 'qq'
             const name = item.actor?.name ? String(item.actor.name) : ''
             const existed = cardByAccount(root, pid, platform, String(actorId))
             const r = ensureCard(root, pid, { app: platform, account: String(actorId), nicknames: name ? [name] : null })

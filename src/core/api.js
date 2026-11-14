@@ -70,6 +70,8 @@ const BYTES_PER_TOKEN = 4.3
 
 /**
  * 已装模块上报的 App（读时反转 modules.json；`dsh` 不算，它只是管理台自己的对话通道）。
+ * 只收 `accountSource: true` 的模块——那才代表"这个 App 有账户体系"，能拿来建人物卡；
+ * 纯工具模块就算写了 app（例如字幕模块标 bilibili）也不进这张表。
  * 新建账户、新建群体、合并账户、群体加人，全都只认这张表。
  *
  * 结果缓 30 秒：`listModules` 要读注册表 + 每个模块的 manifest（冷的时候几十毫秒），
@@ -82,7 +84,7 @@ function moduleApps(root, { force = false } = {}) {
   const map = new Map()
   for (const m of listModules(root)) {
     const app = String(m.app ?? '').trim()
-    if (!app || app === 'dsh') continue
+    if (!app || app === 'dsh' || m.accountSource !== true) continue
     const hit = map.get(app) ?? { app, modules: [] }
     hit.modules.push({ id: m.id, name: m.name, enabled: m.enabled })
     map.set(app, hit)

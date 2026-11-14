@@ -4,8 +4,9 @@
 // 而这一层需要能单独测——它是模块唯一能碰 Core 的地方，接错了就是"模块装上了但收不进消息"。
 //
 // 协议 §1 第 1 条：`source` 由**核心按连接身份盖章**，模块自报无效。
-// 所以这里不信任 `data.source`，一律用模块 id 覆盖。
+// v1.9 起盖的是「模块的 app，没有 app 才是模块 id」，见 `sourceForModule`。
 import { ingest } from '../inbox.js'
+import { sourceForModule } from '../channels.js'
 import { addFact } from '../memory.js'
 import { readMarker } from '../persona.js'
 import { requestEgress } from '../egress.js'
@@ -25,8 +26,10 @@ export function moduleHandlers({ root, pid = null } = {}) {
      * 走后门就完了——脱敏、硬线、去重、分片、日链全在 ingest() 上，另开一条路等于那些规则对它失效。
      */
     onIngest: ({ id, data }) => {
-      const env = { ...(data && typeof data === 'object' ? data : {}), source: String(id) }
-      const r = ingest(root, env, { withItems: true })
+      // v1.9：raw 里的 `source` 用「app（有 app 时）或模块 id」，但**平台仍按模块 id 查**，
+      // 所以模块 id 走选项（`originModule`）而不是信封——外部投递伪造不了。
+      const env = { ...(data && typeof data === 'object' ? data : {}), source: sourceForModule(root, id) }
+      const r = ingest(root, env, { withItems: true, originModule: String(id) })
       return {
         accepted: r.accepted,
         deduped: r.deduped,

@@ -17,6 +17,7 @@ import { sha256, exists, readJson, isDir } from '../fsx.js'
 import { P } from '../paths.js'
 import { readRegistry, grantedOf, moduleDir } from './registry.js'
 import { ingest } from '../inbox.js'
+import { sourceForModule } from '../channels.js'
 
 /** 单次最多收多少条：够表达"这一屏"，又不会把上下文挤爆。 */
 export const FETCH_MAX_ITEMS = 20
@@ -121,7 +122,9 @@ export function normalizeReply({ moduleId, sourceId, reply, limit }) {
 export function storeFetched(root, { moduleId, sourceId, items, ackedAt }) {
   const env = {
     v: 1,
-    source: moduleId, // 协议 §1：source 由核心盖章，模块自报无效
+    // 协议 §1：source 由核心盖章；v1.9 起盖「app（有 app 时）或模块 id」。
+    // 模块 id 走 ingest 的 originModule 选项（平台解析仍按它查），不进信封。
+    source: sourceForModule(root, moduleId),
     acct: `module:${moduleId}`,
     items: items.map((it) => ({
       ts: it.ts ?? ackedAt,
@@ -140,7 +143,7 @@ export function storeFetched(root, { moduleId, sourceId, items, ackedAt }) {
     })),
   }
 
-  const counts = ingest(root, env, { withRecords: true })
+  const counts = ingest(root, env, { withRecords: true, originModule: String(moduleId) })
   const records = (counts.records ?? []).map((r) => ({
     id: r.id,
     ptr: `${r.file}#${r.id}`,

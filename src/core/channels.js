@@ -67,6 +67,30 @@ export function appForModule(root, moduleId) {
 }
 
 /**
+ * 模块的数据在 raw 里的「来源」名（v1.9 的规则）：
+ *   · 模块声明了 app → 用 app（数据属于这个 App；几个都接 QQ 的模块天然合成一个来源）
+ *   · 没声明 app    → 用模块 id（不能用 manifest 里的中文 name：它会进文件名与频道号）
+ *
+ * 来源名只决定 raw 的 `source` 与心跳；**平台**仍按模块 id 查（`appForModule`），
+ * 因为来源可能已经是 app，反查模块会落空。
+ */
+export function sourceForModule(root, moduleId) {
+  const id = String(moduleId ?? '').trim()
+  if (!id) return ''
+  return appForModule(root, id) ?? id
+}
+
+/**
+ * 模块 → 账户平台：先看它 manifest 里的 app（`bili` 模块的 app 是 `bilibili`），
+ * 再退回来源名推断。v1.9 把 raw 的 source 换成 app 之后，平台不能再从 source 猜——
+ * 猜出来是 `bilibili`，而模块 id 推出来是 `bili`，两张牌就分裂了。
+ */
+export function platformForModule(root, moduleId, fallback = '') {
+  const id = String(moduleId ?? '').trim()
+  return appForModule(root, id) ?? platformFromSource(id) ?? platformFromSource(fallback) ?? null
+}
+
+/**
  * 内部场景 → 平台侧的投递地址（QQ 号 / 群号）。
  *
  * 为什么需要它：出站必须给模块一个"能直接投递"的原始字符串（协议 §5.2 的 `target`），
@@ -147,7 +171,7 @@ export function legacySceneIdentity(root, scene) {
  * 私聊没有卡时**直接建一张好友卡**：私聊就是"跟她说话"，按定义不是路人。
  * （用户 2026-11-14 定：没有"路人"这个概念——说过话才有卡。）
  */
-export function canonicalChannelForIngest(root, { channel, source, actorName = '', createPerson = true }) {
+export function canonicalChannelForIngest(root, { channel, source, actorName = '', createPerson = true, platform = null }) {
   const raw = String(channel || 'unknown')
   const { kind, id } = parseChannel(raw)
 
@@ -157,18 +181,18 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
       return { channel: raw, native: null, acct: id, personUid: card ? mainOf(root, requirePid(root), id) : null, gid: null }
     }
     if (!createPerson) return { channel: raw, native: raw, acct: null, personUid: null, gid: null }
-    const platform = appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
-    const r = ensureSenderAccount(root, { platform, nativeId: id, nickname: actorName || id })
-    return { channel: `private:${r.acct}`, native: `private:${platform}:${id}`, acct: r.acct, personUid: r.person, gid: null }
+    const plat = platform ?? appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
+    const r = ensureSenderAccount(root, { platform: plat, nativeId: id, nickname: actorName || id })
+    return { channel: `private:${r.acct}`, native: `private:${plat}:${id}`, acct: r.acct, personUid: r.person, gid: null }
   }
 
   if (GROUP_KINDS.has(kind)) {
     if (/^grp_/.test(id)) {
       return { channel: raw, native: null, acct: null, personUid: null, gid: id }
     }
-    const platform = appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
+    const plat = platform ?? appForModule(root, source) ?? platformFromSource(source) ?? platformOfKind(kind) ?? 'unknown'
     const nativeId = id.includes(':') ? id.split(':').slice(1).join(':') : id
-    const gid = ensureGroupScene(root, { platform, nativeId })
+    const gid = ensureGroupScene(root, { platform: plat, nativeId })
     return { channel: `group:${gid}`, native: raw, acct: null, personUid: null, gid }
   }
 

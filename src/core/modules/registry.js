@@ -71,6 +71,9 @@ export function makeEntry({ manifest, source, repo, ref = null, retrievedAt = nu
     version: manifest.version,
     api: manifest.api,
     app: manifest.app ?? null,
+    // v1.9：这个模块接的数据源带不带账户信息（决定「新增人物」能不能选它的 app）。
+    // 缺省时和 manifest 的推断一致：有 app 就当有账户。
+    accountSource: manifest.accountSource === true || (manifest.accountSource === undefined && Boolean(manifest.app)),
     kind: manifest.kind,
     routes: (manifest.routes ?? []).map((r) => r.path),
     sources: (manifest.sources ?? []).map((s) => s.id),

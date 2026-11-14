@@ -114,8 +114,6 @@ export function setFactsShieldedBySrc(root, targets, on, now = localIso()) {
 
 // ── 文本工具 ────────────────────────────────────────────────────────────
 
-const CJK = /[\u4e00-\u9fff]/
-
 export function normalizeText(s) {
   return String(s ?? '')
     .toLowerCase()
@@ -683,17 +681,6 @@ export function identityLines(root, pid) {
 
 function byteLen(s) {
   return Buffer.byteLength(String(s), 'utf8')
-}
-
-/** 读这个人格下所有人物档案。 */
-function listPersonProfiles(root, pid) {
-  const dir = path.join(root, P.personas, pid, 'entities', 'people')
-  if (!exists(dir)) return []
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith('.json'))
-    .map((f) => readJson(path.join(dir, f), null))
-    .filter(Boolean)
 }
 
 /**
