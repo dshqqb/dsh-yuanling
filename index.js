@@ -463,6 +463,8 @@ export function apply(ctx, config) {
         },
         onConsoleTurn: (payload) => consoleChat.turn(payload),
         onConsoleStop: (payload) => consoleChat.stop(payload),
+        onModelGet: () => consoleChat.models(),
+        onModelSelect: (selection) => consoleChat.selectModel(selection),
         // 自证：/root 会把这段原样吐出来，用来排查"配置改了但进程还用旧值"
         meta: {
           source,

@@ -1,12 +1,13 @@
 {
   "name": "dsh-yuanling",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "原灵 —— DSH 的长期记忆与人格底座（目录骨架 / 原始层 / 版本 / 记忆 / 规则 / 管理台 / 演化提案）",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./client": "./web/client.js"
+    "./client": "./web/client.js",
+    "./guard": "./guard.js"
   },
   "dsh": {
     "bundle": {

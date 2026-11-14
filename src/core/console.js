@@ -6,8 +6,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { localIso, readJson } from './fsx.js'
+import { localIso } from './fsx.js'
 import { P } from './paths.js'
+import { listModelChoices, readConsoleModel, validateModelChoice, writeConsoleModel } from './model.js'
 import { requirePid } from './scope.js'
 import { cardByAccount, createCard, isConsoleMasterCard, readCard } from './accounts.js'
 import { contextFor } from './memory.js'
@@ -50,20 +51,6 @@ export function consoleMaster(root, pid = null) {
   const p = requirePid(root, pid)
   const id = cardByAccount(root, p, 'dsh', 'master')
   return id ? readCard(root, p, id) : null
-}
-
-/** 可选：system/console-model.json 指定控制台 Agent 的模型路由。 */
-export function consoleModelOverride(root) {
-  const j = readJson(path.join(root, 'system', 'console-model.json'), null)
-  if (!j || typeof j !== 'object') return null
-  const provider = String(j.provider ?? '').trim()
-  const model = String(j.model ?? '').trim()
-  if (!provider || !model) return null
-  return {
-    provider,
-    model,
-    ...(j.reasoningEffort ? { reasoningEffort: String(j.reasoningEffort) } : {}),
-  }
 }
 
 function historyFile(root, pid, mode) {
@@ -137,169 +124,73 @@ export function recordConsoleAssistant(root, pid, master, { text, turnId, ts = l
   return ingestConsole(root, pid, master, { role: 'bot', text, turnId, ts })
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function waitForAssistantText(agent) {
-  const deadline = Date.now() + 300_000
-  let idleSince = 0
-  for (;;) {
-    const text = assistantTextOf(agent)
-    if (text) return text
-    if (Date.now() > deadline) throw new Error('对话超时（300 秒）')
-    // followup 刚入队时 agent 可能还短暂处于 idle；先给它一个调度窗口。
-    if (idleSince === 0) idleSince = Date.now()
-    if (Date.now() - idleSince > 30_000) return ''
-    await sleep(200)
-  }
-}
-
-function lastAttemptFailure(agent) {
-  try {
-    const seq = Number(agent.session?.seq ?? 0)
-    for (let i = seq - 1; i >= 0; i -= 1) {
-      const ev = agent.session.eventAt(i)
-      if (ev?.type !== 'assistant/attempt') continue
-      const chunk = ev.data?.stream?.find?.((x) => x?.chunk?.type === 'finish')?.chunk
-      const failure = chunk?.reason?.failure
-      if (failure) return failure
-    }
-  } catch { /* ignore */ }
-  return null
-}
-
-function assistantTextOf(agent) {
-  try {
-    const messages = agent.session?.deriveMessages?.() ?? []
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const m = messages[i]
-      if (m.role !== 'assistant') continue
-      const text = (m.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('')
-      if (text) return text
-    }
-  } catch {
-    /* 读不到就回空 */
-  }
-  return ''
-}
-
-function chunkText(frame) {
-  const chunk = frame?.chunk ?? frame
-  if (!chunk || typeof chunk !== 'object') return ''
-  if (typeof chunk.text === 'string' && (chunk.type === 'text-delta' || chunk.type === 'text')) return chunk.text
-  if (typeof chunk.textDelta === 'string') return chunk.textDelta
-  if (typeof chunk.delta === 'string') return chunk.delta
-  return ''
-}
-
-const WRITE_TOOLS = [
-  'mcp__yuanling__yuanling_remember',
-  'mcp__yuanling__yuanling_observe',
-  'mcp__yuanling__yuanling_purpose',
-  'mcp__yuanling__yuanling_drive',
-  'mcp__yuanling__yuanling_style',
-  'mcp__yuanling__yuanling_account',
-  'mcp__yuanling__yuanling_person_merge',
-  'mcp__yuanling__yuanling_person_split',
-  'mcp__yuanling__yuanling_group',
-  'mcp__yuanling__yuanling_fetch',
-]
-
 export function createConsoleChat(ctx) {
-  const live = new Map()
-  const agents = () => ctx.get?.('agents')
-  const presets = () => ctx.get?.('agentPresets')
-  const defaults = () => ctx.get?.('agentDefaultModel')
-
-  function sessionId(pid, mode) {
-    return `yl-console-${String(pid).replace(/[^a-zA-Z0-9_-]/g, '_')}-${mode}`
-  }
-
-  async function getAgent(pid, mode, modelOverride = null) {
-    const key = `${pid}:${mode}`
-    const hit = live.get(key)
-    if (hit) return hit
-    const svc = agents()
-    if (!svc) throw new Error('DSH Agent 运行时不可用（ctx.agents 没注入）')
-    const presetSvc = presets()
-    if (!presetSvc) throw new Error('DSH Agent preset 运行时不可用（ctx.agentPresets 没注入）')
-    const dir = consoleDir(rootFor(ctx), pid, mode)
-    fs.mkdirSync(dir, { recursive: true })
-
-    const setup = (agentCtx) => {
-      if (mode !== 'test') return
-      if (!agentCtx.tools?.restrict) throw new Error('测试模式需要 DSH tools.restrict，但当前 Agent 没有工具服务')
-      // MCP 工具是宿主级注册的，preset 不能“不挂”它们；在 Agent scope 里逐条 deny。
-      // 逐条尝试而不是一次 deny 整组：某个工具没装时不要因为 unknown 让整条限制失效。
-      for (const name of WRITE_TOOLS) {
-        try {
-          agentCtx.tools.restrict({ deny: [name] })
-        } catch {
-          /* 这个工具当前不存在，跳过 */
-        }
-      }
-    }
-
-    let agent = svc.get?.(sessionId(pid, mode)) ?? null
+  const runs = new Map()
+  async function subagentTurn({ p, mode, clean, master, turnId, prior, model, send }) {
+    const root = rootFor(ctx)
+    const sub = ctx.get?.('subagents')
+    const svc = ctx.get?.('agents')
+    const parent = svc?.roots?.().find((a) => !String(a.id).startsWith('yl-console-'))
+    if (!sub?.startActivation) throw new Error('这个进程没有 DSH subagent 服务，控制台不可用')
+    if (!parent) throw new Error('没有找到 DSH 主会话，无法建立控制台对话')
+    const selected = model?.provider && model?.model
+      ? model
+      : (readConsoleModel(root) ?? parent.model?.current?.())
+    if (!selected?.provider || !selected?.model) throw new Error('没有可用的控制台模型')
+    const history = prior
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.text)
+      .slice(-20)
+      .map((m) => `${m.role === 'user' ? '主人' : '原灵'}：${m.text}`)
+      .join('\n')
+    const prompt = [
+      { type: 'text', text: consolePrompt(root, p, master, clean) },
+      ...(history ? [{ type: 'text', text: `【最近对话】\n${history}` }] : []),
+    ]
+    const controller = new AbortController()
+    const key = `${p}:${mode}`
     let handle = null
-    if (!agent) {
-      const fallbackModel = defaults()?.currentSelection?.()
-      if (fallbackModel) delete fallbackModel.reasoningEffort
-      // 优先跟随当前 DSH 主会话的模型：控制台是“和主对话同一个她”，
-      // 这样不会因为 agent-default-model 在插件进程里不可用而换一个坏路由。
-      let rootModel = null
-      try {
-        const rootAgent = svc.roots?.().find((a) => !String(a.id).startsWith('yl-console-'))
-        const cur = rootAgent?.model?.current?.()
-        if (cur?.provider && cur?.model) rootModel = { provider: cur.provider, model: cur.model, ...(cur.reasoningEffort ? { reasoningEffort: cur.reasoningEffort } : {}) }
-      } catch { /* 没有主会话就继续用默认 */ }
-      const model = modelOverride?.provider && modelOverride?.model
-        ? { provider: String(modelOverride.provider), model: String(modelOverride.model), ...(modelOverride.reasoningEffort ? { reasoningEffort: String(modelOverride.reasoningEffort) } : {}) }
-        : (consoleModelOverride(rootFor(ctx)) ?? rootModel ?? fallbackModel)
-      if (!model) throw new Error('没有可用的默认模型；先在 DSH 设置里选一个模型')
-      let resumeError = null
-      try {
-        handle = await svc.resume({ resumeSessionId: sessionId(pid, mode), setup })
-      } catch (err) {
-        resumeError = err
-        try {
-          handle = await svc.create({
-            sessionId: sessionId(pid, mode),
-            meta: { cwd: dir },
-            agentOptions: model,
-            setup,
-          })
-        } catch (createError) {
-          // 上一次 create 可能已经把 session 落盘、但 preset 失败；再 resume 一次。
-          try {
-            handle = await svc.resume({ resumeSessionId: sessionId(pid, mode), setup })
-          } catch {
-            throw new Error(`控制台会话启动失败：resume=${resumeError?.message ?? resumeError}；create=${createError?.message ?? createError}`)
-          }
-        }
-      }
-      agent = handle.agent
-      if (!presetSvc.presetForSession?.(agent.session)) {
-        await presetSvc.select(agent, mode === 'test' ? 'yuanling-console-test' : 'yuanling-console')
-      }
-    }
-    const entry = { agent, handle, onFrame: null }
+    let streamed = ''
+    let off = null
     try {
-      agent.ctx?.on?.('agent/assistant-stream', (event) => {
-        const frame = event?.frame ?? event
-        if (frame?.type === 'start') entry.streamText = ''
-        const t = chunkText(frame)
-        if (t) {
-          entry.streamText = (entry.streamText ?? '') + t
-          entry.onFrame?.(t)
-        }
+      handle = await sub.startActivation({
+        provider: 'spawn',
+        label: `yuanling console ${mode}`,
+        delivery: 'caller',
+        signal: controller.signal,
+        request: {
+          parent,
+          prompt,
+          agentOptions: selected,
+          agentPreset: mode === 'test' ? 'yuanling-console-test' : 'yuanling-console',
+          cwd: consoleDir(root, p, mode),
+          maxDepth: 1,
+        },
       })
-    } catch {
-      /* 没有流事件就回退到最终文本 */
+      runs.set(key, { handle, controller })
+      const child = svc.get?.(handle.childId)
+      if (child?.ctx?.on) {
+        off = child.ctx.on('agent/assistant-stream', (event) => {
+          const frame = event?.frame ?? event
+          const delta = chunkText(frame)
+          if (!delta) return
+          streamed += delta
+          send('delta', { text: delta })
+        })
+      }
+      const result = await handle.result
+      const text = (result?.output ?? []).filter((b) => b?.type === 'text').map((b) => b.text).join('') || streamed
+      if (!text) throw new Error(`模型没有返回文本（stopReason=${result?.stopReason ?? 'unknown'}）`)
+      if (!streamed) send('delta', { text })
+      appendConsoleHistory(root, p, mode, { role: 'assistant', text, at: localIso(), turnId, test: mode === 'test' })
+      if (mode === 'chat') {
+        try { recordConsoleAssistant(root, p, master, { text, turnId }) } catch { /* raw 失败不挡回复 */ }
+      }
+      send('done', { text, turnId })
+    } finally {
+      try { off?.() } catch { /* ignore */ }
+      runs.delete(key)
+      try { await handle?.dispose?.() } catch { /* ignore */ }
     }
-    live.set(key, entry)
-    return entry
   }
 
   async function turn({ pid, mode, text, model = null, send }) {
@@ -308,9 +199,9 @@ export function createConsoleChat(ctx) {
     const clean = String(text ?? '').trim()
     if (!clean) throw new Error('消息为空')
     const master = ensureConsoleMaster(rootFor(ctx), p)
-    const entry = await getAgent(p, mode, model)
     const turnId = `turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
     const ts = localIso()
+    const prior = consoleHistory(rootFor(ctx), p, mode, { limit: 20 })
     ensureConsoleDirs(rootFor(ctx), p)
     appendConsoleHistory(rootFor(ctx), p, mode, { role: 'user', text: clean, at: ts, turnId, test: mode === 'test' })
     send('meta', { turnId, mode })
@@ -318,69 +209,48 @@ export function createConsoleChat(ctx) {
       try { recordConsoleUser(rootFor(ctx), p, master, { text: clean, turnId, ts }) } catch { /* raw 失败不挡回复 */ }
     }
 
-    let streamed = ''
-    entry.streamText = ''
-    entry.onFrame = (delta) => {
-      streamed += delta
-      send('delta', { text: delta })
-    }
-    const seqBefore = Number(entry.agent.session?.seq ?? 0)
     try {
-      entry.agent.followup({
-        content: [{ type: 'text', text: consolePrompt(rootFor(ctx), p, master, clean) }],
-        source: { kind: mode === 'test' ? 'yuanling-console-test' : 'yuanling-console' },
-      })
-      await sleep(150)
-      let timeout = null
-      try {
-        await Promise.race([
-          entry.agent.whenIdle(),
-          new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('对话超时（300 秒）')), 300_000) }),
-        ])
-      } finally {
-        if (timeout) clearTimeout(timeout)
-      }
-      const finalText = entry.streamText || (await waitForAssistantText(entry.agent))
-      if (!finalText) {
-        const failure = lastAttemptFailure(entry.agent)
-        if (failure) {
-          throw new Error(`模型请求失败：${failure.message || failure.code || '未知错误'}${failure.code ? `（${failure.code}）` : ''}`)
-        }
-        const types = []
-        try {
-          const seq = Number(entry.agent.session?.seq ?? 0)
-          for (let i = Math.max(0, seqBefore); i < seq; i += 1) types.push(entry.agent.session.eventAt(i)?.type ?? '?')
-        } catch { /* ignore */ }
-        throw new Error(`模型没有返回文本（events=${types.join(',') || 'none'}；status=${JSON.stringify(entry.agent.status ?? null)}）`)
-      }
-      appendConsoleHistory(rootFor(ctx), p, mode, { role: 'assistant', text: finalText, at: localIso(), turnId, test: mode === 'test' })
-      if (mode === 'chat') {
-        try { recordConsoleAssistant(rootFor(ctx), p, master, { text: finalText, turnId }) } catch { /* raw 失败不挡回复 */ }
-      }
-      send('done', { text: finalText, turnId })
+      await subagentTurn({ p, mode, clean, master, turnId, prior, model, send })
+      return
     } catch (err) {
       appendConsoleHistory(rootFor(ctx), p, mode, { role: 'assistant', text: '', at: localIso(), turnId, test: mode === 'test', error: String(err?.message ?? err) })
       send('error', { message: String(err?.message ?? err) })
-    } finally {
-      entry.onFrame = null
+      return
     }
   }
 
   async function stop({ pid, mode }) {
-    const entry = live.get(`${pid}:${mode}`)
-    if (!entry) return false
-    try { entry.agent.cancel({ kind: 'user' }) } catch { /* 已经停了 */ }
+    const key = `${pid}:${mode}`
+    const run = runs.get(key)
+    if (!run) return false
+    try { run.controller.abort() } catch { /* 已经停了 */ }
+    try { await run.handle?.dispose?.() } catch { /* ignore */ }
+    runs.delete(key)
     return true
   }
 
-  async function dispose() {
-    for (const entry of live.values()) {
-      try { await entry.handle?.dispose?.() } catch { /* 关停失败不挡退出 */ }
-    }
-    live.clear()
+  async function models() {
+    const current = readConsoleModel(rootFor(ctx))
+    const catalog = await listModelChoices(ctx)
+    return { current, ...catalog }
   }
 
-  return { turn, stop, dispose }
+  async function selectModel(selection) {
+    const root = rootFor(ctx)
+    const clean = await validateModelChoice(ctx, selection)
+    writeConsoleModel(root, clean)
+    return { current: clean }
+  }
+
+  async function dispose() {
+    for (const run of runs.values()) {
+      try { run.controller.abort() } catch { /* ignore */ }
+      try { await run.handle?.dispose?.() } catch { /* ignore */ }
+    }
+    runs.clear()
+  }
+
+  return { turn, stop, dispose, models, selectModel }
 }
 
 // createConsoleChat 需要 root；由 index.js 用闭包传 root 更直接，这里保留一个可替换的解析点。

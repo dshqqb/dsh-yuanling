@@ -576,12 +576,13 @@ raw 照记、记忆照长，只是名单外的人等不到她的回复。
 
 两页都使用 SSE 逐字显示，底部是输入框，右下角是圆形 ↑ 发送按钮；Enter 发送，Shift+Enter 换行。
 
-- 每个激活人格各有一条长期会话；普通/测试各一条，互不混在一起。
+- 每个激活人格的普通/测试对话历史分别长期保存在 `console/chat`、`console/test` 的 `history.jsonl`，互不混在一起；每轮通过 DSH subagent 的 spawn child 执行，以继承 DSH 主会话的账户上下文，同时仍使用原灵自己的 preset。
 - 工作目录固定在 `personas/<人格>/console/chat` 与 `personas/<人格>/console/test`，和记忆数据隔离。
-- 两个 Agent preset：`yuanling-console`（正常）与 `yuanling-console-test`（测试）。测试 preset 会在 Agent scope 里 deny 掉 Yuanling 的记忆写工具，只保留读上下文和本地 `fs`/`pwsh`。
+- 两个 Agent preset：`yuanling-console`（正常）与 `yuanling-console-test`（测试）。测试 preset 额外挂 `dsh-yuanling/guard`，在每次工具调用时用 `tools.guard()` 拦住 Yuanling 的记忆写工具；只保留读上下文和本地 `fs`/`pwsh`。
 - 人格初始化时自动创建 `app=dsh, account=master` 的「主人」人物卡；`dsh` 不出现在新建人物下拉里，也不能手动创建。它是控制台专用主卡，合并时始终保留主卡身份。
 - 控制台聊天只允许回环地址 + console token；工具会真的执行，不要把这个页面暴露到公网。
-- 模型默认用 DSH 当前默认模型；需要给控制台单独指定时写 `system/console-model.json`：`{ "provider": "...", "model": "..." }`（不写回落到 DSH 默认；不要随便加 `reasoningEffort`，某些 provider 会因此不发起请求）。
+- 管理台「框架 → 状态 → 大模型」可以切换 DSH 里已经配置好的模型；如果该模型声明了推理等级，会同时显示等级选择。选择存 `system/console-model.json`，点击「保存」后下一轮对话/对话测试都使用新模型，**两页共用同一个选择**。
+- 也可以直接写 `system/console-model.json`：`{ "provider": "...", "model": "...", "reasoningEffort": "..." }`；`reasoningEffort` 可省略，省略时使用模型默认等级。
 
 ---
 

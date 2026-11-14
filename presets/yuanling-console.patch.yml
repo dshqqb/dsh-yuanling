@@ -71,6 +71,8 @@
                 你可以使用本地文件和命令工具；工作目录是当前人格专属的 console/test 目录。
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          - id: console-guard
+            name: dsh-yuanling/guard
           - id: tool-pwsh
             name: '@deepseek-ai/dsh-tool-pwsh'
             disabled: !!js process.platform !== 'win32'

@@ -100,6 +100,21 @@
             <div class="card-head"><h3>这台机器</h3></div>
             <div id="status-meta" class="kv"></div>
           </div>
+          <div class="card model-card">
+            <div class="card-head">
+              <h3>大模型</h3>
+              <span id="model-current" class="muted small">读取中…</span>
+            </div>
+            <div class="model-row">
+              <label for="model-select">模型</label>
+              <select id="model-select" disabled></select>
+              <label for="model-effort" id="model-effort-label" hidden>推理等级</label>
+              <select id="model-effort" hidden></select>
+              <button id="model-save" class="btn" type="button" disabled>保存</button>
+            </div>
+            <p id="model-msg" class="muted small"></p>
+            <p class="muted small" id="model-hint">切换后，原灵下一次对话使用该模型；已在运行的会话会在下一步生效。</p>
+          </div>
         </section>
 
         <!-- 人格 → 概况：一张人格卡 + 一段注入预览。菜单第一项，因为"当前是谁"决定后面所有页。 -->

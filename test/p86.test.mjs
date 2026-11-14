@@ -1,5 +1,5 @@
 // test/p86.test.mjs —— 控制台对话的“记忆语义”测试（不依赖真实 DSH 模型）。
-// 用一个假 Agent 验证：chat 写 raw，test 不写；两者都不影响对方。
+// 用假 subagent 验证：chat 写 raw，test 不写；两者都走 subagent child。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -8,53 +8,44 @@ import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
 import { bindConsoleRoot, createConsoleChat, ensureConsoleMaster, consoleHistory } from '../src/core/console.js'
+import { readConsoleModel } from '../src/core/model.js'
 import { listDays, readDay } from '../src/core/raw.js'
 
 const PID = 'yuanling'
 let root
 let chat
-let deniedTools = []
+let calls = []
 
 function makeCtx() {
-  const agents = []
-  const fakeAgents = {
-    get: () => null,
-    roots: () => [],
-    resume: async () => { throw new Error('no session') },
-    create: async ({ sessionId, setup }) => {
-      if (setup) setup({ tools: { restrict: ({ deny }) => deniedTools.push(...(deny ?? [])) } })
-      const messages = [{ role: 'system', content: [{ type: 'text', text: 'sys' }] }]
-      let idle = false
-      const agent = {
-        id: sessionId,
-        status: 'idle',
-        model: { current: () => ({ provider: 'fake', model: 'fake' }) },
-        session: { deriveMessages: () => messages },
-        ctx: { on: () => {} },
-        followup: ({ content }) => {
-          messages.push({ role: 'user', content })
-          setTimeout(() => {
-            messages.push({ role: 'assistant', content: [{ type: 'text', text: sessionId.includes('-test') ? '测试回复' : '正常回复' }] })
-            idle = true
-          }, 20)
-        },
-        whenIdle: async () => {
-          for (let i = 0; i < 30; i += 1) {
-            if (idle) return
-            await new Promise((r) => setTimeout(r, 10))
-          }
-        },
-        cancel: () => {},
+  const parent = { id: 'main', model: { current: () => ({ provider: 'fake', model: 'fake-model' }) } }
+  const child = { ctx: { on: () => () => {} } }
+  const subagents = {
+    startActivation: async (spec) => {
+      calls.push(spec)
+      const isTest = spec.request.agentPreset === 'yuanling-console-test'
+      return {
+        childId: `child-${calls.length}`,
+        result: Promise.resolve({ output: [{ type: 'text', text: isTest ? '测试回复' : '正常回复' }], stopReason: 'completed' }),
+        dispose: async () => {},
       }
-      agents.push(agent)
-      return { agent, dispose: async () => {} }
     },
   }
   return {
     get(name) {
-      if (name === 'agents') return fakeAgents
-      if (name === 'agentPresets') return { presetForSession: () => null, select: async () => {} }
-      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fake', model: 'fake' }) }
+      if (name === 'agents') return { roots: () => [parent], get: () => child }
+      if (name === 'subagents') return subagents
+      if (name === 'llm') {
+        return {
+          listProviders: () => [{ id: 'fake', name: 'Fake' }],
+          listModels: async () => [{ id: 'fake-model', name: 'Fake Model' }],
+          resolveModelInfo: async (provider, model) => ({
+            provider,
+            id: model,
+            name: 'Fake Model',
+            reasoning: { efforts: [{ id: 'low', name: '低' }], defaultEffort: 'low' },
+          }),
+        }
+      }
       return null
     },
   }
@@ -68,11 +59,11 @@ before(() => {
   chat = createConsoleChat(makeCtx())
 })
 
-test('chat：写 user + assistant 两条 raw', async () => {
+test('chat：走 subagent child，写 user + assistant 两条 raw', async () => {
   const events = []
   await chat.turn({ pid: PID, mode: 'chat', text: '正常一句', send: (e, d) => events.push([e, d]) })
-  const done = events.find(([e]) => e === 'done')
-  assert.ok(done)
+  assert.ok(events.some(([e]) => e === 'done'))
+  assert.equal(calls.at(-1).request.agentPreset, 'yuanling-console')
   const day = listDays(root).at(-1)
   const rows = readDay(root, day).filter((r) => String(r.ext?.message_id || '').startsWith('turn_'))
   assert.equal(rows.length, 2)
@@ -81,15 +72,22 @@ test('chat：写 user + assistant 两条 raw', async () => {
   assert.equal(rows[1].role, 'bot')
 })
 
-test('test：有回复，但不写 raw', async () => {
+test('test：走测试 preset，有回复但不写 raw', async () => {
   const before = listDays(root).flatMap((d) => readDay(root, d)).length
-  deniedTools = []
   const events = []
   await chat.turn({ pid: PID, mode: 'test', text: '测试一句', send: (e, d) => events.push([e, d]) })
   assert.ok(events.some(([e]) => e === 'done'))
-  assert.ok(deniedTools.includes('mcp__yuanling__yuanling_remember'))
+  assert.equal(calls.at(-1).request.agentPreset, 'yuanling-console-test')
   const after = listDays(root).flatMap((d) => readDay(root, d)).length
   assert.equal(after, before)
   assert.equal(consoleHistory(root, PID, 'test').at(-1).text, '测试回复')
   assert.equal(consoleHistory(root, PID, 'test').at(-1).test, true)
+})
+
+test('切换模型：写文件，下一轮 subagent 使用新模型', async () => {
+  const r = await chat.selectModel({ provider: 'fake', model: 'fake-model', reasoningEffort: 'low' })
+  assert.deepEqual(r.current, { provider: 'fake', model: 'fake-model', reasoningEffort: 'low' })
+  assert.deepEqual(readConsoleModel(root), { provider: 'fake', model: 'fake-model', reasoningEffort: 'low' })
+  await chat.turn({ pid: PID, mode: 'chat', text: '再一句', send: () => {} })
+  assert.deepEqual(calls.at(-1).request.agentOptions, { provider: 'fake', model: 'fake-model', reasoningEffort: 'low' })
 })

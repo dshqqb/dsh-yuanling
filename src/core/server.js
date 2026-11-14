@@ -141,7 +141,7 @@ export async function kickModule(body, notify, opts = {}) {
  * @param {string} root
  * @param {{token?: string, meta?: object, onSourceFetch?: Function, onModuleChanged?: Function}} opts
  */
-export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null, onModuleChanged = null, onUiGet = null, onConsoleTurn = null, onConsoleStop = null } = {}) {
+export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null, onModuleChanged = null, onUiGet = null, onConsoleTurn = null, onConsoleStop = null, onModelGet = null, onModelSelect = null } = {}) {
   if (!token) throw new Error('控制台令牌不存在，先跑 yuanling init 或 yuanling token --reset')
 
   return http.createServer(async (req, res) => {
@@ -206,6 +206,15 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
         return json(res, 200, { ok: true, mode, items: consoleHistory(root, pid, mode, { limit: Number(url.searchParams.get('limit')) || 200 }) })
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/model') {
+        if (!onModelGet) return json(res, 503, { ok: false, error: '这个进程没有 DSH 模型运行时（用 DSH 里的插件启动管理台）' })
+        try {
+          return json(res, 200, { ok: true, ...(await onModelGet()) })
+        } catch (err) {
+          return json(res, 500, { ok: false, error: String(err?.message ?? err) })
+        }
+      }
+
       if (req.method === 'POST') {
         let text = ''
         try {
@@ -255,6 +264,15 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
           const pid = readMarker(root)?.active
           await onConsoleStop({ pid, mode: body.mode === 'test' ? 'test' : 'chat' })
           return json(res, 200, { ok: true })
+        }
+
+        if (url.pathname === '/api/model') {
+          if (!onModelSelect) return json(res, 503, { ok: false, error: '这个进程没有 DSH 模型运行时' })
+          try {
+            return json(res, 200, { ok: true, ...(await onModelSelect(body)) })
+          } catch (err) {
+            return json(res, 400, { ok: false, error: String(err?.message ?? err) })
+          }
         }
 
         // 取数要跟**活着的模块进程**说话，而进程只存在于插件宿主里，
@@ -339,7 +357,7 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
  *
  * @returns {Promise<{server:http.Server, port:number, url:string}>}
  */
-export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null, onModuleChanged = null, onUiGet = null, onConsoleTurn = null, onConsoleStop = null } = {}) {
+export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null, onModuleChanged = null, onUiGet = null, onConsoleTurn = null, onConsoleStop = null, onModelGet = null, onModelSelect = null } = {}) {
   const server = createServer(root, {
     meta,
     onSourceFetch,
@@ -347,6 +365,8 @@ export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, to
     onUiGet,
     onConsoleTurn,
     onConsoleStop,
+    onModelGet,
+    onModelSelect,
     ...(token === undefined ? {} : { token }),
   })
   return new Promise((resolve, reject) => {

@@ -346,6 +346,127 @@ async function loadStatus() {
     kv('模块', `${(mods.modules ?? []).length} 个已装，${running} 个在跑`)
   }
   kv('切换人格', '在「人格 → 概况」里')
+  try { await loadModel() } catch (err) {
+    const msg = $('model-msg')
+    if (msg) msg.textContent = `模型目录读取失败：${err?.message ?? err}`
+  }
+}
+
+let modelCatalog = null
+
+function modelChoiceValue(provider, model) {
+  return JSON.stringify({ provider, model })
+}
+
+function findModelChoice(provider, model) {
+  return (modelCatalog?.providers ?? [])
+    .find((p) => p.id === provider)?.models.find((m) => m.id === model) ?? null
+}
+
+function renderModelEfforts() {
+  const sel = $('model-effort')
+  const label = $('model-effort-label')
+  if (!sel || !label) return
+  const picked = $('model-select')?.value
+  let choice = null
+  if (picked) {
+    try { const v = JSON.parse(picked); choice = findModelChoice(v.provider, v.model) } catch {}
+  }
+  const efforts = choice?.reasoning?.efforts ?? []
+  if (!efforts.length) {
+    sel.hidden = true
+    label.hidden = true
+    sel.innerHTML = ''
+    return
+  }
+  const currentEffort = modelCatalog?.current?.provider === choice.provider && modelCatalog?.current?.model === choice.id
+    ? modelCatalog.current.reasoningEffort ?? ''
+    : ''
+  sel.innerHTML = ''
+  sel.append(new Option('自动', ''))
+  for (const e of efforts) sel.append(new Option(e.name || e.id, e.id))
+  sel.value = efforts.some((e) => e.id === currentEffort) ? currentEffort : ''
+  sel.hidden = false
+  label.hidden = false
+}
+
+function renderModel() {
+  const sel = $('model-select')
+  if (!sel) return
+  sel.innerHTML = ''
+  const providers = modelCatalog?.providers ?? []
+  if (!providers.some((p) => (p.models ?? []).length)) {
+    sel.append(new Option(modelCatalog?.error || 'DSH 里没有可用模型', ''))
+    sel.disabled = true
+    $('model-save').disabled = true
+    $('model-current').textContent = modelCatalog?.error ? '不可用' : '未配置'
+    return
+  }
+  sel.append(new Option('选择模型…', ''))
+  for (const p of providers) {
+    const models = p.models ?? []
+    if (!models.length) continue
+    const group = document.createElement('optgroup')
+    group.label = p.name || p.id
+    for (const m of models) {
+      const opt = new Option(m.name || m.id, modelChoiceValue(p.id, m.id))
+      if (m.error) opt.textContent += '（元数据读取失败）'
+      group.append(opt)
+    }
+    sel.append(group)
+  }
+  const cur = modelCatalog?.current
+  if (cur) {
+    const value = modelChoiceValue(cur.provider, cur.model)
+    if ([...sel.options].some((o) => o.value === value)) sel.value = value
+    $('model-current').textContent = `${cur.provider} / ${cur.model}${cur.reasoningEffort ? ` · ${cur.reasoningEffort}` : ''}`
+  } else {
+    $('model-current').textContent = '沿用 DSH 默认模型'
+  }
+  sel.disabled = false
+  $('model-save').disabled = !sel.value
+  renderModelEfforts()
+}
+
+async function loadModel() {
+  modelCatalog = await api('/api/model')
+  renderModel()
+  $('model-msg').textContent = ''
+}
+
+async function saveModel() {
+  const sel = $('model-select')
+  const btn = $('model-save')
+  const msg = $('model-msg')
+  let picked = null
+  try { picked = JSON.parse(sel.value) } catch {}
+  if (!picked?.provider || !picked?.model) return
+  const effort = $('model-effort').hidden ? '' : $('model-effort').value
+  btn.disabled = true
+  msg.textContent = '切换中…'
+  try {
+    const d = await postApi('/api/model', {
+      provider: picked.provider,
+      model: picked.model,
+      ...(effort ? { reasoningEffort: effort } : {}),
+    })
+    modelCatalog.current = {
+      provider: picked.provider,
+      model: picked.model,
+      ...(effort ? { reasoningEffort: effort } : {}),
+    }
+    const applied = (d.applied ?? []).length
+    msg.textContent = `已保存${effort ? `（推理等级 ${effort}）` : ''}${applied ? `，已作用于 ${applied} 个运行中的会话` : ''}`
+    renderModel()
+    if (effort) {
+      const e = $('model-effort')
+      if (e && !e.hidden) e.value = effort
+    }
+  } catch (err) {
+    msg.textContent = `切换失败：${err?.message ?? err}`
+  } finally {
+    btn.disabled = false
+  }
 }
 
 /**
@@ -3297,6 +3418,11 @@ $('grant-modal-skip').addEventListener('click', () => {
   $('module-install-msg').textContent = '已安装但不授予任何能力：模块装着不干活。想开的时候在它的详情页里逐条授予。'
 })
 $('theme-toggle').addEventListener('click', toggleTheme)
+$('model-select').addEventListener('change', () => {
+  $('model-save').disabled = !$('model-select').value
+  renderModelEfforts()
+})
+$('model-save').addEventListener('click', () => saveModel())
 
 $('btn-token').addEventListener('click', () => showTokenBar($('tokenbar').hidden))
 $('token-save').addEventListener('click', async () => {
