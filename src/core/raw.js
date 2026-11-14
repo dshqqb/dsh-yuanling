@@ -358,11 +358,6 @@ export function verifyDay(root, dateStr) {
   return { ok: errors.length === 0, errors, warnings }
 }
 
-/** 清掉去重缓存（测试用；换 root 时其实 key 已经区分了）。 */
-export function _resetSeenCache() {
-  seenCache.clear()
-}
-
 /**
  * 最近的消息，带可直接使用的指针。
  * 手动测试与排障用：不用自己拼 `raw/…/qq.ndjson#ULID`。

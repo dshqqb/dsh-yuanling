@@ -25,6 +25,7 @@ import {
   readGroupIdentity,
   findGidByNative,
   computeGroupWeight,
+  noteGroupEngagement,
 } from '../src/core/groups.js'
 import { legacySceneIdentity } from '../src/core/channels.js'
 
@@ -215,51 +216,62 @@ test('隔了足够久再来消息，lastSeen 才往前推', () => {
   assert.equal(readGroup(root, PID, gid).lastSeen, '2026-11-01T20:45:00+08:00')
 })
 
-// ── 权重读时现算（Q2 = A）───────────────────────────────────────────────
+// ── 权重：写时记（只有"跟她有关"的互动才算）─────────────────────────────
 
-test('权重：列表里是现算的，文件里的值不跟着变', () => {
+test('权重：新建是 0；有人 @她 / 她发言才算涨（并落盘）', () => {
   const root = tmpRoot()
-  seedRaw(root, { channel: 'group:555', ts: '2026-11-01T10:00:00+08:00' })
-  seedRaw(root, { channel: 'group:555', ts: '2026-11-01T11:00:00+08:00' })
-  backfillGroups(root, PID)
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
+  ensureGroup(root, PID, gid)
+  assert.equal(listGroups(root, PID).find((x) => x.gid === gid).weight, 0, '新建 0')
 
-  const gid = gidOf(root, 'group:555')
+  noteGroupEngagement(root, PID, gid, { at: '2026-11-01T10:00:00+08:00' })
   const g = listGroups(root, PID).find((x) => x.gid === gid)
-  assert.ok(g.weight > 0, `两条消息应该算出手改之外的分数，实际 ${g.weight}`)
-
-  const stored = readGroup(root, PID, gid)
-  assert.equal(stored.weight, 0, '读的时候算，不该顺手写盘')
+  assert.ok(g.weight > 0, `一次"跟她有关"的互动就该有分，实际 ${g.weight}`)
+  assert.equal(readGroup(root, PID, gid).weight, g.weight, '权重当场落盘（写时记）')
+  assert.equal(readGroup(root, PID, gid).stats.engaged, 1)
 })
 
-test('权重：公式和 computeGroupWeight 一致', () => {
+test('权重：公式和 computeGroupWeight 一致（天数按有互动的日子算）', () => {
   const root = tmpRoot()
-  const day = '2026-11-01'
-  for (const h of ['10', '12', '20']) seedRaw(root, { channel: 'group:555', ts: `${day}T${h}:00:00+08:00` })
-  backfillGroups(root, PID)
-
-  const g = listGroups(root, PID)[0]
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
+  ensureGroup(root, PID, gid)
   const now = Date.now()
-  const expect = computeGroupWeight({ msgs: 3, days: 1, recent: now - Date.parse(`${day}T23:59:59`) < 30 * 86400000 ? 3 : 0 })
-  assert.equal(g.weight, expect)
+  const day = (n) => {
+    const d = new Date(now - n * 86_400_000)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  // 两天里 3 次互动（全在最近 30 天）
+  noteGroupEngagement(root, PID, gid, { at: `${day(0)}T10:00:00+08:00` })
+  noteGroupEngagement(root, PID, gid, { at: `${day(0)}T12:00:00+08:00` })
+  noteGroupEngagement(root, PID, gid, { at: `${day(1)}T10:00:00+08:00` })
+
+  const g = listGroups(root, PID).find((x) => x.gid === gid)
+  const s = readGroup(root, PID, gid).stats
+  assert.equal(s.engaged, 3)
+  assert.equal(s.activeDays, 2)
+  assert.equal(g.weight, computeGroupWeight({ msgs: s.engaged, days: s.activeDays, recent: s.last30 }))
 })
 
 test('权重：没有手改入口（群体也只能由互动/名次决定）', () => {
   const root = tmpRoot()
-  seedRaw(root, { channel: 'group:555', ts: '2026-11-01T10:00:00+08:00' })
-  backfillGroups(root, PID)
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
+  ensureGroup(root, PID, gid)
+  noteGroupEngagement(root, PID, gid)
   const g = listGroups(root, PID)[0]
   assert.equal(g.weightKind, 'auto')
   assert.ok(g.weight >= 0 && g.weight <= 100, '普通名单 0–100')
 })
 
-test('readGroupLive 带实时权重，readGroup 保持落盘值', () => {
+test('readGroupLive 与 listGroups 的权重一致（都从落盘统计算）', () => {
   const root = tmpRoot()
-  seedRaw(root, { channel: 'group:555', ts: '2026-11-01T10:00:00+08:00' })
-  backfillGroups(root, PID)
-  const gid = gidOf(root, 'group:555')
+  const gid = ensureGroupScene(root, { platform: 'qq', nativeId: '555' })
+  ensureGroup(root, PID, gid)
+  noteGroupEngagement(root, PID, gid)
 
-  assert.ok(readGroupLive(root, PID, gid).weight > 0)
-  assert.equal(readGroup(root, PID, gid).weight, 0)
+  const live = readGroupLive(root, PID, gid).weight
+  const listed = listGroups(root, PID).find((x) => x.gid === gid).weight
+  assert.equal(live, listed)
+  assert.ok(live > 0)
 })
 
 test('readGroupLive：不存在的群返回 null，不凭空造一个', () => {

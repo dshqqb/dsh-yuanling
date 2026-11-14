@@ -11,7 +11,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
-import { createPerson, linkIdentity, writeProfile, readProfile, setAdmin } from './helpers.mjs'
+import { createPerson, linkIdentity, writeProfile, readProfile } from './helpers.mjs'
+import { ensureConsoleMaster } from '../src/core/console.js'
 import { createGroupWithCard, setGroupTier } from '../src/core/groups.js'
 import { setPinned } from './helpers.mjs'
 import {
@@ -47,10 +48,8 @@ before(() => {
   bob = createPerson(root, { display: '阿乙' })
   linkIdentity(root, bob.uid, { platform: 'qq', id: '10002' })
   writeProfile(root, PID, bob.uid, { sketch: '乙' })
-  boss = createPerson(root, { display: '管理员' })
-  linkIdentity(root, boss.uid, { platform: 'qq', id: '10003' })
-  writeProfile(root, PID, boss.uid, {})
-  setAdmin(root, boss.uid)
+  // 管理员固定是 dsh:master 那张卡（2026-11-14 定）
+  boss = { uid: ensureConsoleMaster(root, PID).id }
 })
 
 test('默认不限制：没有开关时谁都能回', () => {

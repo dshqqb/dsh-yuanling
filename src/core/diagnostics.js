@@ -15,11 +15,9 @@
 import path from 'node:path'
 
 import { exists, isDir, readJson, localIso } from './fsx.js'
-import { P } from './paths.js'
 import { doctor } from './doctor.js'
-import { readMarker } from './persona.js'
 import { readRegistry, grantedOf, moduleDir, listIds } from './modules/registry.js'
-import { validateConfig, describeFields } from './modules/configschema.js'
+import { validateConfig } from './modules/configschema.js'
 import { eventsHealth } from './events.js'
 import { tailModuleLog } from './modules/manage.js'
 import { today, prevDate, verifyDay, relDayDir } from './raw.js'

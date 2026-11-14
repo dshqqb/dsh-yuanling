@@ -262,8 +262,3 @@ export function markHit(doc, ids, { now = localIso() } = {}) {
   }
   return changed
 }
-
-/** 按 id 找一条（工具的读路径）。 */
-export function findPurpose(doc, id) {
-  return (doc.items ?? []).find((p) => p.id === id) ?? null
-}

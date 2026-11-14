@@ -20,7 +20,7 @@ before(() => {
   scaffold(root, {})
 })
 
-function send({ channel, actorId, actorName, friend = false, remark = '' }) {
+function send({ channel, actorId, actorName, friend = false, remark = '', text = '你好' }) {
   seq += 1
   ingest(root, {
     v: 1,
@@ -32,7 +32,7 @@ function send({ channel, actorId, actorName, friend = false, remark = '' }) {
       role: 'user',
       ext_id: `x-${seq}`,
       ts: localIso(),
-      text: `你好 #${seq}`,
+      text: `${text} #${seq}`,
       actor: { kind: channel.startsWith('group:') ? 'member' : 'owner', id: String(actorId), name: actorName, ...(friend ? { friend: true } : {}), ...(remark ? { remark } : {}) },
     }],
   })
@@ -58,9 +58,14 @@ test('注入：人物卡里有 QQ 号 + 好友 + 备注', () => {
   assert.match(ctx, /好友（备注「老李」）/)
 })
 
-test('群里说话的好友：账户上写备注，仍是影子', () => {
+test('群里说话的平台好友：先不建档，被叫到才建并把备注写进卡', () => {
   send({ channel: 'group:80001', actorId: '70003', actorName: '群友', friend: true, remark: '同事' })
+  assert.equal(cardByAccount(root, PID, 'qq', '70003'), null, '只是群里说话，还没说过话')
+
+  // 被叫到 → 建档；备注在这时候补上
+  send({ channel: 'group:80001', actorId: '70003', actorName: '群友', friend: true, remark: '同事', text: '@2823503286 在吗' })
   const id = cardByAccount(root, PID, 'qq', '70003')
+  assert.ok(id, '被叫到就是好友')
   const card = listCards(root, PID).find((c) => c.id === id)
   assert.match(card.description, /好友备注：同事/)
 })

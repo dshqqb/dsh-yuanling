@@ -1,7 +1,7 @@
 // src/core/api.js —— 管理台的只读 API。
 // 写操作（屏蔽、回滚）留在 CLI 与后续版本；P8 先把"看得见"做出来。
 import { readMarker, listPersonas, createPersona, switchPersona } from './persona.js'
-import { recall, listEntries, openEntry, contextFor, buildCard, CARD_BUDGET_BYTES, PURPOSE_INJECT_LIMIT } from './memory.js'
+import { recall, listEntries, openEntry, contextFor, CARD_BUDGET_BYTES, PURPOSE_INJECT_LIMIT } from './memory.js'
 import { readCard, saveCardFile, saveCardFiles, renameCard, seedCard } from './personacard.js'
 import { readDrives, DRIVE_NEEDS, DRIVE_BASE, DRIVE_CAP } from './drives.js'
 import { readPurposes, writePurposes, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED, SELECT_RECENT_MS } from './purposes.js'
@@ -13,7 +13,6 @@ import {
   listPeopleForUi,
   setPinned,
   movePinned,
-  setAdmin,
   currentAdmin,
 } from './entities.js'
 import {
@@ -22,7 +21,6 @@ import {
   listCards,
   setCardNicknames,
   setCardDescription,
-  setCardPersonFields,
   mergeCards,
   splitCard,
   personForAccount,
@@ -38,7 +36,7 @@ import { readAudience, audienceView, setAudienceMode, setAudienceMember, removeA
 import { pinWeight } from './weights.js'
 import fs from 'node:fs'
 import path from 'node:path'
-import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, readModuleConfig, writeModuleConfig, readConfigSchema } from './modules/manage.js'
+import { listModules, moduleDetail, moduleSummary, setModuleGranted, setModuleGrantedAll, setModuleEnabled, exportModule, writeModuleConfig, readConfigSchema } from './modules/manage.js'
 import { validateConfig, describeFields } from './modules/configschema.js'
 import { readRegistry } from './modules/registry.js'
 import { listSources, fetchStats } from './modules/sources.js'
@@ -51,7 +49,9 @@ import {
   createGroupWithCard,
   collectMembers,
   ensureGroup,
-  refreshGroupWeight,
+  setGroupIdentity,
+  addGroupMember,
+  removeGroupMember,
 } from './groups.js'
 import { setImpression } from './impressions.js'
 import { installFromBytes, fetchModuleBytes, checkUpdate } from './modules/installer.js'
@@ -67,6 +67,30 @@ import { revertTo, trackedPaths, normRel } from './version.js'
  * 折算下来 1 token ≈ 4.3 字节。误差 ±30%，**不是账单**，只用来判断量级。
  */
 const BYTES_PER_TOKEN = 4.3
+
+/**
+ * 已装模块上报的 App（读时反转 modules.json；`dsh` 不算，它只是管理台自己的对话通道）。
+ * 新建账户、新建群体、合并账户、群体加人，全都只认这张表。
+ *
+ * 结果缓 30 秒：`listModules` 要读注册表 + 每个模块的 manifest（冷的时候几十毫秒），
+ * 而这张表在一次点击里会被 picker 反复要；装/卸模块后最多 30 秒才反映，够用。
+ */
+let appsCache = { at: 0, root: '', list: [] }
+function moduleApps(root, { force = false } = {}) {
+  const key = path.resolve(root)
+  if (!force && appsCache.root === key && Date.now() - appsCache.at < 30_000) return appsCache.list
+  const map = new Map()
+  for (const m of listModules(root)) {
+    const app = String(m.app ?? '').trim()
+    if (!app || app === 'dsh') continue
+    const hit = map.get(app) ?? { app, modules: [] }
+    hit.modules.push({ id: m.id, name: m.name, enabled: m.enabled })
+    map.set(app, hit)
+  }
+  const list = [...map.values()].sort((a, b) => a.app.localeCompare(b.app))
+  appsCache = { at: Date.now(), root: key, list }
+  return list
+}
 
 export function buildStatus(root) {
   const marker = readMarker(root)
@@ -106,16 +130,6 @@ function sceneReport(root, scene) {
             kind: 'private',
             personUid: c.personUid,
             reason: '解析到了卡，但卡文件不存在',
-          },
-        }
-      }
-      if (card.tier === 'shadow') {
-        return {
-          sceneInfo: {
-            resolved: true,
-            kind: 'private',
-            personUid: c.personUid,
-            reason: '这是路人卡（只在群里见过），注入里不会带人物卡',
           },
         }
       }
@@ -337,20 +351,6 @@ export function handleApi(root, url) {
   // ── 模块（读）──────────────────────────────────────────────────────────
   if (pathname === '/api/modules') {
     return { status: 200, body: { ok: true, modules: listModules(root), summary: moduleSummary(root) } }
-  }
-
-  // v1.8：已装模块上报的 App 标识（新建账户的平台下拉用）。
-  // 没有单独的 app 表——modules.json 里每个模块带 app，这里只做读时反转。
-  if (pathname === '/api/apps') {
-    const map = new Map()
-    for (const m of listModules(root)) {
-      const app = String(m.app ?? '').trim()
-      if (!app || app === 'dsh') continue
-      const hit = map.get(app) ?? { app, modules: [] }
-      hit.modules.push({ id: m.id, name: m.name, enabled: m.enabled })
-      map.set(app, hit)
-    }
-    return { status: 200, body: { ok: true, apps: [...map.values()].sort((a, b) => a.app.localeCompare(b.app)) } }
   }
 
   // 投递方心跳（谁还在往这投消息）——这个路径从 P8 起就是这个语义，
@@ -642,19 +642,47 @@ export function handleApi(root, url) {
     }
   }
 
+  // 一次请求拿齐"选 App → 选账户"需要的东西（合并弹窗、群体加人共用）。
+  // 只带最小字段：卡 id、app、账号、昵称、所属人物——不带统计/描述那些大字段。
+  if (pathname === '/api/picker') {
+    const apps = moduleApps(root)
+    const accounts = listCards(root, pid).map((a) => {
+      // 只走内存里的成员表（mainOf/labelOfPerson 都是 memo 的），不逐卡读盘
+      const person = mainOf(root, pid, a.id)
+      return {
+        uid: a.id,
+        app: a.app,
+        nativeId: String(a.account),
+        nicknames: a.nicknames ?? [],
+        person: { uid: person, display: labelOfPerson(root, pid, person) },
+      }
+    })
+    return { status: 200, body: { ok: true, apps, accounts } }
+  }
+
   if (pathname === '/api/group') {
     const gid = searchParams.get('gid') ?? ''
     if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
     const g = readGroupLive(root, pid, gid)
     if (!g) return { status: 404, body: { ok: false, error: '没有这个群体' } }
-    const members = g.members.map((uid) => {
-      return { uid, display: labelOfPerson(root, pid, uid), accounts: listCards(root, pid).filter((a) => personForAccount(root, pid, a.id)?.id === mainOf(root, pid, uid)).map((a) => ({ platform: a.app, id: a.account })) }
-    })
+    // 成员显示：app + 账号 + 第一个昵称（用户看不清卡 id）
+    const byPerson = new Map()
+    for (const a of listCards(root, pid)) {
+      const person = personForAccount(root, pid, a.id)
+      if (!person) continue
+      const list = byPerson.get(person.id) ?? []
+      list.push({ app: a.app, nativeId: String(a.account), nickname: String((a.nicknames ?? [])[0] ?? '') })
+      byPerson.set(person.id, list)
+    }
+    const members = g.members.map((uid) => ({
+      uid,
+      display: labelOfPerson(root, pid, uid),
+      accounts: byPerson.get(mainOf(root, pid, uid)) ?? [],
+    }))
     return { status: 200, body: { ok: true, group: g, members } }
   }
 
   if (pathname === '/api/people') {
-    const all = listCards(root, pid)
     const aud = readAudience(root, pid).people
     const people = listPeopleForUi(root, pid).map((p) => ({
       ...p,
@@ -674,9 +702,13 @@ export function handleApi(root, url) {
         p.rank = null
       }
     }
-    // 影子卡（只见过、没认识过）不进列表，但要让人知道"还有这些人"——
-    // 藏起来不等于不存在，否则会出现"我明明在群里见到过他，人物页却没有"。
-    const shadow = all.filter((p) => p.tier === 'shadow')
+    // 排序三档：管理员 → 重要人物（按名次）→ 其余（按权重降序）
+    people.sort((a, b) => {
+      if (a.admin !== b.admin) return a.admin ? -1 : 1
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+      if (a.pinned && b.pinned) return Number(a.pinRank ?? 0) - Number(b.pinRank ?? 0)
+      return Number(b.weight ?? 0) - Number(a.weight ?? 0)
+    })
     return {
       status: 200,
       body: {
@@ -684,7 +716,6 @@ export function handleApi(root, url) {
         admin: currentAdmin(root),
         people,
         pending: [],
-        shadowCount: shadow.length,
         prefs: readPrefs(root, pid),
       },
     }
@@ -695,7 +726,6 @@ export function handleApi(root, url) {
       const person = personForAccount(root, pid, a.id)
       return {
         uid: a.id,
-        platform: a.app,
         app: a.app,
         nativeId: String(a.account),
         nicknames: a.nicknames ?? [],
@@ -894,6 +924,10 @@ export function handleApiWrite(root, url, body) {
     if (pathname === '/api/group') {
       const gid = String(b.gid ?? '')
       if (!gid) return { status: 400, body: { ok: false, error: '缺少 gid' } }
+      // 平台 + 原生号：编辑窗口里也能改（gid 不变，印象/成员/权重都留在原卡上）
+      if (b.platform !== undefined || b.nativeId !== undefined) {
+        setGroupIdentity(root, pid, gid, { platform: b.platform, nativeId: b.nativeId })
+      }
       const patch = { __reason: '管理台编辑群体档案' }
       if (typeof b.name === 'string') patch.name = b.name.slice(0, 60)
       if (Object.keys(patch).length > 1) writeGroup(root, pid, gid, patch, { actor: 'human:editor' })
@@ -903,6 +937,16 @@ export function handleApiWrite(root, url, body) {
       }
       const g = readGroupLive(root, pid, gid)
       return { status: 200, body: { ok: true, group: g } }
+    }
+
+    // 群成员：手动加一个人 / 移一个人（加的是**人物卡**，不是账户卡）
+    if (pathname === '/api/group/member') {
+      const gid = String(b.gid ?? '')
+      const uid = String(b.uid ?? '')
+      if (!gid || !uid) return { status: 400, body: { ok: false, error: '缺少 gid 或 uid' } }
+      const action = b.action === 'remove' ? 'remove' : 'add'
+      const g = action === 'remove' ? removeGroupMember(root, pid, gid, uid) : addGroupMember(root, pid, gid, uid)
+      return { status: 200, body: { ok: true, group: readGroupLive(root, pid, g.gid ?? gid) } }
     }
 
     if (pathname === '/api/group/tier') {
@@ -939,7 +983,6 @@ export function handleApiWrite(root, url, body) {
       const r = collectMembers(root, pid, gid)
       ensureGroup(root, pid, gid, {})
       writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount })
-      refreshGroupWeight(root, pid, gid)
       return { status: 200, body: { ok: true, group: readGroupLive(root, pid, gid), members: r.members, scannedDays: r.scannedDays } }
     }
 
@@ -956,11 +999,11 @@ export function handleApiWrite(root, url, body) {
     }
 
     if (pathname === '/api/account/create') {
-      const app = String(b.platform ?? b.app ?? '').trim()
-      const account = String(b.nativeId ?? b.account ?? b.id ?? '').trim()
-      const nickname = String(b.nickname ?? b.display ?? '').trim()
+      const app = String(b.app ?? '').trim()
+      const account = String(b.nativeId ?? '').trim()
+      const nickname = String(b.nickname ?? '').trim()
       if (!app || !account || !nickname) {
-        return { status: 400, body: { ok: false, error: '需要 platform / nativeId / nickname' } }
+        return { status: 400, body: { ok: false, error: '需要 app / nativeId / nickname' } }
       }
       if (app === 'dsh') return { status: 403, body: { ok: false, error: 'dsh 是控制台专用账户，不能手动创建' } }
       const r = ensureCard(root, pid, { app, account, nicknames: nickname.split(/\s+/).filter(Boolean) })
@@ -1070,11 +1113,7 @@ export function handleApiWrite(root, url, body) {
       return { status: 200, body: { ok: true, changed: r.changed, fields: policyView(root) } }
     }
 
-    if (pathname === '/api/person/admin') {
-      const uid = b.uid === null || b.uid === undefined || b.uid === '' ? null : String(b.uid)
-      const r = setAdmin(root, uid)
-      return { status: 200, body: { ok: true, admin: currentAdmin(root), uid: r } }
-    }
+    // 管理员固定是 dsh:master（用户 2026-11-14 定）：没有"设管理员/卸任"这个接口了。
 
     if (pathname === '/api/person') {
       const uid = String(b.uid ?? '')
@@ -1082,7 +1121,12 @@ export function handleApiWrite(root, url, body) {
       const main = mainOf(root, pid, uid)
       const card = readEntityCard(root, pid, main)
       if (!card) return { status: 404, body: { ok: false, error: '没有这个人物' } }
-      if (card.tier === 'shadow') setCardPersonFields(root, pid, main, { tier: null })
+      // 昵称（主卡）：空列表不是"没改"，是错误——列表里会变成一串光秃秃的账号
+      if (b.nicknames !== undefined) {
+        const names = [...new Set((Array.isArray(b.nicknames) ? b.nicknames : String(b.nicknames ?? '').split(/\s+/)).map((x) => String(x ?? '').trim()).filter(Boolean))]
+        if (!names.length) return { status: 400, body: { ok: false, error: '昵称不能为空：至少保留一个' } }
+        setCardNicknames(root, pid, main, names)
+      }
       if (typeof b.description === 'string') {
         setCardDescription(root, pid, main, b.description, { actor: 'human:editor', reason: '管理台修改账户描述' })
       }

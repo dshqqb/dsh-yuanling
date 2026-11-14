@@ -192,7 +192,7 @@ test('group：写群体档案并读回', () => {
 
 // ── 关于某个人的第一次 ──────────────────────────────────────────────────
 
-test('addFact：关于某人的第一条事实自动成为「最初」，第二条不是', () => {
+test('addFact：关于某人的第一条事实自动成为「最初」，第二条不是；但不写初识', () => {
   const root = tmpRoot()
   const p = createPerson(root, { display: '张三' })
   linkIdentity(root, p.uid, { platform: 'qq', id: '10001' })
@@ -200,7 +200,8 @@ test('addFact：关于某人的第一条事实自动成为「最初」，第二�
 
   const first = addFact(root, PID, { topic: '张三', text: '第一次跟张三说话', src, person: p.uid })
   assert.equal(first.fact.origin, true)
-  assert.ok(readProfile(root, PID, p.uid).first_met, '应该记下 first_met')
+  // 初识只由"第一次直接对话"写（inbox），记事实不算（用户 2026-11-14 定）
+  assert.equal(readProfile(root, PID, p.uid).first_met, null, '记事实不写初识')
 
   const second = addFact(root, PID, { topic: '张三', text: '后来张三搬家了', src, person: p.uid })
   assert.equal(second.fact.origin, false, '只有第一次算最初')

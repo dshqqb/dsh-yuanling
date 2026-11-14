@@ -190,7 +190,3 @@ export function globalRuleJson() {
     allow: [],
   }
 }
-
-export function emptyJson(shape) {
-  return shape
-}

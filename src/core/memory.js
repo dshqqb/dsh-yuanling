@@ -17,12 +17,10 @@ import { listDays, readDay } from './raw.js'
 import { refreshDrives, readDrives, driveName } from './drives.js'
 import { readPurposes, writePurposes, minePurposes, selectIntent, expirePurposes, markOffered, closePurpose, SELECT_MAX_HITS, SELECT_MAX_OFFERED } from './purposes.js'
 import {
-  ensureFirstMet,
   findByIdentity,
-  listPeopleForUi,
   parseChannel,
-  personForAccount,
   personForChannel,
+  personRow,
   currentAdmin,
 } from './entities.js'
 import { groupsForContext, groupCardLine, readGroup, gidForChannel } from './groups.js'
@@ -39,13 +37,11 @@ import {
   recordAccess,
   retentionOf,
   shouldMarkOrigin,
-  RECENT_WINDOW_DAYS,
 } from './retention.js'
 
 export const DEFAULT_SPACE = '日常'
 // 1M 上下文下 8KB 只占 0.5%，放得下；但预算的作用是逼出取舍，不是省钱。
 export const CARD_BUDGET_BYTES = 32768
-export const RECENT_DAYS = 14
 
 // 各段配额：宁少勿滥——一条对的记忆胜过十条平庸的。
 export const QUOTA = { first: 6, deep: 16, recent: 12 }
@@ -211,6 +207,16 @@ export function listEntries(root, pid, space = null) {
   return out
 }
 
+/** 这个人身上有没有还没关掉的事实（按主题全扫，代价很小）。 */
+function hasFactAbout(root, pid, uid) {
+  const want = String(uid ?? '')
+  if (!want) return false
+  for (const e of listEntries(root, pid)) {
+    for (const f of e.facts) if (!f.until && String(f.person ?? '') === want) return true
+  }
+  return false
+}
+
 /**
  * 写一条事实。
  * 硬规则：指针必须能解析；查重命中不入；同槽位自动关闭旧值。
@@ -302,11 +308,9 @@ export function addFact(
     shouldMarkOrigin({ factId, entryAgeDays: ageDays(entry.created, Date.parse(now) || Date.now()) })
 
   // 关于某个人的第一条事实：这是"跟 TA 的第一次"，比条目的第一条更重要。
-  let personFirst = false
-  if (person) {
-    const fm = ensureFirstMet(root, pid, person, now)
-    personFirst = fm.first
-  }
+  // 注意：**这里不写初识时间**——初识只在"第一次直接对话"时写（inbox 里）。
+  // 记一条关于某人的事实不等于跟他说过话（群里别人提到他也可能触发）。
+  const personFirst = Boolean(person) && !hasFactAbout(root, pid, person)
 
   const fact = {
     id: factId,
@@ -775,19 +779,25 @@ export function resolveParticipants(
     }
   }
 
-  const rows = listPeopleForUi(root, pid, { includeShadow: true })
-  const byUid = new Map(rows.map((row) => [row.uid, row]))
-  return uids
-    .map((uid) => byUid.get(uid))
-    .filter((row) => row && row.hasProfile)
-    .slice(0, maxPeople)
+  // 只装配被点到的这几个人：全表列表是 UI 的事，不是每轮上下文的事。
+  // 只说过话的人才有卡；群里见过、没说过话的人在系统里根本不存在，自然查不到。
+  const out = []
+  for (const uid of uids) {
+    const row = personRow(root, pid, uid)
+    if (!row) continue
+    // 同一张主卡只带一次：调用方可能同时给了成员卡和主卡
+    if (out.some((r) => r.uid === row.uid)) continue
+    out.push(row)
+    if (out.length >= maxPeople) break
+  }
+  return out
 }
 
 /** 一张人物卡压缩成一行；人物描述不设上限（用户定：人物卡第一优先级）。 */
 function personCardLine(row) {
   const display = row.display || row.uid
   const name = row.admin ? `★${display}` : display
-  const accts = (row.accounts ?? []).map((a) => `${a.platform}:${a.nativeId}`).join('、')
+  const accts = (row.accounts ?? []).map((a) => `${a.app}:${a.nativeId}`).join('、')
   const head = accts ? `${name}（${accts}）` : name
   const bits = [head]
   const descLines = (row.accounts ?? []).flatMap((a) => String(a.description ?? '').split('\n')).filter(Boolean)
@@ -1028,12 +1038,10 @@ export function contextFor(
         limit: 2,
       })
       if (uids.length) {
-        const rows = new Map(listPeopleForUi(root, pid, { includeShadow: true }).map((r) => [r.uid, r]))
         for (const uid of uids) {
-          const row = rows.get(uid)
-          if (!row || !row.hasProfile) continue // 没认识的人不硬编
-          const line = personCardLine(row)
-          kept.push(line)
+          const row = personRow(root, pid, uid)
+          if (!row) continue // 没认识的人不硬编
+          kept.push(personCardLine(row))
         }
       }
     } catch {

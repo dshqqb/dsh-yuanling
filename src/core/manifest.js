@@ -1,8 +1,8 @@
 // src/core/manifest.js —— system/manifest.json 的读写与格式对齐检查。
 import path from 'node:path'
-import { readJson, writeJsonAtomic, localIso } from './fsx.js'
+import { readJson } from './fsx.js'
 import { P } from './paths.js'
-import { FORMAT, SCHEMA_VERSION } from './templates.js'
+import { SCHEMA_VERSION } from './templates.js'
 
 export function manifestPath(root) {
   return path.join(root, P.manifest)
@@ -10,12 +10,6 @@ export function manifestPath(root) {
 
 export function readManifest(root) {
   return readJson(manifestPath(root), null)
-}
-
-export function writeManifest(root, m) {
-  m.updated_at = localIso()
-  writeJsonAtomic(manifestPath(root), m)
-  return m
 }
 
 /**

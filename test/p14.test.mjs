@@ -1,4 +1,7 @@
 // test/p14.test.mjs —— 管理台人物页：排序 / 重要人物 / 管理员 / 手动权重。
+//
+// 用户 2026-11-14 定：管理员**固定**是 dsh:master 那张卡（安装时建的第一张），
+// 不可卸任、不可换人，也不能被设为重要人物。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -6,7 +9,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { scaffold } from '../src/core/scaffold.js'
+import { ensureConsoleMaster } from '../src/core/console.js'
 import { createPerson, linkIdentity, writeProfile, loadIdentities } from './helpers.mjs'
+import { readCard } from '../src/core/accounts.js'
 import { listen, readToken } from '../src/core/server.js'
 
 const PID = 'yuanling'
@@ -14,6 +19,7 @@ let root
 let server
 let url
 let token
+let master
 const uids = {}
 
 function post(pathname, body) {
@@ -39,10 +45,11 @@ function mk(name, qq, extra = {}) {
 before(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p14-'))
   scaffold(root, {})
+  master = ensureConsoleMaster(root, PID)
 
-  mk('低权重', '111', { weight: 5, last_met: '2026-10-01T00:00:00+08:00' })
-  mk('高权重', '222', { weight: 80, last_met: '2026-09-01T00:00:00+08:00' })
-  mk('近期活跃', '333', { weight: 10, last_met: '2026-11-06T00:00:00+08:00' })
+  mk('低权重', '111', { weight: 5 })
+  mk('高权重', '222', { weight: 80 })
+  mk('近期活跃', '333', { weight: 10 })
 
   token = readToken(root)
   const started = await listen(root, { port: 0 })
@@ -54,19 +61,17 @@ after(async () => {
   await new Promise((res) => server.close(res))
 })
 
-test('people：默认按权重排，管理员恒在第一位', async () => {
-  await post('/api/person/admin', { uid: uids['低权重'] })
-
+test('people：管理员恒在第一位，其余按权重降序', async () => {
   const d = await (await get('/api/people')).json()
-  assert.equal(d.people[0].uid, uids['低权重'], '管理员必须排最前，哪怕权重最低')
+  assert.equal(d.people[0].uid, master.id, '管理员就是 dsh:master')
   assert.equal(d.people[0].admin, true)
+  assert.equal(d.people[0].display, '管理员', '默认昵称是管理员')
 
   const rest = d.people.slice(1).map((p) => p.weight)
   assert.deepEqual(rest, [...rest].sort((a, b) => b - a), '其余按权重降序')
 })
 
 test('people：去掉时间排序（只按权重）', async () => {
-  // 排序参数已经不认了：传了也按权重
   const d = await (await get('/api/people?sort=time')).json()
   const rest = d.people.filter((p) => !p.admin && !p.pinned).map((p) => p.weight)
   assert.deepEqual(rest, [...rest].sort((a, b) => b - a))
@@ -86,21 +91,22 @@ test('pin：设为重要后排到「其余」之前，且可取消', async () =>
   assert.equal(after1.people.find((p) => p.uid === uids['高权重']).pinned, false)
 })
 
-test('admin：全库唯一，换人必须先卸任', async () => {
+test('admin：接口已经删掉（管理员固定，不能设也不能卸）', async () => {
   const res = await post('/api/person/admin', { uid: uids['高权重'] })
+  assert.equal(res.status, 404)
+
+  const d = await (await get('/api/people')).json()
+  assert.equal(d.admin.uid, master.id, '管理员没变')
+  await post('/api/person/admin', { uid: null })
+  const d2 = await (await get('/api/people')).json()
+  assert.equal(d2.admin.uid, master.id, '卸任也不生效')
+})
+
+test('admin：管理员不能设为重要人物', async () => {
+  const res = await post('/api/person/pin', { uid: master.id, pinned: true })
   assert.equal(res.status, 400)
   const body = await res.json()
-  assert.match(body.error, /卸任/)
-
-  await post('/api/person/admin', { uid: null })
-  const d = await (await get('/api/people')).json()
-  assert.equal(d.admin, null, '卸任后没有管理员')
-
-  const res2 = await post('/api/person/admin', { uid: uids['高权重'] })
-  assert.equal(res2.status, 200)
-  const d2 = await (await get('/api/people')).json()
-  assert.equal(d2.admin.uid, uids['高权重'])
-  await post('/api/person/admin', { uid: null })
+  assert.match(body.error, /管理员/)
 })
 
 test('weight：手改接口已经删掉（权重只能由互动/名次决定）', async () => {
@@ -132,7 +138,7 @@ test('pin：重点人物按名次给分（110 起，越靠前越高），取消�
   assert.equal(after.weight, stored)
 })
 
-test('create：新增人物必须能认出账户，否则拒绝', async () => {
+test('create：手动新建的人物权重 0、初识为空', async () => {
   const bad = await post('/api/person/create', { display: '张三' })
   assert.equal(bad.status, 400)
   assert.match((await bad.json()).error, /platform|nativeId|账户/)
@@ -151,20 +157,16 @@ test('create：新增人物必须能认出账户，否则拒绝', async () => {
   const row = d.people.find((p) => p.uid === created.uid)
   assert.equal(row.display, '李四')
   assert.equal(row.weight, 0, '新账户还没互动，权重从 0 起')
+  assert.equal(row.firstMet, null, '手动新建的卡初识为空，等第一次说话')
   assert.ok(row.identities.some((x) => x.platform === 'qq' && x.id === '88888'))
 })
 
-test('admin：设给不存在的 uid 时报错', async () => {
-  const res = await post('/api/person/admin', { uid: 'person_nope' })
-  assert.equal(res.status, 400)
-})
-
-test('people：没有管理员时 admin 为 null，且不崩', async () => {
-  await post('/api/person/admin', { uid: null })
+test('people：管理员永远在列表里，且只有一个 admin', async () => {
   const d = await (await get('/api/people')).json()
-  assert.equal(d.admin, null)
-  assert.ok(d.people.every((p) => !p.admin))
-
-  const data = loadIdentities(root)
-  assert.ok(Object.values(data.people).every((p) => p.tier !== 'admin'))
+  assert.ok(d.admin, '管理员不会是 null')
+  assert.equal(d.people.filter((p) => p.admin).length, 1)
+  // 数据层面也不再写 tier
+  const doc = loadIdentities(root)
+  assert.ok(Object.values(doc.people).every((p) => p.tier === undefined))
+  assert.equal(readCard(root, PID, master.id).tier, undefined, '卡上没有 tier 字段了')
 })

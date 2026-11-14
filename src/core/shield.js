@@ -7,11 +7,10 @@
 //
 // 真相在 raw 的 system.ndjson 里；system/shields.json 是为了快速判断的索引，
 // 可以由 raw 重建（rebuild）。
-import fs from 'node:fs'
 import path from 'node:path'
-import { exists, readJson, writeJsonAtomic, localIso } from './fsx.js'
+import { readJson, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
-import { appendSystemEvent, listDays, dayDirFor, readDay } from './raw.js'
+import { appendSystemEvent, listDays, readDay } from './raw.js'
 import { setFactsShieldedBySrc } from './memory.js'
 
 export function shieldsPath(root) {
@@ -160,18 +159,4 @@ export function rebuildShields(root) {
 /** 列出所有屏蔽登记（含已撤销）。 */
 export function listShields(root) {
   return loadShields(root).redactions.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)))
-}
-
-/** 供 doctor 用：登记簿是否与 raw 一致（不一致就以 raw 为准重建）。 */
-export function checkShields(root) {
-  const sig = (s) =>
-    s.redactions
-      .filter((r) => !r.revoked_at)
-      .flatMap((r) => r.targets ?? [])
-      .sort()
-      .join('|')
-  const before = sig(loadShields(root))
-  const { events } = rebuildShields(root)
-  const after = sig(loadShields(root))
-  return { ok: before === after, before_count: before ? before.split('|').length : 0, after_count: after ? after.split('|').length : 0, events }
 }

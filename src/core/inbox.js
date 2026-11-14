@@ -11,9 +11,9 @@ import { appendRecord } from './raw.js'
 import { applyIngestPolicy, loadIngestRules } from './redact.js'
 import { canIngest, logRefusal } from './rules.js'
 import { readMarker } from './persona.js'
-import { ensureGroup, gidForChannel, noteGroupMember } from './groups.js'
-import { ensureSenderPerson, isShadow, canonicalChannelForIngest, platformFromSource } from './channels.js'
-import { noteCardMessage } from './accounts.js'
+import { ensureGroup, gidForChannel, noteGroupMember, noteGroupEngagement } from './groups.js'
+import { canonicalChannelForIngest, platformFromSource } from './channels.js'
+import { cardByAccount, noteCardMessage } from './accounts.js'
 import { appendEvent } from './events.js'
 import { noteDriveHits } from './drives.js'
 import { extractFacts, shouldExtract, EXTRACT_IMPORTANCE } from './extract.js'
@@ -21,7 +21,7 @@ import { noteGroupMessage, herNames, isReplyToHer } from './engage.js'
 import { noteSelfNameCandidate, herPlatformIds, addressesHer } from './selfname.js'
 import { addFact } from './memory.js'
 import { parseChannel } from './channels.js'
-import { recognizeCard, findByIdentity, noteFriendship } from './entities.js'
+import { ensureCard, ensureFirstMet, noteFriendship } from './entities.js'
 /**
  * 从一条刚入库的消息里提炼事实。
  *
@@ -31,21 +31,16 @@ import { recognizeCard, findByIdentity, noteFriendship } from './entities.js'
  *     不记（哪怕说话的是管理员）；
  *   · 她自己的话不是事实（role=bot 跳过），但她说话会开启"在场"。
  */
-function extractFromRecord(root, pid, { text, role, channel, actorId = '', source, pointer, now, replyTo = '' }) {
+function extractFromRecord(root, pid, { text, role, channel, actorId = '', source, pointer, now, replyTo = '', engaged = null }) {
   const isBot = String(role ?? 'user') === 'bot'
-  const { kind, id } = parseChannel(channel)
+  const { kind } = parseChannel(channel)
   let allowed = false
 
   if (kind === 'private') {
     allowed = !isBot
   } else if (kind === 'group') {
-    // 群里说话的人：用 `<平台>:<原生号>` 当键。**不用 person uid**——
-    // 群里大多数成员没有人物卡，硬查要么查不到、要么逼着给每个群友建影子卡。
-    const actorKey = actorId ? `${source || 'qq'}:${String(actorId)}` : ''
-    // 引用回复她 = 在叫她：正文里往往没有名字（「你觉得呢」），只靠关键词会漏
-    const replyToHer = isReplyToHer(root, replyTo)
-    const r = noteGroupMessage(root, { gid: id, text, actorKey, isBot, replyToHer, now, names: herNames(root, pid) })
-    allowed = r.engaged
+    // 群里"跟她有关"的判定在入库主流程里做（那里同时要记群体权重），这里只接结论。
+    allowed = engaged === true
   }
 
   if (!allowed) return []
@@ -111,7 +106,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
 
       // 频道一律换成内部编号（private:<person_uid> / group:<gid>）。
       // 外部号码不进频道——但必须留痕，所以下面写 raw 时同时给 channel_native。
-      // 私聊来源还没有人物卡时，这里会建一张影子卡（tier=shadow，不进注入）。
+      // 私聊来源还没有人物卡时，这里会建一张好友卡（私聊就是跟她说话，不是路人）。
       let canonical = { channel: channelIn, native: null, personUid: null, gid: null }
       try {
         canonical = canonicalChannelForIngest(root, {
@@ -129,7 +124,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
       const rawText = String(item.text ?? '')
 
       // v1.7：这句是不是**冲她说的**。模块拿它决定群聊要不要开 DSH 回合；
-      // 顺便给"建路人卡"用，不再算第二遍。私聊恒为真；她说的话恒为假。
+      // 顺便给"路人转正"用，不再算第二遍。私聊恒为真；她说的话恒为假。
       const isBot = String(item.role ?? 'user') === 'bot'
       const kind = parseChannel(channel).kind
       let directed = false
@@ -147,7 +142,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
         : null
       if (withItems) out.items[i] = report
 
-      // 私聊：适配器说"这个号是好友"就记在身份上（群聊的在下面建完影子卡再记）。
+      // 私聊：适配器说"这个号是好友"就记在身份上（群聊的在下面记完路人名册再记）。
       if (item.actor?.friend && canonical.personUid && item.actor?.id) {
         try {
           noteFriendship(root, canonical.personUid, platformFromSource(source) ?? 'qq', String(item.actor.id), {
@@ -229,6 +224,8 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
 
       // 群消息进来就顺手把这个"地方"记下来：第一条消息建卡，之后的只推 lastSeen。
       // 群名由适配器带上来（NapCat get_group_info）——没带就留空，以后拿到再补。
+      // 这个标记在下面两个 if 块之间共享：一个决定"涨不涨群权重"，一个决定"进不进记忆"。
+      let engagedInGroup = null
       if (!r.deduped) {
         // 账户权重是基础数据：每条私聊都更新这个账户的统计（群聊不算）
         if (canonical.acct && !isBot && parseChannel(channel).kind === 'private') {
@@ -239,6 +236,35 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
           }
         }
         touchGroup(root, channel, item.ts ? String(item.ts) : null, item.group_name)
+        // 群里"跟她有关"的判定：@她 / 叫她的名字 / 引用回复她 / 她自己发言 /
+        // 她开口之后别人接话。只有这些会涨群体权重；无关闲聊不算（用户 2026-11-14 定）。
+        // 同一次判定也决定"这条要不要提炼成记忆"，所以在这里算一次、两边共用。
+        if (parseChannel(channel).kind === 'group') {
+          try {
+            const pid = readMarker(root)?.active
+            const gid = gidForChannel(root, channel)
+            if (pid && gid) {
+              const nowMs = item.ts ? Date.parse(String(item.ts)) || Date.now() : Date.now()
+              const eng = noteGroupMessage(root, {
+                gid,
+                text: rawText,
+                actorKey: item.actor?.id && !isBot ? `${source || 'qq'}:${String(item.actor.id)}` : '',
+                isBot,
+                replyToHer: isReplyToHer(root, item.reply_to ?? item.replyTo ?? ''),
+                now: nowMs,
+                names: herNames(root, pid),
+              })
+              engagedInGroup = Boolean(eng.engaged)
+              // 记忆：只认"跟她有关"（她本人发言/被叫到/在场的人接着说）。
+              // 权重：再宽一档——**她还在场（对话窗口没关）时别人接的话**也算，
+              // 因为用户说的"别人接她话"就是这种。窗口外的闲聊仍然不算。
+              const inHerWindow = !isBot && eng.reason === 'unrelated' && Number(eng.until ?? 0) > nowMs
+              if (eng.engaged || inHerWindow) noteGroupEngagement(root, pid, gid, { at: item.ts ? String(item.ts) : null })
+            }
+          } catch {
+            /* 权重记不上不该让消息丢掉 */
+          }
+        }
         // 有人用**新称呼**叫她（@她 / 喊了个没见过的名字）：攒够了写进她自己的名称。
         // 只写"名称"，不另建昵称字段——见 selfname.js 的三道闸门。
         try {
@@ -263,43 +289,55 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
           const actorId = item.actor?.id
           if (pid && gid && actorId && !isBot) {
             const platform = platformFromSource(source) ?? 'qq'
-            // 群里说话的人也要有卡：第一次见就建一张**影子卡**（tier=shadow）——
-            // 不进注入、人物页默认不显示，但"这个号是谁"从此查得到。
-            // 名字取群名片/昵称（适配器从 NapCat 拿），拿不到就用号。
-            const uid = ensureSenderPerson(root, {
-              platform,
-              nativeId: String(actorId),
-              nickname: item.actor?.name ? String(item.actor.name) : '',
-              nicknames: item.actor?.name ? [String(item.actor.name)] : null,
-            })
-            // 成员名单只收"认识的人"：影子卡不是认识，塞进名单只会让重名裁决拿路人当依据
-            if (!isShadow(root, uid)) noteGroupMember(root, pid, gid, uid)
-            // 好友关系是平台事实：群里说话的人也可能是她的好友
-            if (item.actor?.friend) {
-              try {
-                noteFriendship(root, uid, platform, String(actorId), { remark: item.actor.remark ?? '' })
-              } catch {
-                /* 同上：写不进去不挡消息 */
+            const name = item.actor?.name ? String(item.actor.name) : ''
+            const cardId = cardByAccount(root, pid, platform, String(actorId))
+            // 没有卡就是"只在群里见过"：**什么都不记**（用户 2026-11-14 定，路人这个概念取消）。
+            // 说过话才会建卡，在下面那段统一处理。
+            if (cardId) {
+              // 已经是好友：补昵称、记进群成员（重名裁决要用）
+              const r = ensureCard(root, pid, { app: platform, account: String(actorId), nicknames: name ? [name] : null })
+              noteGroupMember(root, pid, gid, r.cardId)
+              // 好友关系是平台事实：群里说话的人也可能是她的好友
+              if (item.actor?.friend) {
+                try {
+                  noteFriendship(root, r.cardId, platform, String(actorId), { remark: item.actor.remark ?? '' })
+                } catch {
+                  /* 写不进去不挡消息 */
+                }
               }
             }
           }
         } catch {
           /* 记成员失败不该让一条消息丢掉 */
         }
-        // 跟她**直接说过话**的人，建第一份档案（影子卡 → 路人卡）。
-        // 口径（用户 2026-11-12 定）：私聊每条都算；群聊只有 @ 她 / 引用回复她才算。
-        // 群里旁听的人仍然只有影子卡——不然一个 500 人群一天能长出几十张路人卡。
+        // 跟她**直接说过话**的人：建卡（或补昵称），并写下初识时间。
+        // 口径（用户 2026-11-12 定）：私聊每条都算；群聊只有 @ 她 / 引用回复她 / 叫她的名字才算。
+        // 只在群里旁听的人不建卡——不然一个 500 人群一天能长出几十张好友卡。
         try {
           const pid = readMarker(root)?.active
           const actorId = item.actor?.id
           if (pid && actorId && !isBot && directed) {
             const platform = platformFromSource(source) ?? 'qq'
-            const hit = findByIdentity(root, platform, String(actorId))
-            if (hit) recognizeCard(root, pid, hit.uid)
-
+            const name = item.actor?.name ? String(item.actor.name) : ''
+            const existed = cardByAccount(root, pid, platform, String(actorId))
+            const r = ensureCard(root, pid, { app: platform, account: String(actorId), nicknames: name ? [name] : null })
+            // 初识 = **第一次跟她直接说话**这一刻（用户 2026-11-14 定）；已有的不覆盖
+            ensureFirstMet(root, pid, r.cardId)
+            // 群里被叫到：这一刻才算"认识的人"，记进群成员
+            const gid = gidForChannel(root, channel)
+            if (gid) noteGroupMember(root, pid, gid, r.cardId)
+            // 刚建卡时才知道"他原来是平台好友"：备注跟着写进卡里，别等下一次。
+            // （私聊那条路在入库归人时已经写过一次，这里只补"刚建卡"的情况。）
+            if (!existed && r.cardId && item.actor?.friend) {
+              try {
+                noteFriendship(root, r.cardId, platform, String(actorId), { remark: item.actor.remark ?? '' })
+              } catch {
+                /* 备注写不进去不挡消息 */
+              }
+            }
           }
         } catch {
-          /* 建路人卡失败不该让一条消息丢掉 */
+          /* 建档失败不该让一条消息丢掉 */
         }
       }
 
@@ -319,6 +357,7 @@ export function ingest(root, env, { now, maxBytes, withRecords = false, withItem
             pointer: `${r.file}#${r.id}`,
             replyTo: item.reply_to ?? item.replyTo ?? '',
             now: item.ts ? Date.parse(String(item.ts)) : Date.now(),
+            engaged: engagedInGroup,
           })
         } catch {
           /* 提炼失败不该让入库失败 */
@@ -376,7 +415,7 @@ function touchGroup(root, channel, seenAt, groupName = '') {
 /**
  * 这句话是不是**冲着她**说的：引用回复了她，或 @ 她 / 叫了她的名字。
  *
- * 只在群聊里用来决定"要不要把这个人从影子卡升成路人卡"。
+ * 只在群聊里用来决定"要不要把这个人从路人转成好友"。
  * 私聊不需要这个判断——私聊每条都是冲她说的。
  */
 function directedAtHer(root, pid, text, { replyTo = '', selfIds = [] } = {}) {

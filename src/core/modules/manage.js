@@ -8,7 +8,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { localIso, readJson, ensureDir, exists, writeJsonAtomic } from '../fsx.js'
+import { readJson, ensureDir, exists, writeJsonAtomic } from '../fsx.js'
 import { P } from '../paths.js'
 import { readRegistry, writeRegistry, setGranted, setGrantedAll, grantedOf, moduleDir } from './registry.js'
 import { sha256Of } from './installer.js'

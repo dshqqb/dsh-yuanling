@@ -8,6 +8,7 @@ import { readMarker, listPersonas, createPersona, switchPersona, appendChange, r
 import { listMedia, mediaStats, planArchive, applyArchive, ARCHIVE_AFTER_MS } from './media.js'
 import { checkFormat } from './manifest.js'
 import { doctor, doctorExitCode } from './doctor.js'
+import { repair } from './repair.js'
 import { exists, localIso } from './fsx.js'
 import { drain, healthReport } from './inbox.js'
 import { sealDay, verifyDay, listDays, today, prevDate, recentMessages } from './raw.js'
@@ -16,7 +17,6 @@ import { addFact, recall, openEntry, buildCard, listEntries, why as memoryWhy, D
 import { shield, unshield, listShields, recentRecordIds, rebuildShields } from './shield.js'
 import {
   labelOfPerson,
-  listCards,
   readCard,
   ensureCard,
   setCardNicknames,
@@ -25,9 +25,10 @@ import {
   splitCard,
   mainOf,
   groupOf,
+  isConsoleMasterCard,
 } from './accounts.js'
 import { listPeopleForUi } from './entities.js'
-import { listGroups, readGroupLive, writeGroup, setGroupTier, moveGroupPinned, createGroupWithCard, collectMembers, refreshGroupWeight, backfillGroups, ensureGroupScene, findGidByNative, migrateGroupIds } from './groups.js'
+import { listGroups, readGroupLive, writeGroup, setGroupTier, collectMembers, backfillGroups, ensureGroupScene, findGidByNative, migrateGroupIds } from './groups.js'
 import { setImpression, renderImpression } from './impressions.js'
 import { readTimeline } from './events.js'
 import { diagnose, renderDiagnostics } from './diagnostics.js'
@@ -281,6 +282,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   yuanling card                      打印本轮会注入的卡片
   yuanling verify [--root <path>] [--json] [--all]
   yuanling doctor [--root <path>] [--json] [--fast]
+  yuanling repair [--profile <名>] [--data-dir <目录>] [--no-mcp] [--dry-run] [--json]
+                                      把插件重新登记进 DSH profile（「禁用第三方插件」之后用）
   yuanling persona list
   yuanling persona new <id> [--name <n>] [--from <id>]
   yuanling persona switch <id>
@@ -478,6 +481,44 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         out(`summary: ${d.summary.pass} pass / ${d.summary.warn} warn / ${d.summary.fail} fail / ${d.summary.skip} skip`)
       }
       return doctorExitCode(d)
+    }
+
+    if (cmd === 'repair') {
+      // 把插件重新登记进 DSH profile（「禁用第三方插件」之后用）
+      let r
+      try {
+        r = repair({
+          profile: flags.profile ? String(flags.profile) : null,
+          home: flags.home ? String(flags.home) : null,
+          dataRoot: flags['data-dir'] ? String(flags['data-dir']) : null,
+          withMcp: !flags['no-mcp'],
+          dryRun: Boolean(flags['dry-run']),
+        })
+      } catch (e) {
+        err(`修不了：${e?.message ?? e}`)
+        return EXIT.CONFIG
+      }
+      if (flags.json) {
+        out(JSON.stringify(r, null, 2))
+        return EXIT.OK
+      }
+      const head = r.changes.length ? `${r.dryRun ? '将要修' : '已修'} ${r.changes.length} 处` : '本来就是好的，没动'
+      out(`profile ${r.profile}（${r.dir}）`)
+      out(`  插件：${r.pluginDir}`)
+      if (r.dataRoot) out(`  数据目录：${r.dataRoot}`)
+      out('')
+      for (const c of r.changes) out(`  ${r.dryRun ? '·' : '✓'} ${c}`)
+      if (!r.changes.length) out('  ✓ dependencies / bundles / 软链 / 配置条目 都在')
+      for (const w of r.warnings) out(`  ! ${w}`)
+      if (r.backups.length) {
+        out('')
+        for (const b of r.backups) out(`  备份：${b}`)
+      }
+      out('')
+      if (r.dryRun) out(`${head}（dry-run：没有写盘，去掉 --dry-run 才会真改）`)
+      else if (r.restartRequired) out(`${head}。完全退出 DSH（托盘退出，确认没有残留进程）再启动，设置里就会出现「原灵」。`)
+      else out(head)
+      return EXIT.OK
     }
 
     if (cmd === 'history') {
@@ -1248,11 +1289,11 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
       const pid = flags.persona ? String(flags.persona) : marker?.active
 
       if (sub === 'list' || !sub) {
-        const people = listPeopleForUi(root, pid, { includeShadow: true })
-        if (!people.length) out('（还没有任何人物卡）')
+        const people = listPeopleForUi(root, pid)
+        if (!people.length) out('（还没有任何好友）')
         for (const p of people) {
           const ids = p.accounts.map((a) => `${a.app}:${a.nativeId}`).join('、') || '（无账户）'
-          out(`${p.uid}  ${p.display}  [${ids}]${p.admin ? '  ★' : p.tier === 'shadow' ? '  ·路人' : ''}`)
+          out(`${p.uid}  ${p.display}  [${ids}]${p.admin ? '  ★管理员' : p.pinned ? '  ·重要' : ''}`)
         }
         const pending = listCandidates(root)
         if (pending.length) out(`\n有 ${pending.length} 个待确认的疑似同一人（yuanling person candidates）`)
@@ -1296,7 +1337,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
           err(`没有这张人物卡：${uid}`)
           return EXIT.CONFIG
         }
-        out(`${card.id}  ${labelOfPerson(root, pid, card.id)}${card.tier === 'admin' ? '  ★管理员' : ''}${card.pinned ? '  ·重要' : ''}`)
+        out(`${card.id}  ${labelOfPerson(root, pid, card.id)}${isConsoleMasterCard(card) ? '  ★管理员' : ''}${card.pinned ? '  ·重要' : ''}`)
         for (const a of groupOf(root, pid, card.id)) {
           out(`  ${a.id}  ${a.app}:${a.account}  昵称：${(a.nicknames ?? []).join(' ')}  权重 ${a.weight ?? 0}`)
           if (a.description) out(`      ${a.description.replace(/\n/g, '\n      ')}`)
@@ -1498,7 +1539,6 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
         if (!gid) return EXIT.CONFIG
         const r = collectMembers(root, pid, gid)
         writeGroup(root, pid, gid, { members: r.members, memberCount: r.memberCount }, { reason: '从原始层归集成员' })
-        refreshGroupWeight(root, pid, gid)
         out(`✓ ${gid} 归集到 ${r.memberCount} 个认识的人（扫了 ${r.scannedDays} 天）`)
         if (r.members.length) out(`  ${r.members.join('、')}`)
         return EXIT.OK

@@ -11,7 +11,7 @@
 // 衰减：所有维度都按半衰期回落到**自己的基线**（内置有固定基线，自定义默认 0.15）。
 // 所以她会黏一阵、静一阵，而不是恒定。
 import path from 'node:path'
-import { exists, readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
+import { readJson, writeJsonAtomic, localIso, ulid } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked } from './version.js'
 
@@ -136,16 +136,6 @@ export function refreshDrives(root, pid, { now = Date.now(), hoursSinceMaster = 
     })
   }
   return next
-}
-
-/** 单测与调试用：把当前值推高一点（模拟"最近老看到某类东西"）。 */
-export function nudgeDrive(values, need, amount) {
-  if (!need) return values
-  return { ...values, [need]: clamp01((Number(values[need]) || 0) + amount) }
-}
-
-export function _existsDrives(root, pid) {
-  return exists(drivesPath(root, pid))
 }
 
 // ── 自定义动机（模型可以加）──────────────────────────────────────────────

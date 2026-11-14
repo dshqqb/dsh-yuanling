@@ -358,34 +358,21 @@ function modelChoiceValue(provider, model) {
   return JSON.stringify({ provider, model })
 }
 
-function findModelChoice(provider, model) {
-  return (modelCatalog?.providers ?? [])
-    .find((p) => p.id === provider)?.models.find((m) => m.id === model) ?? null
-}
-
 function renderModelEfforts() {
   const sel = $('model-effort')
   const label = $('model-effort-label')
   if (!sel || !label) return
-  const picked = $('model-select')?.value
-  let choice = null
-  if (picked) {
-    try { const v = JSON.parse(picked); choice = findModelChoice(v.provider, v.model) } catch {}
-  }
-  const efforts = choice?.reasoning?.efforts ?? []
-  if (!efforts.length) {
+  const view = window.YLModelView?.effortValue?.(modelCatalog, $('model-select')?.value) ?? { visible: false, value: '', efforts: [] }
+  if (!view.visible) {
     sel.hidden = true
     label.hidden = true
     sel.innerHTML = ''
     return
   }
-  const currentEffort = modelCatalog?.current?.provider === choice.provider && modelCatalog?.current?.model === choice.id
-    ? modelCatalog.current.reasoningEffort ?? ''
-    : ''
   sel.innerHTML = ''
   sel.append(new Option('自动', ''))
-  for (const e of efforts) sel.append(new Option(e.name || e.id, e.id))
-  sel.value = efforts.some((e) => e.id === currentEffort) ? currentEffort : ''
+  for (const e of view.efforts) sel.append(new Option(e.name || e.id, e.id))
+  sel.value = view.value
   sel.hidden = false
   label.hidden = false
 }
@@ -1136,7 +1123,7 @@ function fieldNode(f, inputs) {
 /**
  * @param {{title:string, fields:Array, okText?:string, onSubmit:(v:object)=>Promise<void>}} spec
  */
-function openModal({ title, fields, okText = '保存', onSubmit }) {
+function openModal({ title, fields, okText = '保存', onSubmit, onMount }) {
   $('modal-title').textContent = title
   $('modal-ok').textContent = okText
   $('modal-msg').textContent = ''
@@ -1146,6 +1133,7 @@ function openModal({ title, fields, okText = '保存', onSubmit }) {
   body.innerHTML = ''
   const inputs = {}
   for (const f of fields) body.append(fieldNode(f, inputs))
+  if (typeof onMount === 'function') onMount({ body, inputs })
 
   MODAL.submit = async () => {
     const vals = {}
@@ -1201,7 +1189,7 @@ function personCard(p, { onMove } = {}) {
   tags.append(el('span', p.weightKind === 'pinned' ? 'tag ok' : 'tag', String(p.weight)))
   head.append(tags, document.createTextNode(p.display))
 
-  const accts = (p.accounts ?? []).map((a) => `${a.platform}:${a.nativeId}`).join('、') || '无账户'
+  const accts = (p.accounts ?? []).map((a) => `${a.app}:${a.nativeId}`).join('、') || '无账户'
   const names = (p.nicknames ?? []).join(' / ')
   const firstMet = p.firstMet ? `初识 ${String(p.firstMet).slice(0, 10)}` : ''
   const desc = (p.accounts ?? [])
@@ -1216,21 +1204,7 @@ function personCard(p, { onMove } = {}) {
   n.append(body)
 
   const acts = el('div', 'actions')
-  if (!p.admin) {
-    acts.append(
-      mkBtn('设为管理员', 'small ghost', async () => {
-        await postApi('/api/person/admin', { uid: p.uid })
-        await loadPeople()
-      }),
-    )
-  } else {
-    acts.append(
-      mkBtn('卸任', 'small ghost', async () => {
-        await postApi('/api/person/admin', { uid: null })
-        await loadPeople()
-      }),
-    )
-  }
+  // 管理员固定在 dsh:master（安装时建的第一张卡）：没有「设为管理员 / 卸任」这两个按钮了。
 
   if (p.pinned) {
     acts.append(
@@ -1265,7 +1239,6 @@ function personCard(p, { onMove } = {}) {
     acts.append(mkBtn(`账户 ${a.nativeId}`, 'small ghost', () => openAccountEditor(a)))
   }
   acts.append(mkBtn('合并', 'small ghost', () => openMergeDialog(p)))
-  if ((p.accounts ?? []).length > 1) acts.append(mkBtn('拆分', 'small ghost', () => openSplitDialog(p)))
   n.append(acts)
   return n
 }
@@ -1274,7 +1247,7 @@ async function openAccountEditor(a) {
   const d2 = await api(`/api/account?uid=${encodeURIComponent(a.uid)}`)
   const card = d2.account
   openModal({
-    title: `账户 ${card.platform}:${card.nativeId}`,
+    title: `账户 ${card.app}:${card.nativeId}`,
     fields: [
       { key: 'nicknames', label: '昵称（空格分隔可多个）', value: (card.nicknames ?? []).join(' ') },
       {
@@ -1293,6 +1266,7 @@ async function openAccountEditor(a) {
         nicknames: String(v.nicknames ?? '').split(/\s+/).filter(Boolean),
         description: v.description,
       })
+      invalidatePicker()
       await loadPeople()
     },
   })
@@ -1301,86 +1275,173 @@ async function openAccountEditor(a) {
 async function openPersonEditor(p) {
   const d2 = await api(`/api/person?uid=${encodeURIComponent(p.uid)}`)
   const row = d2.weight ?? p
+  const mainUid = d2.person.uid
+  const members = (d2.accounts ?? []).filter((a) => a.uid !== mainUid)
   openModal({
     title: `${d2.person.display}（${p.uid}）`,
     fields: [
-      { label: '账户', type: 'static', value: (d2.accounts ?? []).map((a) => `${a.platform}:${a.nativeId}`).join('、') || '无' },
+      { label: '账户', type: 'static', value: (d2.accounts ?? []).map((a) => `${a.app}:${a.nativeId}`).join('、') || '无' },
       { label: '初识', type: 'static', value: d2.person?.firstMet ? String(d2.person.firstMet).slice(0, 10) : '—' },
+      {
+        key: 'nicknames',
+        label: '昵称（空格分隔可多个）',
+        value: (d2.person?.nicknames ?? []).join(' '),
+        hint: '改的是主卡的昵称；多个昵称用空格分开，列表里会用「 / 」连起来显示。不能为空。',
+      },
       { key: 'description', label: '主卡账户描述', type: 'textarea', rows: 6, value: d2.person?.description || '', hint: '人物描述由所有成员卡的账户描述合并而成；这里改的是主卡自己的账户描述' },
       weightField(row),
     ],
+    // 已经合并进来的账户：列在这里，可以手动分离（分离前确认）
+    onMount: ({ body }) => {
+      if (!members.length) return
+      const box = el('div', 'modal-field')
+      box.append(el('label', 'modal-label', `已合并的账户（${members.length}）`))
+      for (const a of members) {
+        const line = el('div', 'merged-row')
+        const name = (a.nicknames ?? []).join(' / ') || '（没昵称）'
+        line.append(el('span', 'merged-name', `${name} · ${a.app}:${a.nativeId}`))
+        line.append(
+          mkBtn('分离', 'small ghost', async () => {
+            const ok = confirm(
+              `把「${name}」（${a.app}:${a.nativeId}）从「${d2.person.display}」分离出去？\n\n` +
+                '分离后它是一张独立的人物卡，账户描述和统计都跟着它走，不会删任何数据。',
+            )
+            if (!ok) return
+            await postApi('/api/person/split', { person: mainUid, accounts: [a.uid] })
+            invalidatePicker()
+            closeModal()
+            await loadPeople()
+            flash(`已把「${name}」分离出去`)
+            await openPersonEditor({ uid: mainUid })
+          }),
+        )
+        box.append(line)
+      }
+      body.append(box)
+    },
     onSubmit: async (v) => {
-      await postApi('/api/person', { uid: p.uid, description: v.description })
+      const nicknames = String(v.nicknames ?? '').split(/\s+/).filter(Boolean)
+      if (!nicknames.length) throw new Error('保存失败：昵称不能为空，至少填一个')
+      await postApi('/api/person', { uid: p.uid, nicknames, description: v.description })
+      invalidatePicker()
       await loadPeople()
     },
   })
 }
 
-async function openAccountCreate(person) {
-  const apps = (await api('/api/apps')).apps ?? []
-  if (!apps.length) throw new Error('还没有模块上报 App；先安装一个模块')
-  const options = apps.map((a) => [a.app, `${a.app}（${a.modules.map((m) => m.name ?? m.id).join('、')}）`])
+async function openAccountCreate() {
+  const picker = await loadPicker()
+  const options = appOptionsOf(picker)
+  if (!options.length) throw new Error('还没有模块上报 App；先安装一个模块')
   openModal({
     title: '新建人物',
     okText: '创建',
     fields: [
-      { key: 'platform', label: 'App', type: 'select', options, value: options[0][0] },
+      { key: 'app', label: 'App', type: 'select', options, value: options[0][0] },
       { key: 'nativeId', label: '账户（id 或账户名）', placeholder: 'QQ 号 / B 站 UID / 米聊号' },
       { key: 'nickname', label: '账户昵称（空格分隔可多个）' },
       { key: 'description', label: '账户描述', type: 'textarea', rows: 4, placeholder: '好友备注 / 对这个号的印象（≤2000 字）' },
     ],
     onSubmit: async (v) => {
-      const platform = String(v.platform ?? '')
-      if (!/^[a-z0-9]{2,24}$/.test(platform)) throw new Error('App 标识只能是小写字母和数字')
+      const app = String(v.app ?? '')
+      if (!/^[a-z0-9]{2,24}$/.test(app)) throw new Error('App 标识只能是小写字母和数字')
       await postApi('/api/account/create', {
-        platform,
+        app,
         nativeId: v.nativeId,
         nickname: v.nickname,
         description: v.description,
       })
+      invalidatePicker()
       await loadPeople()
     },
   })
 }
 
+// ── 选 App / 选账户（合并、群体加人共用）────────────────────────────────
+//
+// 一次请求拿齐（/api/picker），前端缓存 30 秒：这个弹窗点开就发 1 个请求，
+// 换 App 只是内存过滤，不再每次去扫模块目录、也不再拉全部账户的统计/描述。
+const PICKER_TTL_MS = 30_000
+let pickerCache = null
+let pickerAt = 0
+
+async function loadPicker({ force = false } = {}) {
+  if (!force && pickerCache && Date.now() - pickerAt < PICKER_TTL_MS) return pickerCache
+  pickerCache = await api('/api/picker')
+  pickerAt = Date.now()
+  return pickerCache
+}
+function invalidatePicker() {
+  pickerCache = null
+}
+
+function appOptionsOf(picker, extraApp = '') {
+  const apps = (picker.apps ?? []).map((a) => [a.app, `${a.app}（${(a.modules ?? []).map((m) => m.name ?? m.id).join('、')}）`])
+  if (extraApp && !apps.some(([v]) => v === extraApp)) apps.unshift([extraApp, `${extraApp}（模块没装）`])
+  return apps
+}
+
+const isAdminAccount = (a) => String(a.app) === 'dsh' && String(a.nativeId) === 'master'
+
+function accountLabel(a, { ownerOf = null } = {}) {
+  const name = (a.nicknames ?? []).join(' / ') || a.nativeId
+  const owner = ownerOf && a.person && a.person.uid !== ownerOf ? `（现在挂在「${a.person.display}」名下）` : ''
+  return `${name} · ${a.app}:${a.nativeId}${owner}`
+}
+
+/** 把"App 下拉 + 账户下拉"接起来：换 App 就换账户列表。 */
+function wireAppPicker({ inputs, pickable, ownerOf = null }) {
+  const refill = () => {
+    const app = String(inputs.app?.value ?? '')
+    const list = pickable(app)
+    inputs.account.innerHTML = ''
+    if (!list.length) {
+      inputs.account.append(new Option('（这个 App 下没有可选的账户）', ''))
+      return
+    }
+    for (const a of list) inputs.account.append(new Option(accountLabel(a, { ownerOf }), a.uid))
+  }
+  inputs.app.addEventListener('change', refill)
+  refill()
+}
+
+/**
+ * 合并账户：两级选择。
+ *   ① App —— 只列**已装模块上报**的 App（用户 2026-11-14 定）；
+ *   ② 账户 —— 该 App 下的卡，显示"昵称 · 账号"，不显示卡 id；
+ *      已经被合并进来的、以及管理员卡（dsh:master）不出现在列表里。
+ * 一次合并一个；要合多个就再来一次。
+ */
 async function openMergeDialog(person) {
-  const accounts = (person.accounts ?? []).map((a) => a.uid)
+  const picker = await loadPicker()
+  const apps = picker.apps ?? []
+  const accounts = picker.accounts ?? []
+  const mainUid = person.uid
+  const mine = new Set((person.accounts ?? []).map((a) => a.uid))
+  const pickable = (app) => accounts.filter((a) => String(a.app) === app && !mine.has(a.uid) && !isAdminAccount(a))
+  if (!apps.length) throw new Error('还没有模块上报 App；先安装一个模块，或手动新建账户')
+
   openModal({
     title: `合并账户 → ${person.display}`,
     okText: '合并',
     fields: [
-      { key: 'accounts', label: '要合并进来的卡 id（一行一个，含当前卡）', type: 'textarea', rows: 3, value: accounts.join('\n') },
-      { key: 'reason', label: '为什么合并（理由）' },
+      { key: 'app', label: '第一步：选 App', type: 'select', options: appOptionsOf(picker), value: apps[0].app },
+      { key: 'account', label: '第二步：选要合并进来的账户', type: 'select', options: [] },
     ],
+    onMount: ({ inputs }) => wireAppPicker({ inputs, pickable, ownerOf: mainUid }),
     onSubmit: async (v) => {
-      await postApi('/api/person/merge', {
-        accounts: String(v.accounts ?? '').split(/\s+/).filter(Boolean),
-        reason: v.reason,
-      })
-      await loadPeople()
-    },
-  })
-}
-
-async function openSplitDialog(person) {
-  openModal({
-    title: `拆分「${person.display}」`,
-    okText: '拆分',
-    fields: [
-      { key: 'accounts', label: '要拆出去的卡 id（一行一个）', type: 'textarea', rows: 3 },
-    ],
-    onSubmit: async (v) => {
-      await postApi('/api/person/split', {
-        person: person.uid,
-        accounts: String(v.accounts ?? '').split(/\s+/).filter(Boolean),
-      })
+      const uid = String(v.account ?? '')
+      if (!uid) throw new Error('请选择要合并进来的账户')
+      if (mine.has(uid)) throw new Error('这个账户已经在这个人身上了')
+      await postApi('/api/person/merge', { accounts: [mainUid, uid] })
+      invalidatePicker()
       await loadPeople()
     },
   })
 }
 
 async function openPersonCreate() {
-  await openAccountCreate(null)
+  await openAccountCreate()
 }
 
 async function loadPeople() {
@@ -1390,7 +1451,7 @@ async function loadPeople() {
   adminSlot.innerHTML = ''
   const admins = d.people.filter((p) => p.admin)
   $('admin-count').textContent = admins.length ? `${admins.length} 人` : ''
-  if (!admins.length) adminSlot.append(el('div', 'zone-empty', '还没指定管理员。在下面任意一张卡上点「设为管理员」。'))
+  if (!admins.length) adminSlot.append(el('div', 'zone-empty', '还没有管理员卡：安装时应该自动建一张 dsh:master。没建出来就先新建一个 dsh 账户。'))
   for (const p of admins) adminSlot.append(personCard(p))
 
   // 「对管理员更温柔」是人格级偏好：没有人管理员时勾了也没意义，所以隐藏
@@ -1409,12 +1470,10 @@ async function loadPeople() {
   for (const p of pinned) pinnedSlot.append(personCard(p, { onMove: move }))
 
   const rest = d.people.filter((p) => !p.admin && !p.pinned)
-  $('people-count').textContent = `${rest.length} 人${
-    d.shadowCount ? ` · 另有 ${d.shadowCount} 个路人卡（只见过、还没说过话）` : ''
-  }`
+  $('people-count').textContent = `${rest.length} 人`
   const box = $('people-out')
   box.innerHTML = ''
-  if (!rest.length) box.append(el('div', 'muted small', '还没有熟人。'))
+  if (!rest.length) box.append(el('div', 'muted small', '还没有好友。'))
   for (const p of rest) box.append(personCard(p))
 
   await loadAudience('people')
@@ -1608,54 +1667,123 @@ async function loadGroups() {
 }
 
 async function openGroupEditor(g) {
-  const d = await api(`/api/group?gid=${encodeURIComponent(g.gid)}`)
+  const [d, picker] = await Promise.all([api(`/api/group?gid=${encodeURIComponent(g.gid)}`), loadPicker()])
   const gg = d.group
-  // 成员名单：名字 + 账号（看名单时最想知道"这个 QQ 是谁"）
-  const memberText = d.members.length
-    ? d.members
-        .map((m) => {
-          const acc = (m.identities ?? [])[0]
-          return acc ? `${m.display}（${acc.platform}:${acc.id}）` : m.display
-        })
-        .join('\n')
-    : '还没归集成员（只收有档案的人；群消息进来会自动记）'
+  const memberUids = new Set((d.members ?? []).map((m) => m.uid))
+  const appOpts = appOptionsOf(picker, gg.platform)
+  const accounts = picker.accounts ?? []
+  // 加人：只列还没在群里的账户（管理员那个号也排掉——它不是群里的人）
+  const pickable = (app) =>
+    accounts.filter((a) => String(a.app) === app && !isAdminAccount(a) && !(a.person && memberUids.has(a.person.uid)))
+  const memberLine = (m) => {
+    const acc = (m.accounts ?? [])[0]
+    if (!acc) return m.display || m.uid
+    // 用户看不懂卡 id：显示"第一个昵称 · App 账号"
+    return `${acc.nickname || m.display || '（没昵称）'} · ${acc.app}:${acc.nativeId}`
+  }
+
   openModal({
     title: `${gg.name || gg.gid}（${gg.gid}）`,
     fields: [
       { key: 'name', label: '名字', value: gg.name || '' },
-      { label: '平台与号码', type: 'static', value: `${PLATFORM_LABELS[gg.platform] ?? gg.platform} · ${gg.nativeId ?? gg.id}` },
+      { key: 'app', label: 'App', type: 'select', options: appOpts, value: gg.platform },
+      {
+        key: 'account',
+        label: '账户（群号 / 吧名 / 群 id）',
+        value: gg.nativeId ?? gg.id ?? '',
+        hint: '改号码会同步改身份登记；gid 不变，印象/成员/权重都留在原卡上。改号之前的群聊记录仍按旧号归档',
+      },
       { key: 'feature', label: '群体描述', type: 'textarea', rows: 5, value: gg.feature || '' },
       weightField(gg),
-      { label: `成员名单（${d.members.length}${gg.memberCount ? ` / 共 ${gg.memberCount}` : ''}）`, type: 'static', value: memberText },
     ],
+    onMount: ({ body }) => {
+      // ① 成员列表：一行一个，可以移除（先确认）
+      const box = el('div', 'modal-field')
+      box.append(el('label', 'modal-label', `群成员（${(d.members ?? []).length}${gg.memberCount ? ` / 共见过 ${gg.memberCount}` : ''}）`))
+      if (!(d.members ?? []).length) box.append(el('div', 'muted small', '还没有成员：群里有人跟她说过话、或从下面手动加一个'))
+      for (const m of d.members ?? []) {
+        const line = el('div', 'merged-row')
+        line.append(el('span', 'merged-name', memberLine(m)))
+        line.append(
+          mkBtn('移除', 'small ghost', async () => {
+            if (!confirm(`把「${memberLine(m)}」从「${gg.name || gg.gid}」的成员里移除？\n\n（他下次在群里说话还会被自动加回来——成员名单记的是"谁在这里说过话"）`)) return
+            await postApi('/api/group/member', { gid: g.gid, uid: m.uid, action: 'remove' })
+            closeModal()
+            await loadGroups()
+            await openGroupEditor(g)
+          }),
+        )
+        box.append(line)
+      }
+      body.append(box)
+
+      // ② 加人：同样的两级选择（App → 账户）
+      const add = el('div', 'modal-field')
+      add.append(el('label', 'modal-label', '添加人物到群里'))
+      const row = el('div', 'merged-row')
+      const appSel = document.createElement('select')
+      for (const [v, label] of appOpts) appSel.append(new Option(label, v))
+      const accSel = document.createElement('select')
+      appSel.addEventListener('change', () => fillAccounts(String(appSel.value)))
+      function fillAccounts(app) {
+        accSel.innerHTML = ''
+        const list = pickable(app)
+        if (!list.length) {
+          accSel.append(new Option('（这个 App 下没有可加的人）', ''))
+          return
+        }
+        for (const a of list) accSel.append(new Option(accountLabel(a), a.uid))
+      }
+      fillAccounts(String(appSel.value))
+      row.append(appSel, accSel)
+      row.append(
+        mkBtn('添加', 'small ghost', async () => {
+          const acc = accounts.find((a) => a.uid === String(accSel.value))
+          if (!acc) throw new Error('先选一个账户')
+          const person = acc.person?.uid
+          if (!person) throw new Error('这个账户还没有对应的人物卡')
+          await postApi('/api/group/member', { gid: g.gid, uid: person, action: 'add' })
+          closeModal()
+          await loadGroups()
+          await openGroupEditor(g)
+        }),
+      )
+      add.append(row)
+      body.append(add)
+    },
     onSubmit: async (v) => {
-      await postApi('/api/group', { gid: g.gid, name: v.name, feature: v.feature })
+      await postApi('/api/group', {
+        gid: g.gid,
+        name: v.name,
+        platform: String(v.app ?? ''),
+        nativeId: String(v.account ?? '').trim(),
+        feature: v.feature,
+      })
       await loadGroups()
     },
   })
 }
 
 async function openGroupCreate() {
+  const picker = await loadPicker()
+  const appOpts = appOptionsOf(picker)
+  if (!appOpts.length) throw new Error('还没有模块上报 App；先安装一个模块')
   openModal({
     title: '新增群体',
     okText: '创建',
     fields: [
       { key: 'name', label: '名字', placeholder: '怎么称呼这个群' },
-      {
-        key: 'account',
-        label: '账号',
-        placeholder: 'QQ群 123456789 / 贴吧 原神吧 / 微信群 abc@chatroom / discord: 987654321',
-        hint: '用自然语言写清「哪个平台 + 哪个号」。不写死平台，任何 App 都能这样填',
-      },
+      { key: 'app', label: 'App', type: 'select', options: appOpts, value: appOpts[0][0] },
+      { key: 'account', label: '账户（群号 / 吧名 / 群 id）', placeholder: '123456789 / 原神吧 / abc@chatroom' },
       { key: 'feature', label: '群体描述', type: 'textarea', rows: 4, placeholder: '这个群是什么地方、什么氛围' },
-      { label: '权重', type: 'static', value: '新建默认 50（普通名单的中值），之后由互动推演' },
+      { label: '权重', type: 'static', value: '新建 0：只有群里有人 @她 / 叫她名字 / 引用她、她发言、别人接她话才涨' },
     ],
     onSubmit: async (v) => {
-      await postApi('/api/group/create', {
-        name: v.name,
-        accountText: v.account,
-        feature: v.feature,
-      })
+      const platform = String(v.app ?? '')
+      const nativeId = String(v.account ?? '').trim()
+      if (!platform) throw new Error('请选择 App')
+      if (!nativeId) throw new Error('账户不能为空')
+      await postApi('/api/group/create', { name: v.name, platform, nativeId, feature: v.feature })
       await loadGroups()
     },
   })

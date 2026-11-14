@@ -10,7 +10,6 @@ export const WEIGHT = {
   cap: 100,
 }
 
-export const SEED_WEIGHT = 50
 export const PIN_WEIGHT = { base: 110, step: 5 }
 
 function isInteraction(r, card) {
@@ -71,21 +70,6 @@ export function pinWeight(rank, total) {
   const n = Math.max(1, Number(total) || 1)
   const r = Math.max(0, Math.min(n - 1, Number(rank) || 0))
   return PIN_WEIGHT.base + PIN_WEIGHT.step * (n - 1 - r)
-}
-
-export function effectivePersonWeight(profile, { totalPinned = 0 } = {}) {
-  const stored = clampWeight(profile?.weight, SEED_WEIGHT)
-  if (profile?.pinned) {
-    const rank = Number.isFinite(Number(profile.pin_rank)) ? Number(profile.pin_rank) : 0
-    return { weight: pinWeight(rank, totalPinned), kind: 'pinned', stored, rank }
-  }
-  return { weight: stored, kind: 'auto', stored, rank: null }
-}
-
-export function clampWeight(v, fallback = 0) {
-  const n = Number(v)
-  const base = Number.isFinite(n) ? n : Number(fallback) || 0
-  return Math.max(0, Math.min(WEIGHT.cap, Math.round(base)))
 }
 
 /** 从 raw 重算每张卡的权重；一次扫描，不按卡重复读 raw。 */

@@ -411,6 +411,12 @@ input[type='number'] { min-width: 100px; width: 120px; }
 }
 .modal-msg { min-height: 16px; margin-top: 8px; }
 .modal-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+/* 编辑弹窗里"已合并的账户"那一列 */
+.merged-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border-radius: 10px; background: var(--pill);
+}
+.merged-name { flex: 1; min-width: 0; font-size: 13px; word-break: break-all; }
 
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);

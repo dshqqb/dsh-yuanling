@@ -1,10 +1,10 @@
-// test/p78.test.mjs —— 路人卡：跟她直接说过话的人自动建档（2026-11-12，Q39）
+// test/p78.test.mjs —— 跟她直接说过话的人才建档（2026-11-12，Q39；2026-11-14 改）
 //
 // 用户定的口径：
-//   · 私聊：每条都算"跟她说话" → 建第一份档案（影子卡转正成路人卡）；
-//   · 群聊：只有 **@ 她 / 引用回复她 / 叫她的名字** 才算；群里旁听的人仍然只有影子卡；
+//   · 私聊：每条都算"跟她说话" → 建好友卡；
+//   · 群聊：只有 **@ 她 / 引用回复她 / 叫她的名字** 才算；群里旁听的人**什么都不记**；
 //   · 档案只写最小内容：名字（QQ 昵称，撞名自动加标识）、初识时间；账户在 identities 里；
-//   · 名字与素描可以由她自己改（renamePersonAuto + 已有的 yuanling_observe）。
+//   · 初识 = 第一次直接对话的时间；手动建的卡留空，直到那一刻。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -14,8 +14,7 @@ import path from 'node:path'
 import { scaffold } from '../src/core/scaffold.js'
 import { ingest } from '../src/core/inbox.js'
 import { findByIdentity, readProfile, renamePersonAuto } from './helpers.mjs'
-import { readCard } from '../src/core/accounts.js'
-import { isShadow } from '../src/core/channels.js'
+import { readCard, createCard } from '../src/core/accounts.js'
 import { localIso } from '../src/core/fsx.js'
 
 const PID = 'yuanling'
@@ -44,17 +43,17 @@ function send({ channel, actorId, actorName, text = '你好', role = 'user', rep
 
 const uidOf = (qq) => findByIdentity(root, 'qq', String(qq))?.uid ?? null
 
-test('私聊：第一次说话就建档（影子卡转正），名字用 QQ 昵称，账户在 identities', () => {
+test('私聊：第一次说话就建档（好友），名字用 QQ 昵称，账户在 identities', () => {
   send({ channel: 'private:50001', actorId: '50001', actorName: '小李', text: '在吗' })
   const uid = uidOf('50001')
   assert.ok(uid)
-  assert.equal(isShadow(root, uid), false, '说话过的人不再是影子')
   const profile = readProfile(root, PID, uid)
   assert.ok(profile, '要有一份档案')
   assert.ok(profile.first_met, '要记初识时间')
   assert.equal(profile.sketch, '', '素描留空，等她自己写')
   const card = readCard(root, PID, findByIdentity(root, 'qq', '50001').acct)
   assert.equal(card.nicknames[0], '小李')
+  assert.ok(card.firstMet, '初识 = 第一次说话的时间')
 })
 
 test('私聊：第二条不重写账户描述', () => {
@@ -64,25 +63,23 @@ test('私聊：第二条不重写账户描述', () => {
   assert.equal(readProfile(root, PID, uid).sketch, before)
 })
 
-test('群聊：只是说话 → 仍是影子卡，不建档', () => {
+test('群聊：只是说话 → 不建档、不留记录', () => {
   send({ channel: 'group:60001', actorId: '60001', actorName: '老王', text: '今天谁值班' })
-  const uid = uidOf('60001')
-  assert.ok(uid, '影子卡要建（不然同一个人每条都串号）')
-  assert.equal(isShadow(root, uid), true)
-  assert.equal(readProfile(root, PID, uid)?.tier, 'shadow', '旁听的人不写人物描述')
+  assert.equal(uidOf('60001'), null, '没说过话就没有卡')
 })
 
 test('群聊：@ 她 → 建档', () => {
   send({ channel: 'group:60002', actorId: '60002', actorName: '阿强', text: '@2823503286 在吗' })
   const uid = uidOf('60002')
-  assert.equal(isShadow(root, uid), false)
+  assert.ok(uid, '被叫到就是好友')
+  const hit = findByIdentity(root, 'qq', '60002')
+  assert.ok(readCard(root, PID, hit.acct).firstMet, '初识 = 被叫到这一刻')
   assert.ok(readProfile(root, PID, uid))
 })
 
 test('群聊：叫她的名字 → 建档', () => {
   send({ channel: 'group:60003', actorId: '60003', actorName: '小美', text: '原灵你觉得呢' })
-  const uid = uidOf('60003')
-  assert.equal(isShadow(root, uid), false)
+  assert.ok(uidOf('60003'))
 })
 
 test('群聊：引用回复她 → 建档（要能翻回那条 bot 消息）', () => {
@@ -103,11 +100,10 @@ test('群聊：引用回复她 → 建档（要能翻回那条 bot 消息）', (
     ],
   })
   send({ channel: 'group:60004', actorId: '60004', actorName: '阿呆', text: '你说的对', replyTo: 'bot-msg-1' })
-  const uid = uidOf('60004')
-  assert.equal(isShadow(root, uid), false)
+  assert.ok(uidOf('60004'))
 })
 
-test('两个同名影子先后转正：昵称允许相同（人物没有名字）', () => {
+test('两个同名的人先后建档：昵称允许相同（人物没有名字）', () => {
   send({ channel: 'group:60005', actorId: '60005', actorName: '老王', text: '在' })
   send({ channel: 'group:60006', actorId: '60006', actorName: '老王', text: '在' })
   send({ channel: 'private:60005', actorId: '60005', actorName: '老王', text: '你好' })
@@ -127,17 +123,30 @@ test('她给账户加称呼（renamePersonAuto 是账户昵称门面）', () => 
   assert.ok(card.nicknames.includes('小李（同事）'))
 })
 
-test('她给影子卡改名 = 直接转正', () => {
-  send({ channel: 'group:60007', actorId: '60007', actorName: '路人甲', text: '路过' })
-  const uid = uidOf('60007')
-  assert.equal(isShadow(root, uid), true)
-  renamePersonAuto(root, PID, uid, '甲哥', { reason: '她在群里认识了他' })
-  assert.equal(isShadow(root, uid), false)
-  const card = readCard(root, PID, findByIdentity(root, 'qq', '60007').acct)
-  assert.ok(card.nicknames.includes('甲哥'))
+test('先旁听、后被叫到：建卡用被叫到那条消息的群名片', () => {
+  // 先在群里见过：什么都不记
+  send({ channel: 'group:60007', actorId: '60007', actorName: '甲哥', text: '路过' })
+  assert.equal(uidOf('60007'), null)
+
+  // 再被叫到 → 建卡，名字来自这条消息
+  send({ channel: 'group:60007', actorId: '60007', actorName: '甲哥', text: '@2823503286 你看' })
+  const hit = findByIdentity(root, 'qq', '60007')
+  assert.ok(hit)
+  assert.ok(readCard(root, PID, hit.acct).nicknames.includes('甲哥'))
 })
 
-test('她自己的话（role=bot）不建档、不改名', () => {
+test('手动建的卡：初识为空，第一次说话才写上', () => {
+  const card = createCard(root, PID, { app: 'qq', account: '60008', nicknames: ['手建的'] })
+  assert.equal(readCard(root, PID, card.id).firstMet, null, '手动建卡没有初识')
+  assert.equal(readCard(root, PID, card.id).weight, 0, '手动建卡权重 0')
+
+  send({ channel: 'group:60008', actorId: '60008', actorName: '手建的', text: '@2823503286 在吗' })
+  const card2 = readCard(root, PID, card.id)
+  assert.ok(card2.firstMet, '被叫到之后写上初识')
+  assert.equal(card2.weight, 0, '只是说了一句话，权重还是 0（不算互动）')
+})
+
+test('她自己的话（role=bot）不建档', () => {
   ingest(root, {
     v: 1,
     source: 'qq',

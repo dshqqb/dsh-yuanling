@@ -4,6 +4,7 @@ import path from 'node:path'
 import { exists, readJson, writeJsonAtomic, appendLine, localIso, ulid, isDir } from './fsx.js'
 import { P, personaPaths } from './paths.js'
 import { PERSONA_ID_RE } from './scaffold.js'
+import { invalidateActivePid } from './scope.js'
 import * as T from './templates.js'
 import { snapshotCurrent } from './version.js'
 
@@ -21,6 +22,7 @@ export function readMarker(root) {
 export function writeMarker(root, marker) {
   marker.updated_at = localIso()
   writeJsonAtomic(markerPath(root), marker)
+  invalidateActivePid()
   return marker
 }
 

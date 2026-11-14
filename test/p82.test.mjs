@@ -52,11 +52,10 @@ test('第二条私聊：同一张卡统计累加', () => {
   assert.equal(listCards(root, PID).find((c) => c.id === id).stats.messages, 2)
 })
 
-test('群聊旁听：建卡但不进人物页（影子）', () => {
+test('群聊旁听：不建卡（没说过话就什么都不记）', () => {
   send(3, '冒泡', { channel: 'group:123456', actorId: '77777', name: '路人乙' })
-  const id = cardByAccount(root, PID, 'qq', '77777')
-  assert.ok(id)
-  assert.equal(listPeopleForUi(root, PID).some((r) => r.uid === id), false)
+  assert.equal(cardByAccount(root, PID, 'qq', '77777'), null, '不该有卡')
+  assert.ok(!listPeopleForUi(root, PID).some((r) => r.display === '路人乙'))
 })
 
 test('合并：账户权重不变，人物权重求和', () => {

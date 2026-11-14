@@ -25,7 +25,6 @@ import { writeTracked } from './version.js'
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
 import { pinWeight } from './weights.js'
 import { autoUniqueName } from './names.js'
-import { personaFile, requirePid } from './scope.js'
 import { mentionedGroups } from './aliases.js'
 import { labelOfPerson, listCards, personForAccount } from './accounts.js'
 
@@ -33,7 +32,7 @@ export { CHANNEL_PLATFORM, GROUP_KINDS }
 
 // 场景解析、群体身份登记表都在 channels.js。它不 import groups.js（只 import 常量层），
 // 所以这里引它不会成环。
-import { resolveChannel, sceneRecordKeys, readGroupIdentity, ensureGroupScene, parseChannel, findGidByNative } from './channels.js'
+import { resolveChannel, sceneRecordKeys, readGroupIdentity, ensureGroupScene, parseChannel, findGidByNative, loadGroupIdentities, saveGroupIdentities, nativeGroupKey } from './channels.js'
 // 群体身份的读写是 channels.js 的事（那里是"场景/身份"的唯一真相）。
 // 这里再导出一次，调用方（CLI / API / 测试）从 groups.js 取就够了。
 export { ensureGroupScene, readGroupIdentity, findGidByNative }
@@ -87,8 +86,8 @@ export function readGroup(root, pid, gid) {
 /**
  * 群体卡的形状。
  *
- * 卡里只有：名字、描述（自然语言）、成员（事实）、权重与重点名次。
- * 平台与原生号不在这里——它们在 `system/groups.json`（客观身份），卡只认 `gid`。
+ * 卡里只有：名字、描述（自然语言）、成员（事实）、互动统计、权重与重点名次。
+ * 平台与原生号不在这里——它们在 `entities/group-identities.json`（客观身份），卡只认 `gid`。
  */
 export function normalizeGroup(raw, gid, root = null) {
   // 平台与原生号不在编号里（编号是 `grp_xxx`），从**客观登记表**取。
@@ -108,8 +107,15 @@ export function normalizeGroup(raw, gid, root = null) {
     members: Array.isArray(raw?.members) ? raw.members.map(String) : [],
     memberCount: Number(raw?.memberCount ?? 0),
     weight: Number(raw?.weight ?? 0),
-    // 新建时的默认分：一次互动都没有时用它显示（否则刚建的群会显示 0）
-    weightSeed: Number(raw?.weight_seed ?? 0),
+    // 只有"跟她有关"的互动才计数（用户 2026-11-14 定）：@她 / 叫她的名字 / 引用回复她 /
+    // 她自己发言 / 她开口之后别人接话。群里刷无关的话不算。
+    stats: {
+      engaged: Number(raw?.stats?.engaged ?? 0),
+      activeDays: Number(raw?.stats?.activeDays ?? 0),
+      last30: Number(raw?.stats?.last30 ?? 0),
+      dayCounts: raw?.stats?.dayCounts && typeof raw.stats.dayCounts === 'object' ? raw.stats.dayCounts : {},
+      updatedAt: raw?.stats?.updatedAt ?? null,
+    },
     // 重点名单里的名次（0 起）；不在名单里就是 null。
     // 名次决定权重（weights.js 的 pinWeight：最后一名 110，往上每名 +5）。
     pinRank: Number.isFinite(Number(raw?.pin_rank)) ? Number(raw.pin_rank) : null,
@@ -163,7 +169,7 @@ export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group',
     assertGroupNameFree(root, pid, patch.name, { exceptGid: gid })
   }
   const next = {
-    // 卡里**不再存 gid 之外的编号信息**：平台与原生号在 system/groups.json（客观层）。
+    // 卡里**不再存 gid 之外的编号信息**：平台与原生号在 entities/group-identities.json（客观层）。
     // 不在这里再抄一份，否则两处迟早分叉。
     gid,
     name: patch.name !== undefined ? String(patch.name) : cur.name,
@@ -171,7 +177,7 @@ export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group',
     members: patch.members ? patch.members.map(String) : cur.members,
     memberCount: patch.memberCount !== undefined ? Number(patch.memberCount) : cur.memberCount,
     weight: patch.weight !== undefined ? Number(patch.weight) : cur.weight,
-    weight_seed: patch.weightSeed !== undefined ? Number(patch.weightSeed) : cur.weightSeed ?? 0,
+    stats: patch.stats !== undefined ? patch.stats : cur.stats,
     weight_source: 'auto',
     pin_rank: patch.pinRank !== undefined ? patch.pinRank : cur.pinRank ?? null,
     tier: patch.tier === undefined ? cur.tier : patch.tier === 'important' ? 'important' : null,
@@ -189,10 +195,8 @@ export function writeGroup(root, pid, gid, patch = {}, { actor = 'system:group',
 /**
  * 列出人格下的所有群体。
  *
- * 列表里的 `weight` 是**读的时候现算的**（手改过的除外）：权重只用来排序和显示，
- * 没有任何地方拿它做取舍，所以没必要为了"看得见"造一条后台写路径，也不该让页面
- * 显示"0 分但其实聊了几百条"的旧数。落盘的 `weight` 仍然保留，作为冻结值给
- * `refreshGroupWeight` 用。
+ * `weight` 从群卡上的互动统计（`stats`）现算，但**不扫原始层**：计数在入库时
+ * （[noteGroupEngagement]）就记好了。重点名单再由名次覆盖，见 effectiveGroupWeight。
  */
 export function listGroups(root, pid, { now = Date.now() } = {}) {
   const dir = path.join(root, P.personas, pid, 'entities', 'groups')
@@ -239,13 +243,17 @@ export function readGroupLive(root, pid, gid, { now = Date.now() } = {}) {
   return { ...g, weight: eff.weight, storedWeight: eff.stored, weightKind: eff.kind, rank: eff.rank }
 }
 
-/** 实时权重：按原始层里的互动现算（不写盘）。重点名单则由名次覆盖，见 effectiveGroupWeight。 */
+/** 实时权重：从落盘的互动统计算（不扫原始层）。重点名单则由名次覆盖，见 effectiveGroupWeight。 */
 export function liveGroupWeight(root, pid, g, { now = Date.now() } = {}) {
+  void root
+  void pid
+  void now
   if (!g) return 0
-  const computed = computeGroupWeight(channelStats(root, g.gid, now))
-  // 一次互动都没有：保留新建时的默认分（50），别把"刚建的群"显示成 0
-  if (computed === 0) return Number(g.weightSeed ?? g.weight ?? 0)
-  return computed
+  const s = g.stats ?? {}
+  const engaged = Number(s.engaged ?? 0)
+  // 还没有统计的时代留下的群：用冻结的 weight 兜底（迁移会给它们补统计）
+  if (!engaged) return Math.max(0, Math.min(100, Number(g.weight ?? 0)))
+  return computeGroupWeight({ msgs: engaged, days: Number(s.activeDays ?? 0), recent: Number(s.last30 ?? 0) })
 }
 
 /**
@@ -368,6 +376,67 @@ export function noteGroupMember(root, pid, gid, uid) {
   )
 }
 
+// ── 成员（手动增删 + 自动收集）────────────────────────────────────────
+
+/**
+ * 手动把一个**人物卡**加进群成员表（管理台「添加人物」走这里）。
+ * 和自动记成员同一条写路径，只是理由不同。
+ */
+export function addGroupMember(root, pid, gid, uid) {
+  const who = String(uid ?? '').trim()
+  if (!gid || !who) throw new Error('缺少 gid 或人物 uid')
+  const cur = readGroup(root, pid, gid)
+  if (!cur) throw new Error(`没有这个群体：${gid}`)
+  if ((cur.members ?? []).includes(who)) return cur
+  if ((cur.members ?? []).length >= MAX_MEMBERS) throw new Error(`群成员最多 ${MAX_MEMBERS} 个`)
+  const members = [...(cur.members ?? []), who]
+  return writeGroup(
+    root,
+    pid,
+    gid,
+    { members, memberCount: Math.max(Number(cur.memberCount ?? 0) + 1, members.length) },
+    { reason: '管理台手动添加群成员', skipNameCheck: true },
+  )
+}
+
+/**
+ * 手动把一个人从群成员表里移除（只是"从名单里拿掉"，不是拉黑）。
+ * 注意：他下次在群里说话，还会被自动加回来——成员表记的是"谁在这里说过话"。
+ */
+export function removeGroupMember(root, pid, gid, uid) {
+  const who = String(uid ?? '').trim()
+  if (!gid || !who) throw new Error('缺少 gid 或人物 uid')
+  const cur = readGroup(root, pid, gid)
+  if (!cur) throw new Error(`没有这个群体：${gid}`)
+  if (!(cur.members ?? []).includes(who)) return cur
+  const members = (cur.members ?? []).filter((x) => x !== who)
+  return writeGroup(root, pid, gid, { members }, { reason: '管理台手动移除群成员', skipNameCheck: true })
+}
+
+/**
+ * 改一个群体的"平台 + 原生号"（管理台编辑窗口）。
+ *
+ * gid 不变：印象、成员、权重都留在原卡上。代价写在前面：**改号之前的群聊记录**
+ * 仍按旧号归档，`collectMembers` 只能看到改号之后的部分。
+ */
+export function setGroupIdentity(root, pid, gid, { platform, nativeId } = {}) {
+  const p = String(platform ?? '').trim()
+  const nid = String(nativeId ?? '').trim()
+  if (!p) throw new Error('平台不能为空')
+  if (!nid) throw new Error('群号 / 吧名不能为空')
+  const cur = readGroupIdentity(root, gid)
+  if (!cur) throw new Error(`没有这个群体的身份登记：${gid}`)
+  if (cur.platform === p && String(cur.nativeId) === nid) return { gid, platform: p, nativeId: nid }
+  const hit = findGidByNative(root, p, nid)
+  if (hit && hit !== gid) throw new Error(`这个号已经登记给另一个群体了：${hit}`)
+  const data = loadGroupIdentities(root)
+  delete data.byNative[nativeGroupKey(cur.platform, cur.nativeId)]
+  data.byNative[nativeGroupKey(p, nid)] = gid
+  data.groups[gid] = { ...(data.groups[gid] ?? {}), platform: p, nativeId: nid, updatedAt: localIso() }
+  saveGroupIdentities(root, data)
+  return { gid, platform: p, nativeId: nid }
+}
+
 // ── 成员自动收集 ────────────────────────────────────────────────────────
 
 /**
@@ -454,18 +523,54 @@ function listRawDays(root) {
 
 // ── 权重与重要群体 ──────────────────────────────────────────────────────
 
-/** 关注度：聊得越多、跨度越长、最近越活跃，她越在意这个群体。封顶 100。 */
+/**
+ * 关注度：只有"跟她有关"的互动才进这个公式（用户 2026-11-14 定）：
+ * 有人 @ 她 / 叫她的名字 / 引用回复她、她自己发言、以及她开口之后别人接话。
+ * 群里刷无关的话不算。封顶 100。
+ */
 export function computeGroupWeight({ msgs = 0, days = 0, recent = 0 } = {}) {
   return Math.min(100, Math.round(msgs * 0.5 + days * 1 + recent * 0.3))
 }
 
-/** 刷新一个群体的权重（手改过的不动）。落盘值，给"冻结一份"的场合用。 */
-export function refreshGroupWeight(root, pid, gid, { now = Date.now() } = {}) {
+/**
+ * 记一次"跟她有关"的群互动：统计 +1，权重跟着重算。
+ *
+ * **写时记**而不是读时扫原始层：群体页打开时不该去扫 30 天的 raw（那是 80ms+ 的活），
+ * 而且"读的时候现算"会把群里的无关闲聊也算进去。
+ *
+ * @returns {object|null} 更新后的群体卡
+ */
+export function noteGroupEngagement(root, pid, gid, { at = null } = {}) {
   const g = readGroup(root, pid, gid)
   if (!g) return null
-  if (g.weightSource === 'manual') return g
-  const weight = computeGroupWeight(channelStats(root, gid, now))
-  return writeGroup(root, pid, gid, { weight }, { reason: '按互动自动算权重' })
+  const d = at ? new Date(at) : new Date()
+  if (Number.isNaN(d.getTime())) return g
+  const day = dayKey(d)
+  const stats = g.stats ?? { engaged: 0, activeDays: 0, last30: 0, dayCounts: {}, updatedAt: null }
+  const dayCounts = { ...(stats.dayCounts ?? {}) }
+  dayCounts[day] = Number(dayCounts[day] ?? 0) + 1
+  const cutoff = d.getTime() - 60 * 86_400_000
+  for (const k of Object.keys(dayCounts)) {
+    const t = Date.parse(`${k}T00:00:00`)
+    if (!Number.isFinite(t) || t < cutoff) delete dayCounts[k]
+  }
+  const last30 = Object.entries(dayCounts).reduce(
+    (n, [k, v]) => (Date.parse(`${k}T00:00:00`) >= d.getTime() - 30 * 86_400_000 ? n + Number(v) : n),
+    0,
+  )
+  const next = {
+    engaged: Number(stats.engaged ?? 0) + 1,
+    activeDays: Object.keys(dayCounts).length,
+    last30,
+    dayCounts,
+    updatedAt: localIso(d),
+  }
+  const weight = computeGroupWeight({ msgs: next.engaged, days: next.activeDays, recent: next.last30 })
+  return writeGroup(root, pid, gid, { stats: next, weight }, { reason: '群里跟她有关的互动 +1' })
+}
+
+function dayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 // ── 启动回填 ────────────────────────────────────────────────────────────
@@ -545,49 +650,6 @@ function resolveGidForScan(root, scene) {
   } catch {
     return null
   }
-}
-
-function channelStats(root, gid, now) {
-  const days = new Set()
-  let msgs = 0
-  let recent = 0
-  const nowMs = Number(now)
-  // 老记录里场景写的是外部号码（`group:555` / `group:qq:555`），新记录是 `group:<gid>`。
-  // 只数一种写法，老群会"权重突然归 0"——看起来就像群被人删了。
-  const keys = new Set(sceneKeysForGid(root, gid))
-  for (const day of listRawDays(root).slice(-30)) {
-    const t = channelDayCount(root, day, keys)
-    if (!t) continue
-    msgs += t
-    days.add(day)
-    if (nowMs - Date.parse(`${day}T23:59:59`) < 30 * 24 * 3600 * 1000) recent += t
-  }
-  return { msgs, days: days.size, recent }
-}
-
-function channelDayCount(root, day, keys) {
-  const dir = path.join(root, P.raw, day.slice(0, 7), day.slice(8, 10))
-  if (!isDir(dir)) return 0
-  const wanted = keys instanceof Set ? keys : new Set(Array.isArray(keys) ? keys : [keys])
-  let n = 0
-  for (const name of fs.readdirSync(dir).filter((x) => x.endsWith('.ndjson'))) {
-    let text = ''
-    try {
-      text = fs.readFileSync(path.join(dir, name), 'utf8')
-    } catch {
-      continue
-    }
-    for (const line of text.split('\n')) {
-      if (!wanted.size) continue
-      for (const c of wanted) {
-        if (line.includes(`"channel":"${c}"`)) {
-          n += 1
-          break
-        }
-      }
-    }
-  }
-  return n
 }
 
 /**
@@ -738,11 +800,12 @@ export function createGroupWithCard(root, pid, { name, accountText, platform, na
   const gid = ensureGroupScene(root, { platform: p, nativeId: nid })
   const existsAlready = Boolean(readJson(path.join(root, groupRel(pid, gid)), null))
   if (existsAlready) throw new Error(`这个群体已经有卡了：${gid}（${p}:${nid}）`)
+  // 新建权重 0（用户 2026-11-14 定）：只有"跟她有关"的互动才涨，没有默认分。
   return writeGroup(
     root,
     pid,
     gid,
-    { name: title, feature: String(feature ?? ''), weight: 50, weightSeed: 50 },
+    { name: title, feature: String(feature ?? ''), weight: 0, stats: { engaged: 0, activeDays: 0, last30: 0, dayCounts: {}, updatedAt: null } },
     { reason: '新建群体' },
   )
 }

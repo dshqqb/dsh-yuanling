@@ -10,7 +10,7 @@ import { localIso } from './fsx.js'
 import { P } from './paths.js'
 import { listModelChoices, readConsoleModel, validateModelChoice, writeConsoleModel } from './model.js'
 import { requirePid } from './scope.js'
-import { cardByAccount, createCard, isConsoleMasterCard, readCard } from './accounts.js'
+import { cardByAccount, createCard, readCard } from './accounts.js'
 import { contextFor } from './memory.js'
 import { ingest } from './inbox.js'
 
@@ -26,25 +26,20 @@ export function ensureConsoleMaster(root, pid = null) {
   const p = requirePid(root, pid)
   const hit = cardByAccount(root, p, 'dsh', 'master')
   if (hit) return readCard(root, p, hit)
-  for (const id of [CONSOLE_MASTER_ID, 'card_00000000000000000000000001', 'card_00000000000000000000000002']) {
-    if (readCard(root, p, id)) continue
-    return createCard(root, p, {
-      app: 'dsh',
-      account: 'master',
-      nicknames: ['主人'],
-      description: '通过 DSH 管理台直接对话的管理员本人。',
-      firstMet: localIso(),
-      id,
-    })
-  }
-  // 极少数情况下固定槽位都被占：仍然建一张，主卡优先规则会保证它排最前。
-  return createCard(root, p, {
+  // 管理员固定是这张卡（用户 2026-11-14 定）：默认昵称「管理员」，
+  // 初识为空——等第一次真的说话再写（跟手动建卡同一条规则）。
+  const base = {
     app: 'dsh',
     account: 'master',
-    nicknames: ['主人'],
+    nicknames: ['管理员'],
     description: '通过 DSH 管理台直接对话的管理员本人。',
-    firstMet: localIso(),
-  })
+  }
+  for (const id of [CONSOLE_MASTER_ID, 'card_00000000000000000000000001', 'card_00000000000000000000000002']) {
+    if (readCard(root, p, id)) continue
+    return createCard(root, p, { ...base, id })
+  }
+  // 极少数情况下固定槽位都被占：仍然建一张，管理员优先规则会保证它排最前。
+  return createCard(root, p, base)
 }
 
 export function consoleMaster(root, pid = null) {

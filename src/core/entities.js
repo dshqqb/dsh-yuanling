@@ -9,6 +9,7 @@ import {
   writeCard,
   cardByAccount,
   listCards,
+  createCard,
   setCardNicknames,
   setCardDescription,
   setCardPersonFields,
@@ -21,6 +22,8 @@ import {
   labelOfPerson,
   personForAccount,
   ensureCard,
+  peekCard,
+  isConsoleMasterCard,
 } from './accounts.js'
 
 export {
@@ -28,6 +31,7 @@ export {
   writeCard,
   cardByAccount,
   listCards,
+  createCard,
   setCardNicknames,
   setCardDescription,
   cardIndex,
@@ -38,19 +42,26 @@ export {
   labelOfPerson,
   personForAccount,
   ensureCard,
+  peekCard,
+  isConsoleMasterCard,
 }
 
-// ── 卡上的状态 ──────────────────────────────────────────────────────────
+// ── 管理员 ──────────────────────────────────────────────────────────────
+//
+// 用户 2026-11-14 定：**管理员永远是 `dsh:master` 那张卡**（安装时建的第一张）。
+// 不可卸任、不可换人，也不能被设为"重要人物"。所以这里不存任何"谁是管理员"的状态，
+// 每次都由 app/account 派生——没有可写坏的地方。
 
-/** 私聊/被叫到之后，路人卡转正。 */
-export function recognizeCard(root, pid, id) {
-  const main = mainOf(root, pid, id)
-  const card = readCard(root, pid, main)
-  if (!card) return null
-  if (card.tier === 'shadow') setCardPersonFields(root, pid, main, { tier: null })
-  return readCard(root, pid, main)
+/** 管理员（没有就是 null）。 */
+export function currentAdmin(root, pid = null) {
+  const p = requirePid(root, pid)
+  const id = cardByAccount(root, p, 'dsh', 'master')
+  if (!id) return null
+  const card = peekCard(root, p, mainOf(root, p, id))
+  return card ? { ...card, uid: card.id, display: labelOfPerson(root, p, card.id) } : null
 }
 
+/** 初识：只有"第一次跟她直接说话"才写（私聊 / 被 @ / 叫名字 / 引用回复）。 */
 export function ensureFirstMet(root, pid, id, now = localIso()) {
   const main = mainOf(root, pid, id)
   const card = readCard(root, pid, main)
@@ -69,7 +80,7 @@ export function findByIdentity(root, platform, id, pid = null) {
   const cardId = cardByAccount(root, p, platform, id)
   if (!cardId) return null
   const main = mainOf(root, p, cardId)
-  const card = readCard(root, p, main)
+  const card = peekCard(root, p, main)
   return {
     uid: main,
     card: cardId,
@@ -94,17 +105,17 @@ export function renamePersonAuto(root, pid, uid, display) {
   if (!card) throw new Error(`没有这个人物：${uid}`)
   const next = [...new Set([...(card.nicknames ?? []), String(display ?? '').trim()].filter(Boolean))]
   setCardNicknames(root, pid, main, next)
-  if (card.tier === 'shadow') setCardPersonFields(root, pid, main, { tier: null })
   return { uid: main, nicknames: next }
 }
 
-// ── 置顶 / 管理员 ──────────────────────────────────────────────────────
+// ── 重要人物 ──────────────────────────────────────────────────────────
 
 export function setPinned(root, pid, uid, pinned = true) {
   const main = mainOf(root, pid, uid)
   const card = readCard(root, pid, main)
   if (!card) throw new Error(`没有这个人物：${uid}`)
-  if (pinned && card.tier === 'admin') throw new Error('管理员高于重要人物，不能再设为重要')
+  // 管理员固定在 dsh:master 上，不能兼任"重要人物"
+  if (pinned && isConsoleMasterCard(card)) throw new Error('管理员不能设为重要人物')
   const rank = pinned ? (card.pinRank || nextPinRank(root, pid)) : 0
   setCardPersonFields(root, pid, main, { pinned: Boolean(pinned), pinRank: rank })
   renumberPinned(root, pid)
@@ -117,7 +128,7 @@ function nextPinRank(root, pid) {
 
 export function pinnedPeople(root, pid) {
   const p = requirePid(root, pid)
-  const rows = listMainCards(root, p).filter((c) => c.pinned && c.tier !== 'admin')
+  const rows = listMainCards(root, p).filter((c) => c.pinned && !isConsoleMasterCard(c))
   return rows.sort((a, b) => Number(a.pinRank ?? 0) - Number(b.pinRank ?? 0)).map((c) => c.id)
 }
 
@@ -142,30 +153,6 @@ export function movePinned(root, pid, uid, direction) {
   return ids
 }
 
-export function setAdmin(root, uid = null) {
-  const p = requirePid(root)
-  const current = listMainCards(root, p).find((c) => c.tier === 'admin')
-  if (uid && current && current.id !== uid) throw new Error(`已经有一个管理员（${current.id}），换人前先卸任`)
-  if (!uid) {
-    for (const c of listMainCards(root, p)) {
-      if (c.tier === 'admin') setCardPersonFields(root, p, c.id, { tier: null, pinned: false, pinRank: 0 })
-    }
-    return null
-  }
-  const main = mainOf(root, p, uid)
-  if (!readCard(root, p, main)) throw new Error(`人物不存在：${uid}`)
-  // 管理员高于重要人物：同一个人不能同时占两个位置。
-  setCardPersonFields(root, p, main, { tier: 'admin', pinned: false, pinRank: 0 })
-  renumberPinned(root, p)
-  return main
-}
-
-export function currentAdmin(root) {
-  const p = requirePid(root)
-  const card = listMainCards(root, p).find((c) => c.tier === 'admin')
-  return card ? { ...card, uid: card.id, display: labelOfPerson(root, p, card.id) } : null
-}
-
 // ── 列表 ───────────────────────────────────────────────────────────────
 
 function listMainCards(root, pid) {
@@ -176,7 +163,47 @@ function listMainCards(root, pid) {
   return idx.cards.filter((c) => !hidden.has(c.id))
 }
 
-export function listPeopleForUi(root, pid, { includeShadow = false } = {}) {
+/** 一行人物：主卡 + 它的成员卡拼起来。UI 列表和点查**共用这一份**，免得两套逻辑漂移。 */
+function rowFromGroup(idx, mainId) {
+  const main = idx.byId.get(mainId)
+  if (!main) return null
+  const group = (main.members?.length ? main.members : [main.id])
+    .map((id) => idx.byId.get(id))
+    .filter(Boolean)
+    .sort((a, b) => a.id.localeCompare(b.id))
+  const accounts = group.map((c) => ({
+    uid: c.id,
+    app: c.app,
+    nativeId: c.account,
+    nicknames: c.nicknames ?? [],
+    description: c.description ?? '',
+    weight: Number(c.weight ?? 0),
+  }))
+  const names = [...new Set(group.flatMap((c) => c.nicknames ?? []))]
+  const description = group
+    .map((c) => String(c.description ?? '').trim())
+    .filter(Boolean)
+    .filter((x, i, arr) => arr.indexOf(x) === i)
+    .join('\n')
+  const first = group.map((c) => c.firstMet).filter(Boolean).sort()[0] ?? null
+  const admin = isConsoleMasterCard(main)
+  return {
+    uid: main.id,
+    display: main.nicknames?.length ? main.nicknames.join(' / ') : `${main.app}:${main.account}`,
+    nicknames: names,
+    accounts,
+    identities: accounts.map((a) => ({ platform: a.app, id: a.nativeId })),
+    description,
+    weight: Math.min(100, group.reduce((n, c) => n + Number(c.weight ?? 0), 0)),
+    admin,
+    pinned: !admin && Boolean(main.pinned),
+    pinRank: admin ? 0 : Number(main.pinRank ?? 0),
+    firstMet: first,
+    lastMet: first,
+  }
+}
+
+export function listPeopleForUi(root, pid) {
   const p = requirePid(root, pid)
   const idx = cardIndex(root, p)
   const hidden = new Set()
@@ -184,45 +211,25 @@ export function listPeopleForUi(root, pid, { includeShadow = false } = {}) {
   const rows = []
   for (const main of idx.cards) {
     if (hidden.has(main.id)) continue
-    if (!includeShadow && main.tier === 'shadow') continue
-    const group = (main.members?.length ? main.members : [main.id])
-      .map((id) => idx.byId.get(id))
-      .filter(Boolean)
-      .sort((a, b) => a.id.localeCompare(b.id))
-    const accounts = group.map((c) => ({
-      uid: c.id,
-      platform: c.app,
-      app: c.app,
-      nativeId: c.account,
-      nicknames: c.nicknames ?? [],
-      description: c.description ?? '',
-      weight: Number(c.weight ?? 0),
-    }))
-    const names = [...new Set(group.flatMap((c) => c.nicknames ?? []))]
-    const description = group
-      .map((c) => String(c.description ?? '').trim())
-      .filter(Boolean)
-      .filter((x, i, arr) => arr.indexOf(x) === i)
-      .join('\n')
-    const first = group.map((c) => c.firstMet).filter(Boolean).sort()[0] ?? null
-    rows.push({
-      uid: main.id,
-      display: main.nicknames?.length ? main.nicknames.join(' / ') : `${main.app}:${main.account}`,
-      nicknames: names,
-      accounts,
-      identities: accounts.map((a) => ({ platform: a.app, id: a.nativeId })),
-      description,
-      weight: Math.min(100, group.reduce((n, c) => n + Number(c.weight ?? 0), 0)),
-      admin: main.tier === 'admin',
-      tier: main.tier ?? null,
-      pinned: main.tier !== 'admin' && Boolean(main.pinned),
-      pinRank: main.tier === 'admin' ? 0 : Number(main.pinRank ?? 0),
-      firstMet: first,
-      lastMet: first,
-      hasProfile: true,
-    })
+    const row = rowFromGroup(idx, main.id)
+    if (row) rows.push(row)
   }
   return rows
+}
+
+/**
+ * 点查一个人（这一轮在场的某一个）——只装配这一行，**不再把几千张卡装配成列表**。
+ *
+ * 主卡成员表（cardIndex）按写代数 memo 着，所以这里只是两次 Map 查；真正省掉的是
+ * "为 3~8 个人把全部卡都拼一遍行"的那笔账。
+ */
+export function personRow(root, pid, uid) {
+  const p = requirePid(root, pid)
+  const idx = cardIndex(root, p)
+  const id = String(uid ?? '')
+  if (!id) return null
+  const main = idx.map.get(id) ?? id
+  return rowFromGroup(idx, main)
 }
 
 // ── 频道 ───────────────────────────────────────────────────────────────
@@ -243,10 +250,6 @@ export function personForChannel(root, channel, pid = null) {
   if (card) return mainOf(root, p, id)
   const acct = cardByAccount(root, p, 'qq', id)
   return acct ? mainOf(root, p, acct) : null
-}
-
-export function appForCard(root, pid, id) {
-  return readCard(root, requirePid(root, pid), id)?.app ?? null
 }
 
 /** 兼容视图：主卡 → 成员卡 id。 */

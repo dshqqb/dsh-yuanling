@@ -4,7 +4,7 @@
 //   · 普通名单：互动分 0–100，**不能手改**
 //   · 重点名单：按名次 110 起（最后一名 110，往上每名 +5），永远排在普通人前面
 //   · 落盘权重一直保留：取消重点后立刻回来
-//   · 新建人物/群体默认 50；一次互动都没有时不会被抹成 0
+//   · 新建人物权重 0（用户 2026-11-14 定：没有兜底 50）；群体仍默认 50
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -22,11 +22,10 @@ import {
   setPinned,
   movePinned,
   pinnedPeople,
-  setAdmin,
-  listPeopleForUi,
 } from './helpers.mjs'
+import { ensureConsoleMaster } from '../src/core/console.js'
 import { ensureCard, labelOfPerson } from '../src/core/accounts.js'
-import { pinWeight, effectivePersonWeight, SEED_WEIGHT } from '../src/core/weights.js'
+import { pinWeight } from '../src/core/weights.js'
 import {
   createGroupWithCard,
   parseGroupAccountText,
@@ -48,26 +47,13 @@ before(() => {
 })
 
 test('量程：普通 0–100，重点从 110 起、每名 +5', () => {
-  assert.equal(SEED_WEIGHT, 50)
   assert.equal(pinWeight(0, 1), 110, '只有一个人时就是 110')
   assert.equal(pinWeight(2, 3), 110, '三个人时最后一名 110')
   assert.equal(pinWeight(1, 3), 115)
   assert.equal(pinWeight(0, 3), 120)
 })
 
-test('生效权重：重点用名次分，普通用落盘分；落盘值始终保留', () => {
-  const prof = { weight: 37, pinned: true, pin_rank: 1 }
-  const eff = effectivePersonWeight(prof, { totalPinned: 3 })
-  assert.equal(eff.weight, 115)
-  assert.equal(eff.kind, 'pinned')
-  assert.equal(eff.stored, 37, '落盘值不能被抹掉')
-
-  const plain = effectivePersonWeight({ weight: 37, pinned: false })
-  assert.equal(plain.weight, 37)
-  assert.equal(plain.kind, 'auto')
-})
-
-test('新建账户：自动建人物；新账户权重 0；素描可写', () => {
+test('新建账户：自动建人物；新账户权重 0（没有兜底分）；素描可写', () => {
   const r = ensureCard(root, PID, { app: 'qq', account: '10010', nickname: '小明' })
   writeProfile(root, PID, r.cardId, { sketch: '话少' })
   const prof = readProfile(root, PID, r.cardId)
@@ -108,18 +94,18 @@ test('聚焦顺序真的改权重：往上挪一格，权重从 110 变 115', ()
   const list = pinnedPeople(root, PID)
   const rank = list.indexOf(c.uid)
   const total = list.length
-  const beforeW = effectivePersonWeight(readProfile(root, PID, c.uid), { totalPinned: total }).weight
+  const beforeW = pinWeight(rank, total)
 
   if (rank > 0) {
     movePinned(root, PID, c.uid, 'up')
-    const afterW = effectivePersonWeight(readProfile(root, PID, c.uid), { totalPinned: total }).weight
+    const afterW = pinWeight(pinnedPeople(root, PID).indexOf(c.uid), total)
     assert.equal(afterW, beforeW + 5)
   } else {
     assert.ok(beforeW >= 110)
   }
 })
 
-test('新建群体：平台与号码必填；默认 50；重复创建会拒绝', () => {
+test('新建群体：平台与号码必填；权重 0；重复创建会拒绝', () => {
   assert.throws(() => createGroupWithCard(root, PID, { name: '群', platform: 'qq', nativeId: '' }), /群号/)
   assert.throws(() => createGroupWithCard(root, PID, { name: '群', platform: '', nativeId: '1' }), /平台/)
 
@@ -128,8 +114,9 @@ test('新建群体：平台与号码必填；默认 50；重复创建会拒绝',
   assert.equal(g.name, '摸鱼群')
 
   const [row] = listGroups(root, PID)
-  assert.equal(row.weight, 50, '一次互动都没有 → 显示新建默认分')
+  assert.equal(row.weight, 0, '还没"跟她有关"的互动 → 权重 0（没有默认分）')
   assert.equal(row.weightKind, 'auto')
+  assert.equal(row.stats.engaged, 0)
 
   assert.throws(() => createGroupWithCard(root, PID, { name: '再来一次', platform: 'qq', nativeId: '30001' }), /已经有卡/)
 })
@@ -175,7 +162,7 @@ test('重点群体：名次分同样从 110 起，取消后回落到互动分', 
   rows = listGroups(root, PID)
   const back = rows.find((x) => x.gid === g2.gid)
   assert.equal(back.weightKind, 'auto')
-  assert.equal(back.weight, 50, '回到落盘默认分')
+  assert.equal(back.weight, 0, '回到自动分：还没"跟她有关"的互动')
 })
 
 test('偏好：温柔开关按人格存、只认已知字段', () => {
@@ -186,9 +173,8 @@ test('偏好：温柔开关按人格存、只认已知字段', () => {
 })
 
 test('注入：勾了「更温柔」才多一行 [对象]，而且叫得出管理员的名字', () => {
-  const admin = listPeopleForUi(root, PID)[0]
-  setAdmin(root, admin.uid)
-  const adminName = labelOfPerson(root, PID, admin.uid)
+  const admin = ensureConsoleMaster(root, PID)
+  const adminName = labelOfPerson(root, PID, admin.id)
 
   writePrefs(root, PID, { gentleToAdmin: false })
   assert.ok(!personaExtraLines(root, PID).some((l) => l.startsWith('[对象]')))

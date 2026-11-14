@@ -11,7 +11,7 @@
 //
 // 攒的过程中落在 `state/names.json`；写进名称走 renameCard，和人工改名同一条路（可回滚）。
 import path from 'node:path'
-import { exists, readJson, writeJsonAtomic, localIso } from './fsx.js'
+import { readJson, writeJsonAtomic, localIso } from './fsx.js'
 import { P } from './paths.js'
 import { listDays, readDay } from './raw.js'
 import { readCard, renameCard } from './personacard.js'

@@ -2,7 +2,7 @@
 // skip 必须带 reason：静默跳过 = 那一格永远绿，是最坏的一种绿。
 import fs from 'node:fs'
 import path from 'node:path'
-import { exists, isDir, readJson, localIso } from './fsx.js'
+import { exists, isDir, localIso } from './fsx.js'
 import { P, personaPaths } from './paths.js'
 import { validateRoot } from './paths.js'
 import { checkFormat } from './manifest.js'

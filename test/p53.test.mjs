@@ -14,8 +14,8 @@ import { scaffold } from '../src/core/scaffold.js'
 import { personaPaths } from '../src/core/paths.js'
 import { ingest } from '../src/core/inbox.js'
 import { appendRecord, readDay, listDays } from '../src/core/raw.js'
-import { canonicalChannelForIngest, resolveChannel, platformFromSource, sceneRecordKeys, ensureSenderPerson, promoteShadow, isShadow } from '../src/core/channels.js'
-import { loadIdentities, linkIdentity, createPerson, personForChannel, listPeopleForUi, readProfile } from './helpers.mjs'
+import { canonicalChannelForIngest, resolveChannel, platformFromSource, sceneRecordKeys, ensureSenderPerson } from '../src/core/channels.js'
+import { loadIdentities, linkIdentity, createPerson, personForChannel, listPeopleForUi, readProfile, findByIdentity } from './helpers.mjs'
 import { gidForChannel, channelOfGid, ensureGroupScene, readGroupIdentity } from '../src/core/groups.js'
 import { legacySceneIdentity } from '../src/core/channels.js'
 import { loadEffectiveRules, ruleChain } from '../src/core/rules.js'
@@ -149,7 +149,7 @@ test('入库：私聊消息的频道变成 private:acct_x，并留痕原始号�
   const after = loadIdentities(root).people
   const created = Object.keys(after).find((uid) => !before[uid])
   assert.ok(created, '应该建了一张人物卡')
-  assert.notEqual(after[created].tier, 'shadow', '私聊过的人不是影子')
+  assert.equal(after[created].tier, undefined, '卡上不再有 tier 字段（管理员是派生的）')
   assert.ok(readProfile(root, 'yuanling', created), '要有一份最小档案')
   assert.ok(after[created].identities.some((x) => x.platform === 'qq' && x.id === '10003'))
 })
@@ -197,23 +197,30 @@ test('入库：跨平台同号是**两个**人（这正是不能用外部 id 当
   assert.equal(c1.personUid, uid1)
 })
 
-// ── 影子卡 ────────────────────────────────────────────────────────────
+// ── 路人（用户 2026-11-14 定：这个概念取消） ───────────────────────────
 
-test('影子卡：不进人物页、不进注入', () => {
-  const people = listPeopleForUi(root, PID)
-  const shadowUid = Object.keys(loadIdentities(root).people).find((uid) => isShadow(root, uid))
-  assert.ok(shadowUid)
-  assert.ok(!people.some((p) => p.uid === shadowUid), '人物页默认不显示影子')
-
-  // 影子卡：人物页不显示，但卡本身存在（没有人物描述）
-  assert.equal(readProfile(root, PID, shadowUid)?.tier, 'shadow')
+test('群里没见过的人：不建卡、不留任何记录', () => {
+  const before = listPeopleForUi(root, PID).length
+  ingest(root, {
+    v: 1,
+    source: 'qq',
+    acct: '10001',
+    items: [{ ts: localIso(), channel: 'group:123777', actor: { kind: 'member', id: '7007', name: '路过的人' }, kind: 'msg', text: '随便说说' }],
+  })
+  assert.equal(findByIdentity(root, 'qq', '7007', PID), null, '没说过话就没有卡')
+  assert.equal(listPeopleForUi(root, PID).length, before, '人物页不会多出一行')
 })
 
-test('影子卡：写了档案就转正，之后人物页看得到', () => {
-  const uid = ensureSenderPerson(root, { platform: 'qq', nativeId: '600', display: '六百' })
-  assert.equal(isShadow(root, uid), true)
-  assert.equal(promoteShadow(root, uid), true)
-  assert.equal(isShadow(root, uid), false)
+test('第一次跟她说话（私聊）才建卡', () => {
+  const r = ingest(root, {
+    v: 1,
+    source: 'qq',
+    acct: '10001',
+    items: [{ ts: localIso(), channel: 'private:7007', actor: { kind: 'owner', id: '7007', name: '路过的人' }, kind: 'msg', text: '在吗' }],
+  })
+  assert.equal(r.accepted, 1)
+  assert.ok(findByIdentity(root, 'qq', '7007', PID), '现在有卡了')
+  assert.ok(listPeopleForUi(root, PID).some((p) => p.display === '路过的人'))
 })
 
 // ── 兼容：读历史记录时能把新老写法统一起来 ─────────────────────────────

@@ -4,7 +4,6 @@
 //   硬敏感   → 无条件掩码，规则关不掉（密钥进了 raw 就是一次事故）
 //   软黑名单 → 入 raw 但标 hidden，派生层跳过，可恢复
 //   显式 skip → 完全不入 raw，只留计数
-import fs from 'node:fs'
 import path from 'node:path'
 import { readJson } from './fsx.js'
 import { P } from './paths.js'
@@ -77,19 +76,4 @@ export function applyIngestPolicy(text, { channel = '', channelNative = '', gid 
   if (masked.hits > 0 && !flags.includes('sensitive')) flags.push('sensitive')
 
   return { text: masked.text, flags, skip: false, hits: masked.hits }
-}
-
-/** 供测试与体检用：确认系统里存的规则确实生效。 */
-export function hasSkipRule(root) {
-  return loadIngestRules(root).skip_channels.length > 0
-}
-
-/** 读文件并确认它是可读文本（避免把二进制塞进 raw）。 */
-export function isProbablyText(p) {
-  try {
-    const buf = fs.readFileSync(p)
-    return !buf.includes(0)
-  } catch {
-    return false
-  }
 }

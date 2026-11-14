@@ -44,7 +44,6 @@ export function readProfile(root, pid, id) {
     weight: Number(card.weight ?? 0),
     pinned: Boolean(card.pinned),
     pin_rank: Number(card.pinRank ?? 0),
-    tier: card.tier ?? null,
     created: card.created,
     updated_at: card.updated_at,
   }
@@ -61,7 +60,6 @@ export function writeProfile(root, pid, id, patch = {}, { actor = 'system:entity
   if (patch.first_met) next.firstMet = patch.first_met
   if (patch.pinned !== undefined) next.pinned = Boolean(patch.pinned)
   if (patch.pin_rank !== undefined) next.pinRank = Number(patch.pin_rank)
-  if (patch.tier !== undefined) next.tier = patch.tier
   if (patch.weight !== undefined) next.weight = Number(patch.weight)
   if (Object.keys(next).length) setCardPersonFields(root, pid, main, next)
   return readProfile(root, pid, main)
@@ -113,13 +111,12 @@ export function linkIdentity(root, uid, { platform, id } = {}) {
 
 export function loadIdentities(root, pid = null) {
   const people = {}
-  for (const row of listPeopleForUi(root, pid, { includeShadow: true })) {
+  for (const row of listPeopleForUi(root, pid)) {
     people[row.uid] = {
       uid: row.uid,
       display: row.display,
       aliases: row.nicknames.slice(1),
       identities: row.identities.map((x) => ({ platform: x.platform, id: String(x.id), state: 'observed', confidence: 1 })),
-      tier: row.tier,
       created: null,
     }
   }

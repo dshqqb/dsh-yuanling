@@ -4,7 +4,7 @@
 // 存下来就要维护，维护就有漏跑的那一天；纯函数则没有"昨天任务没跑"这回事。
 import fs from 'node:fs'
 import path from 'node:path'
-import { exists, readJson, appendLine, localIso, sha256 } from './fsx.js'
+import { exists, appendLine, localIso, sha256 } from './fsx.js'
 import { P } from './paths.js'
 
 export const PROTECT_DAYS = 7 // 新事保护期
@@ -136,13 +136,4 @@ export function classify(fact, { recall = 0, now = Date.now() } = {}) {
   if ((Number(fact.imp ?? 0) >= 80 || emotional >= 20) && recall >= 3) return 'deep'
   if (ageDays(fact.created, now) <= RECENT_WINDOW_DAYS) return 'recent'
   return null
-}
-
-/** 读 state/weights.json 里的人工覆写（pin / imp）。P6 会用到。 */
-export function readWeights(root, pid) {
-  return readJson(path.join(root, P.personas, pid, 'state', 'weights.json'), null)
-}
-
-export function _clearRetentionCache() {
-  cache.clear()
 }

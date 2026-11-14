@@ -1,9 +1,9 @@
-// test/p77.test.mjs —— 未知 QQ / 未知群：建影子卡 + 群名（2026-11-11, Q38=A）
+// test/p77.test.mjs —— 未知 QQ / 未知群：路人名册 + 群名（2026-11-11, Q38=A；2026-11-14 改）
 //
 // 用户定的：
-//   · 私聊陌生人已经会自动建影子人物卡（用昵称）；**群里说话的人也要有卡**，同样是影子卡；
+//   · **没说过话就没有卡**：群里第一次见的人什么都不记（用户 2026-11-14 取消路人概念）；
 //   · 群卡以前没有名字（ensureGroup 不带 name），现在由适配器带 `group_name`；
-//   · 影子卡不进注入、人物页默认不显示，也**不算成员名单**里的"认识的人"；
+//   · 路人不进注入、人物页没有，也**不算成员名单**里的"认识的人"；
 //   · 名字只补空、不覆盖人写过的；补名走自动建卡同一条路（撞名自动加标识）。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
@@ -15,8 +15,7 @@ import { scaffold } from '../src/core/scaffold.js'
 import { ingest } from '../src/core/inbox.js'
 import { readGroup, ensureGroupScene } from '../src/core/groups.js'
 import { readGroupIdentity, findGidByNative } from '../src/core/channels.js'
-import { loadIdentities, findByIdentity } from './helpers.mjs'
-import { isShadow } from '../src/core/channels.js'
+import { loadIdentities, findByIdentity, listPeopleForUi } from './helpers.mjs'
 import { localIso } from '../src/core/fsx.js'
 
 const PID = 'yuanling'
@@ -77,30 +76,25 @@ test('后到的群名：只补空名字，不覆盖人写过的', () => {
   assert.equal(readGroup(root, PID, emptyGid).name, '后来的名字')
 })
 
-test('群里说话的人：建影子人物卡，名字用群名片', () => {
+test('群里说话的人：不建卡、不留记录', () => {
   ingestGroup({ groupId: '700004', groupName: '技术群', userId: '30001', actorName: '老王' })
-  const hit = findByIdentity(root, 'qq', '30001')
-  assert.ok(hit, '要能按 QQ 号查到这个人')
-  const card = loadIdentities(root).people[hit.uid]
-  assert.equal(card.display, '老王')
-  assert.equal(card.tier, 'shadow')
-  assert.equal(isShadow(root, hit.uid), true)
+  assert.equal(findByIdentity(root, 'qq', '30001'), null, '没跟她说过话就没有卡')
+  assert.ok(!listPeopleForUi(root, PID).some((p) => p.display === '老王'))
 })
 
-test('影子卡不算"认识的成员"，不进成员名单', () => {
+test('没说过话的人不在成员名单里（重名裁决不该拿陌生人当依据）', () => {
   ingestGroup({ groupId: '700004', userId: '30001', actorName: '老王' })
   const gid = groupIdOf('700004')
   const g = readGroup(root, PID, gid)
-  const hit = findByIdentity(root, 'qq', '30001')
-  assert.ok(!(g.members ?? []).includes(hit.uid), '路人塞进成员名单只会让重名裁决拿错依据')
+  assert.deepEqual(g.members ?? [], [])
 })
 
-test('她自己的话（role=bot）不建人物卡', () => {
+test('她自己的话（role=bot）不建卡', () => {
   ingestGroup({ groupId: '700005', userId: '99999', actorName: '原灵', role: 'bot', text: '我在' })
   assert.equal(findByIdentity(root, 'qq', '99999'), null)
 })
 
-test('私聊陌生人：仍然建影子卡，且群名不会串进私聊', () => {
+test('私聊陌生人：直接建好友卡，且群名不会串进私聊', () => {
   seq += 1
   const r = ingest(root, {
     v: 1,

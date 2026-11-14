@@ -13,7 +13,7 @@ import path from 'node:path'
 import { exists, readJson, writeJsonAtomic, localIso, ulid, sha256 } from './fsx.js'
 import { P } from './paths.js'
 import { writeTracked, history, snapshotCurrent, revertTo } from './version.js'
-import { listEntries, entryRel, EXPRESSION_BYTES } from './memory.js'
+import { listEntries, EXPRESSION_BYTES } from './memory.js'
 import { loadEffectiveRules, rulePaths } from './rules.js'
 import { writePolicy as writeRuntimePolicy } from './policy.js'
 

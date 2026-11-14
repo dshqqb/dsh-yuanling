@@ -76,11 +76,6 @@ export function sha256(buf) {
   return 'sha256:' + crypto.createHash('sha256').update(buf).digest('hex')
 }
 
-/** 文件内容摘要。 */
-export function fileSha256(p) {
-  return sha256(fs.readFileSync(p))
-}
-
 /** 字符串内容摘要。 */
 export function textSha256(s) {
   return sha256(Buffer.from(String(s), 'utf8'))
@@ -111,11 +106,6 @@ function encodeRandom(len) {
 /** 生成 ULID。同一毫秒内可能不严格单调，但全局唯一足够。 */
 export function ulid(now = Date.now()) {
   return encodeTime(now, 10) + encodeRandom(16)
-}
-
-/** 校验 ULID 形态（26 位 Crockford 字符）。 */
-export function isUlid(s) {
-  return typeof s === 'string' && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(s)
 }
 
 /** 本地时区的 ISO 8601（带偏移），用于所有对外时间戳。 */

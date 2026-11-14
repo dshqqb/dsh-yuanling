@@ -15,22 +15,18 @@
 //
 // 老数据不可改写（raw 只追加），所以读取侧要认得老形状：`private:10001`、
 // `group:123555`。认不出的标 unresolved，**不猜**。
+import fs from 'node:fs'
 import path from 'node:path'
 import {
-  cardByAccount,
   groupOf,
   loadCard,
   readCard,
-  writeCard,
   mainOf,
   ensureCard,
-  labelOfPerson,
-  personWeight,
   listCards,
 } from './accounts.js'
 import { isCardUid } from './accounts.js'
 import { writeJsonAtomic, readJson, localIso, ulid } from './fsx.js'
-import { P } from './paths.js'
 import { CHANNEL_PLATFORM, GROUP_KINDS } from './platforms.js'
 import { personaFile, requirePid } from './scope.js'
 import { readRegistry } from './modules/registry.js'
@@ -148,8 +144,8 @@ export function legacySceneIdentity(root, scene) {
 /**
  * 入库时把**外部**频道换成规范频道，并保证私聊一定有对应人物。
  *
- * 私聊来源还没人物卡时建一张**影子卡**（tier=shadow）：记着"这个人我见过，但还不认识"。
- * 影子卡不进注入、默认不在人物页显示；等有人写素描、被认领、或当管理员才算认识。
+ * 私聊没有卡时**直接建一张好友卡**：私聊就是"跟她说话"，按定义不是路人。
+ * （用户 2026-11-14 定：没有"路人"这个概念——说过话才有卡。）
  */
 export function canonicalChannelForIngest(root, { channel, source, actorName = '', createPerson = true }) {
   const raw = String(channel || 'unknown')
@@ -180,43 +176,19 @@ export function canonicalChannelForIngest(root, { channel, source, actorName = '
 }
 
 /**
- * 保证某个外部账号有账户卡 + 人物卡（没有人物就建一张影子人物）。
- * @returns {{acct:string, person:string, createdAcct:boolean, createdPerson:boolean}}
+ * 保证某个外部账号有卡（没有就建——建卡即好友）。
+ * 建卡时 accounts.createCard 会自动把这个人从路人名册里删掉。
+ * @returns {{acct:string, person:string, createdAcct:boolean}}
  */
 export function ensureSenderAccount(root, { platform, nativeId, nickname = '', nicknames = null } = {}) {
   if (!nativeId) throw new Error('缺少账号 id，没法归人')
   const p = requirePid(root)
   const r = ensureCard(root, p, { app: platform || 'unknown', account: nativeId, nickname, nicknames })
-  const card = readCard(root, p, r.cardId)
-  let createdPerson = false
-  if (r.created && card && !card.members?.length) {
-    card.tier = 'shadow'
-    card.updated_at = localIso()
-    writeCard(root, p, r.cardId, card)
-    createdPerson = true
-  }
-  return { acct: r.cardId, person: mainOf(root, p, r.cardId), createdAcct: r.created, createdPerson }
+  return { acct: r.cardId, person: mainOf(root, p, r.cardId), createdAcct: r.created }
 }
 
 export function ensureSenderPerson(root, opts = {}) {
   return ensureSenderAccount(root, opts).person
-}
-
-export function promoteShadow(root, uid) {
-  const p = requirePid(root)
-  const main = mainOf(root, p, uid)
-  const card = readCard(root, p, main)
-  if (!card || card.tier !== 'shadow') return false
-  card.tier = null
-  card.updated_at = localIso()
-  writeCard(root, p, main, card)
-  return true
-}
-
-export function isShadow(root, uid) {
-  const p = requirePid(root)
-  const main = mainOf(root, p, uid)
-  return readCard(root, p, main)?.tier === 'shadow'
 }
 
 // ── 群体身份（客观，跨人格共用）────────────────────────────────────────
@@ -232,17 +204,45 @@ export function isShadow(root, uid) {
  * 钉死在某一个 App 上（这正是被反复纠正的那一点）。
  */
 export function loadGroupIdentities(root) {
-  const j = readJson(path.join(root, personaFile.groupIdentities(requirePid(root))), null)
-  if (!j || typeof j !== 'object') return { version: 1, groups: {}, byNative: {} }
-  return {
-    version: j.version ?? 1,
-    groups: j.groups && typeof j.groups === 'object' ? j.groups : {},
-    byNative: j.byNative && typeof j.byNative === 'object' ? j.byNative : {},
+  const pid = requirePid(root)
+  const file = path.join(root, personaFile.groupIdentities(pid))
+  const key = `${path.resolve(root)}|${pid}`
+  let stamp = 'missing'
+  try {
+    const st = fs.statSync(file)
+    stamp = `${st.mtimeMs}:${st.size}`
+  } catch {
+    /* 还没建登记表 */
   }
+  const hit = identitiesCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.data
+
+  const j = readJson(file, null)
+  const data =
+    j && typeof j === 'object'
+      ? {
+          version: j.version ?? 1,
+          groups: j.groups && typeof j.groups === 'object' ? j.groups : {},
+          byNative: j.byNative && typeof j.byNative === 'object' ? j.byNative : {},
+        }
+      : { version: 1, groups: {}, byNative: {} }
+  identitiesCache.set(key, { stamp, data })
+  return data
 }
 
+/** 身份登记表也按 stamp 缓一下：`gidForChannel` 每条消息都会用到它。 */
+const identitiesCache = new Map()
+
 export function saveGroupIdentities(root, data) {
-  writeJsonAtomic(path.join(root, personaFile.groupIdentities(requirePid(root))), data)
+  const pid = requirePid(root)
+  const file = path.join(root, personaFile.groupIdentities(pid))
+  writeJsonAtomic(file, data)
+  try {
+    const st = fs.statSync(file)
+    identitiesCache.set(`${path.resolve(root)}|${pid}`, { stamp: `${st.mtimeMs}:${st.size}`, data })
+  } catch {
+    identitiesCache.delete(`${path.resolve(root)}|${pid}`)
+  }
   return data
 }
 

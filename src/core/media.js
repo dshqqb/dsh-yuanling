@@ -18,8 +18,6 @@ import { P } from './paths.js'
 export const MEDIA_MAX_BYTES = 20 * 1024 * 1024
 /** 一次出站解析出来的临时文件多久过期（模块必须在这之前读完）。 */
 export const MEDIA_TMP_TTL_MS = 10 * 60 * 1000
-/** media.put.file 的默认频率上限。 */
-export const MEDIA_PUT_PER_MINUTE = 20
 
 /** mime → 扩展名白名单。不在表里的一律拒（能力词不能变成"任意文件投递"）。 */
 export const MIME_EXT = {

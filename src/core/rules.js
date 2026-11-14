@@ -18,8 +18,6 @@ import { writeTracked } from './version.js'
 import { resolveChannel } from './channels.js'
 import { readGroupIdentity } from './channels.js'
 
-export const LEVELS = { global: 10, group: 20, private: 30 }
-
 export function rulePaths(root, pid) {
   return {
     global: `${P.personas}/${pid}/rules/global.json`,
@@ -229,17 +227,6 @@ export function canIngest(root, channel, text) {
   const t = String(text ?? '')
   for (const kw of never) {
     if (kw && t.includes(kw)) return { ok: false, reason: `guardrails.never_record: ${kw}` }
-  }
-  return { ok: true }
-}
-
-/** 注入前判定：never_inject 命中就整条不进上下文（但可以留在 raw 里）。 */
-export function canInject(root, text) {
-  const g = loadGuardrails(root)
-  const never = Array.isArray(g.never_inject) ? g.never_inject : []
-  const t = String(text ?? '')
-  for (const kw of never) {
-    if (kw && t.includes(kw)) return { ok: false, reason: `guardrails.never_inject: ${kw}` }
   }
   return { ok: true }
 }

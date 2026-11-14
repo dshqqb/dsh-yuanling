@@ -75,8 +75,3 @@ export function resolvePointer(root, ptr) {
   if (!ids.has(p.id)) return { ok: false, reason: `原始文件里找不到这条记录：${p.rel}#${p.id}` }
   return { ok: true, kind: 'raw' }
 }
-
-/** 清缓存（测试用）。 */
-export function _clearPointerCache() {
-  cache.clear()
-}

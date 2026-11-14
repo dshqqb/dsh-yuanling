@@ -6,15 +6,41 @@
 //   · 在场状态（engage.json）也按人格存。
 //
 // raw 例外：它只追加、跨人格共用，频道里存的是**写入时那个人格的内部编号**。
+import fs from 'node:fs'
 import path from 'node:path'
 import { readJson } from './fsx.js'
 
+// 根标记（yuanling.json）会被**每一条**消息、每一次读群/读人物调到；
+// 每次去读它，在这台机器上差不多 1.7ms。按 mtime+size 缓存一下，
+// 切换人格时由 writeMarker 主动作废（同毫秒写入也不会读旧值）。
+const markerCache = new Map() // 绝对路径 -> { stamp, pid }
+
+export function invalidateActivePid() {
+  markerCache.clear()
+}
+
 /** 这个数据目录当前激活的人格 id（没有就 null）。 */
 export function activePid(root) {
-  const marker = readJson(path.join(root, 'yuanling.json'), null)
-  if (!marker || !Array.isArray(marker.personas)) return null
-  const hit = marker.personas.find((p) => p.id === marker.active)
-  return hit?.id ?? marker.personas[0]?.id ?? null
+  const file = path.join(root, 'yuanling.json')
+  const key = path.resolve(file)
+  let stamp = 'missing'
+  try {
+    const st = fs.statSync(file)
+    stamp = `${st.mtimeMs}:${st.size}`
+  } catch {
+    /* 标记文件还没有 */
+  }
+  const hit = markerCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.pid
+
+  const marker = readJson(file, null)
+  let pid = null
+  if (marker && Array.isArray(marker.personas)) {
+    const cur = marker.personas.find((p) => p.id === marker.active)
+    pid = cur?.id ?? marker.personas[0]?.id ?? null
+  }
+  markerCache.set(key, { stamp, pid })
+  return pid
 }
 
 /** 必须拿到一个人格 id；拿不到就报清楚。 */

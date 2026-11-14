@@ -10,12 +10,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import {
-  groupOf,
-  labelOfPerson,
-  nicknamesOfPerson,
-} from './accounts.js'
-import { listPeopleForUi } from './entities.js'
+import { cardGen, cardIndex } from './accounts.js'
 import { P } from './paths.js'
 import { readImpression } from './impressions.js'
 import { listGroups } from './groups.js'
@@ -79,13 +74,9 @@ function listFiles(dir, ext = '.json') {
   }
 }
 
-/** 人物索引依赖的文件：卡片注册表 + 每张卡。 */
+/** 人物索引依赖的文件：卡片注册表 + 每张卡——统一由"写代数"回答（1 次 stat，不是 N 次）。 */
 function personStamp(root, pid) {
-  const base = path.join(root, P.personas, pid)
-  return statSignature([
-    path.join(base, 'entities', 'cards.json'),
-    ...listFiles(path.join(base, 'entities', 'cards')),
-  ])
+  return cardGen(root, pid)
 }
 
 /** 群体索引依赖的文件：群体身份登记 + 每个群体档案。 */
@@ -132,21 +123,14 @@ export function extractAliases(text, { max = 8 } = {}) {
   return out
 }
 
-/** 一张人物卡的全部"可被怎么称呼"：成员卡昵称 + 描述里认出的昵称。 */
-function personAliases(root, pid, uid) {
-  const cards = groupOf(root, pid, uid)
-  const names = nicknamesOfPerson(root, pid, uid)
-  const texts = []
-  for (const card of cards) if (card.description) texts.push(String(card.description))
-  try {
-    const imp = readImpression(root, pid, 'person', uid)
-    if (imp?.text) texts.push(String(imp.text))
-  } catch {
-    /* 印象读不到不影响 */
-  }
+/** 一组卡（主卡 + 成员卡）的全部"可被怎么称呼"：昵称 + 描述里认出的昵称。 */
+function aliasesOfGroup(group) {
+  const names = [...new Set(group.flatMap((c) => c.nicknames ?? []))]
   const aliases = []
-  for (const t of texts) {
-    for (const a of extractAliases(t)) if (!names.includes(a) && !aliases.includes(a)) aliases.push(a)
+  for (const c of group) {
+    const text = String(c.description ?? '')
+    if (!text) continue
+    for (const a of extractAliases(text)) if (!names.includes(a) && !aliases.includes(a)) aliases.push(a)
   }
   return { names, aliases }
 }
@@ -156,6 +140,9 @@ function personAliases(root, pid, uid) {
  *
  * 名字只会指向一个人（唯一性保证）；昵称可能指向多个（用户明说允许重复）。
  *
+ * 一遍扫完，不再"每个主卡都调一遍 groupOf"——那是 O(N²)：
+ * 2000 张卡时要 14.5 秒，5000 张 80 秒（2026-11-14 实测）。
+ *
  * @returns {Map<string, {key:string, uids:string[], kind:'name'|'alias'}>}
  */
 export function personMentionIndex(root, pid) {
@@ -164,21 +151,27 @@ export function personMentionIndex(root, pid) {
   const hit = mentionCache.get(key)
   if (hit && hit.stamp === stamp) return hit.index
 
-  const rows = listPeopleForUi(root, pid)
+  const idx = cardIndex(root, pid)
   const map = new Map()
-  const add = (key, uid, kind) => {
-    const k = String(key ?? '').trim()
-    if (!k || [...k].length < 2) return
-    const hit = map.get(k) ?? { key: k, uids: [], kind }
-    if (!hit.uids.includes(uid)) hit.uids.push(uid)
+  const add = (k, uid, kind) => {
+    const key = String(k ?? '').trim()
+    if (!key || [...key].length < 2) return
+    const entry = map.get(key) ?? { key, uids: [], kind }
+    if (!entry.uids.includes(uid)) entry.uids.push(uid)
     // 名字优先：同一个字符串既是名字又是昵称时，按名字处理（唯一命中）
-    if (kind === 'name') hit.kind = 'name'
-    map.set(k, hit)
+    if (kind === 'name') entry.kind = 'name'
+    map.set(key, entry)
   }
-  for (const row of rows) {
-    const { names, aliases } = personAliases(root, pid, row.uid)
-    for (const n of names) add(n, row.uid, 'name')
-    for (const a of aliases) add(a, row.uid, 'alias')
+  for (const card of idx.cards) {
+    // 成员卡归主卡，不单独占一个称呼
+    if ((idx.map.get(card.id) ?? card.id) !== card.id) continue
+    const group = (card.members?.length ? card.members : [card.id])
+      .map((id) => idx.byId.get(id))
+      .filter(Boolean)
+      .sort((a, b) => a.id.localeCompare(b.id))
+    const { names, aliases } = aliasesOfGroup(group)
+    for (const n of names) add(n, card.id, 'name')
+    for (const a of aliases) add(a, card.id, 'alias')
   }
   if (hit) cacheInvalidations += 1
   mentionCache.set(key, { stamp, index: map })

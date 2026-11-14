@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { ensureDir, exists, writeFileAtomic, writeJsonAtomic, ulid, localIso } from './fsx.js'
+import { ensureDir, exists, writeFileAtomic, ulid, localIso } from './fsx.js'
 import { P, personaPaths } from './paths.js'
 import { personaFile } from './scope.js'
 import * as T from './templates.js'

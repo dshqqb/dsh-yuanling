@@ -27,7 +27,6 @@ import {
   collectMembers,
   computeGroupWeight,
   setGroupTier,
-  refreshGroupWeight,
   backfillGroups,
   scanGroupChannels,
   groupsForContext,

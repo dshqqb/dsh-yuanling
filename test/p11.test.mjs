@@ -169,6 +169,29 @@ test('people：列表与编辑素描', async () => {
   assert.equal(one.person.description, '说话短，爱用草')
 })
 
+test('people：管理台可以改昵称；昵称不能改成空', async () => {
+  const ok = await post('/api/person', { uid: personUid, nicknames: ['小甲', '甲哥'] })
+  assert.equal(ok.status, 200)
+  const r = await ok.json()
+  assert.deepEqual(r.person.nicknames, ['小甲', '甲哥'])
+
+  const people = await (await fetch(`${url}/api/people`, { headers: { 'x-yuanling-token': token } })).json()
+  const row = people.people.find((p) => p.uid === personUid)
+  assert.equal(row.display, '小甲 / 甲哥', '列表里的名字跟着变')
+
+  for (const body of [{ nicknames: [] }, { nicknames: '   ' }]) {
+    const bad = await post('/api/person', { uid: personUid, ...body })
+    assert.equal(bad.status, 400, '昵称改成空要拒绝')
+    const j = await bad.json()
+    assert.match(j.error, /昵称不能为空/)
+  }
+  // 被拒绝之后昵称没被写坏
+  const one = await (await fetch(`${url}/api/person?uid=${encodeURIComponent(personUid)}`, {
+    headers: { 'x-yuanling-token': token },
+  })).json()
+  assert.deepEqual(one.person.nicknames, ['小甲', '甲哥'])
+})
+
 test('写操作：未知路径 404', async () => {
   const res = await post('/api/nope', {})
   assert.equal(res.status, 404)

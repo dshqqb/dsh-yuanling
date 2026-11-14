@@ -183,7 +183,7 @@ export function audienceView(root, pid, kind) {
   }
 }
 
-/** 群体列表要拿到名字；这里只读卡片，避免 listGroups 现算权重的开销。 */
+/** 群体列表要拿到名字；这里只读卡片，避免 listGroups 装行的开销。 */
 function listGroupsSafe(root, pid) {
   const dir = path.join(root, P.personas, pid, 'entities', 'groups')
   let names = []

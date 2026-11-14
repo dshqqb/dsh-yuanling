@@ -20,7 +20,8 @@ import {
   labelOfPerson,
   CARD_DESC_MAX_CHARS,
 } from '../src/core/accounts.js'
-import { listPeopleForUi, setPinned, setAdmin, currentAdmin } from '../src/core/entities.js'
+import { listPeopleForUi, setPinned, currentAdmin } from '../src/core/entities.js'
+import { ensureConsoleMaster } from '../src/core/console.js'
 
 const PID = 'yuanling'
 let root
@@ -80,20 +81,23 @@ test('拆分：移除成员后两张独立卡', () => {
   assert.equal(groupOf(root, PID, a.id).length, 1)
 })
 
-test('管理员/重要人物只在主卡上，主卡换人时搬走', () => {
+test('管理员固定是 dsh:master：不能换成别人，也不能设为重要人物', () => {
+  const master = ensureConsoleMaster(root, PID)
   const a = createCard(root, PID, { app: 'qq', account: '30001', nicknames: ['甲'] })
   const b = createCard(root, PID, { app: 'bilibili', account: '30002', nicknames: ['乙'] })
+
+  assert.equal(currentAdmin(root).id, master.id, '管理员就是 dsh:master 那张卡')
+  assert.throws(() => setPinned(root, PID, master.id, true), /管理员不能设为重要人物/)
+
+  // 别人被标了重要，合并到管理员之后：管理员那一格不是"重要人物"，标记丢弃
   setPinned(root, PID, a.id, true)
-  setAdmin(root, a.id)
-  assert.equal(currentAdmin(root).id, a.id)
-  const adminCard = listCards(root, PID).find((c) => c.id === a.id)
-  assert.equal(adminCard.pinned, false, '管理员自动退出重要人物')
-  assert.equal(adminCard.pinRank, 0)
-  assert.throws(() => setPinned(root, PID, a.id, true), /管理员高于重要人物/)
-  mergeCards(root, PID, [b.id, a.id])
+  mergeCards(root, PID, [b.id, a.id, master.id])
   const main = mainOf(root, PID, a.id)
-  assert.equal(main, [a.id, b.id].sort()[0])
-  assert.equal(currentAdmin(root).id, main)
+  assert.equal(main, master.id, '管理员永远是主卡，哪怕 id 不是最小的')
+  assert.equal(currentAdmin(root).id, master.id)
+  const merged = listCards(root, PID).find((c) => c.id === master.id)
+  assert.equal(merged.pinned, false, '管理员不占"重要人物"那一格')
+  assert.equal(listCards(root, PID).find((c) => c.id === a.id).pinned, false, '成员卡上的标记清掉')
 })
 
 test('昵称修改只影响该卡', () => {

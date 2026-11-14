@@ -9,6 +9,13 @@
 //   · 不存合并/分离历史；想记就写进账户描述。
 //   · 好友关系不单独存，好友备注写进账户描述。
 //   · 账户描述上限 2000 个字符。
+//
+// 用户 2026-11-14 定的性能：人物卡会长到几千张，**读路径不能每轮把全部卡文件读一遍**。
+// 所以：
+//   · 存储还是一卡一文件（可读、可 diff、可复制迁移）；
+//   · 读缓存三层——注册表、卡内容（按 id 增量失效）、主卡成员表（派生）；
+//   · "写代数" = 进程内计数器 + `.cards-stamp` 的 mtime/size，进程外写也能感知；
+//   · 全表只给 UI / 统计 / 称呼索引用，每轮上下文只点查在场的那几个人。
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -20,6 +27,12 @@ import { writeTracked } from './version.js'
 export const PLATFORMS = ['qq', 'bili', 'weibo', 'wechat', 'xhs', 'tieba', 'tg', 'github', 'pet', 'dsh']
 export const CARD_DESC_MAX_CHARS = 2000
 
+/**
+ * 卡只代表**好友**（加上管理员那张）。"重要人物"是卡上的独立标记 `pinned`。
+ *
+ * 用户 2026-11-14 定：**没有"路人卡"这回事**——说过话才建卡；只在群里见过、没说过话的人，
+ * 系统里不留任何记录（连名册都没有）。管理员固定是 `dsh:master` 那张卡（见 isConsoleMasterCard）。
+ */
 export function weightFromStats(stats = {}) {
   const messages = Number(stats.messages ?? 0)
   const activeDays = Number(stats.activeDays ?? 0)
@@ -31,9 +44,6 @@ function base(root, pid) {
   return path.join(root, P.personas, requirePid(root, pid), 'entities')
 }
 
-export function cardsRel(pid) {
-  return `${P.personas}/${pid}/entities/cards.json`
-}
 export function cardRel(pid, id) {
   return `${P.personas}/${pid}/entities/cards/${String(id).replace(/[\\/:*?"<>|]/g, '_')}.json`
 }
@@ -44,17 +54,22 @@ export const isCardUid = (s) => /^(card_|acct_)/.test(String(s ?? ''))
 
 const keyOf = (app, account) => `${String(app)}:${String(account)}`
 
-export function loadCardRegistry(root, pid = null) {
-  const j = readJson(path.join(base(root, pid), 'cards.json'), null)
-  if (!j || typeof j !== 'object') return { version: 1, cards: {}, byAccount: {} }
-  return {
-    version: 1,
-    cards: j.cards && typeof j.cards === 'object' ? j.cards : {},
-    byAccount: j.byAccount && typeof j.byAccount === 'object' ? j.byAccount : {},
-  }
-}
+// ── 写代数 + 三层读缓存 ────────────────────────────────────────────────
+//
+// `.cards-stamp` 是**跨进程**的"写过卡"的凭据（CLI 和管理台可能不在一个进程）。
+// 光看它的 mtime 不够：同一毫秒里连写两张卡（合并一次就写好几张）会因为
+// 时间戳精度相同而漏判。所以代数 = **进程内计数器 + 落盘时间戳**：
+// 进程内写必变，进程外写靠时间戳变，两头都不漏。
+let writeGen = 0
+let reads = 0
 
-const cardCache = new Map()
+/** 只读诊断：这一进程真正打开过多少个卡文件（测试用它断言"与卡数无关"）。 */
+export function cardIoStats() {
+  return { reads }
+}
+export function resetCardIoStats() {
+  reads = 0
+}
 
 function cacheKey(root, pid) {
   return `${path.resolve(root)}|${requirePid(root, pid)}`
@@ -67,26 +82,77 @@ function stampFile(root, pid) {
 function stampOf(root, pid) {
   try {
     const st = fs.statSync(stampFile(root, pid))
-    return `${Math.round(st.mtimeMs)}:${st.size}`
+    return `${writeGen}:${st.mtimeMs}:${st.size}`
   } catch {
-    return '0:0'
+    return `${writeGen}:0:0`
   }
 }
 
-function invalidateCards(root, pid) {
-  const p = requirePid(root, pid)
-  cardCache.delete(cacheKey(root, p))
+/** 记一次"卡数据变了"，并返回新的写代数。 */
+function touchCards(root, pid) {
+  writeGen += 1
   try {
-    fs.mkdirSync(path.dirname(stampFile(root, p)), { recursive: true })
-    fs.writeFileSync(stampFile(root, p), `${Date.now()}-${Math.random()}`)
+    fs.mkdirSync(path.dirname(stampFile(root, pid)), { recursive: true })
+    fs.writeFileSync(stampFile(root, pid), String(writeGen))
   } catch {
-    /* 缓存失效失败不挡写盘 */
+    /* 写标记失败不挡写盘：代数已经变了，进程内仍然会重建 */
   }
+  return stampOf(root, pid)
+}
+
+export const cardGen = (root, pid) => stampOf(root, requirePid(root, pid))
+
+const regCache = new Map() // key -> { stamp, reg }
+const cardCache = new Map() // key -> { stamp, reg, ids, byId }
+const idxCache = new Map() // key -> { stamp, idx }
+
+function registryFile(root, pid) {
+  return path.join(base(root, pid), 'cards.json')
+}
+
+export function loadCardRegistry(root, pid = null) {
+  const p = requirePid(root, pid)
+  const key = cacheKey(root, p)
+  let stamp = 'missing'
+  try {
+    const st = fs.statSync(registryFile(root, p))
+    stamp = `${st.mtimeMs}:${st.size}`
+  } catch {
+    /* 还没建注册表 */
+  }
+  const hit = regCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.reg
+
+  const j = readJson(registryFile(root, p), null)
+  const reg =
+    j && typeof j === 'object'
+      ? {
+          version: 1,
+          cards: j.cards && typeof j.cards === 'object' ? j.cards : {},
+          byAccount: j.byAccount && typeof j.byAccount === 'object' ? j.byAccount : {},
+        }
+      : { version: 1, cards: {}, byAccount: {} }
+  regCache.set(key, { stamp, reg })
+  return reg
 }
 
 export function saveCardRegistry(root, data, pid = null) {
-  writeJsonAtomic(path.join(base(root, pid), 'cards.json'), data)
-  invalidateCards(root, pid)
+  const p = requirePid(root, pid)
+  const key = cacheKey(root, p)
+  writeJsonAtomic(registryFile(root, p), data)
+  regCache.delete(key)
+  idxCache.delete(key)
+  const reg = loadCardRegistry(root, p)
+  const store = cardCache.get(key)
+  if (store) {
+    // 注册表变了：id 名单跟着变，但已在缓存里的卡内容不必重读
+    store.reg = reg
+    store.ids = Object.keys(reg.cards)
+    for (const id of [...store.byId.keys()]) if (!(id in reg.cards)) store.byId.delete(id)
+  }
+  // 注册表本身也是"卡数据变了"：称呼索引、成员表都得跟着重建
+  const stamp = touchCards(root, p)
+  if (store) store.stamp = stamp
   return data
 }
 
@@ -95,13 +161,81 @@ function ensureDir(file) {
 }
 
 export function readCard(root, pid, id) {
+  reads += 1
   return readJson(path.join(root, cardRel(requirePid(root, pid), id)), null)
 }
 
 export function writeCard(root, pid, id, card) {
-  ensureDir(path.join(root, cardRel(requirePid(root, pid), id)))
-  writeJsonAtomic(path.join(root, cardRel(requirePid(root, pid), id)), card)
-  invalidateCards(root, pid)
+  const p = requirePid(root, pid)
+  ensureDir(path.join(root, cardRel(p, id)))
+  writeJsonAtomic(path.join(root, cardRel(p, id)), card)
+  forgetCard(root, p, id)
+  return card
+}
+
+/** 内容变了：只丢这一张，别把整表缓存打掉。 */
+function forgetCard(root, pid, id) {
+  const key = cacheKey(root, pid)
+  const stamp = touchCards(root, pid)
+  const store = cardCache.get(key)
+  if (store) {
+    store.byId.delete(String(id))
+    store.stamp = stamp
+  }
+  idxCache.delete(key)
+}
+
+export function listCards(root, pid = null) {
+  const p = requirePid(root, pid)
+  const key = cacheKey(root, p)
+  const stamp = stampOf(root, p)
+  let store = cardCache.get(key)
+  if (!store) {
+    store = { stamp, reg: null, ids: [], byId: new Map() }
+    cardCache.set(key, store)
+  } else if (store.stamp !== stamp) {
+    // 不是这个进程写的（CLI / 另一个进程）：只信任磁盘，整表重读一次
+    store.byId.clear()
+    store.stamp = stamp
+  }
+
+  const reg = loadCardRegistry(root, p)
+  if (store.reg !== reg) {
+    store.reg = reg
+    store.ids = Object.keys(reg.cards)
+    for (const id of [...store.byId.keys()]) if (!(id in reg.cards)) store.byId.delete(id)
+  }
+
+  const out = []
+  for (const id of store.ids) {
+    let card = store.byId.get(id)
+    if (card === undefined) {
+      card = readCard(root, p, id) // 只读缺的那几张
+      if (card) store.byId.set(id, card)
+    }
+    if (card) out.push(card)
+  }
+  return out
+}
+
+/**
+ * 只读点查一张卡（走缓存）。
+ *
+ * **别改它返回的对象**——那是缓存里的那一份；要改就走 readCard + writeCard。
+ * 用它的是"这一轮要带谁"这种读路径：群聊一次要解析几十个账号，
+ * 不该每个账号都去敲一次盘。
+ */
+export function peekCard(root, pid, id) {
+  const p = requirePid(root, pid)
+  const key = cacheKey(root, p)
+  const stamp = stampOf(root, p)
+  const store = cardCache.get(key)
+  if (store && store.stamp === stamp) {
+    const hit = store.byId.get(String(id))
+    if (hit !== undefined) return hit
+  }
+  const card = readCard(root, p, id)
+  if (card && store && store.stamp === stamp) store.byId.set(String(id), card)
   return card
 }
 
@@ -115,27 +249,12 @@ function blankCard({ id, app, account, nicknames = [], description = '', firstMe
     weight: 0,
     firstMet: firstMet ?? null,
     members: [],
-    tier: null,
     pinned: false,
     pinRank: 0,
     stats: { messages: 0, activeDays: 0, last30: 0, dayCounts: {}, updatedAt: null },
     created: created || localIso(),
     updated_at: localIso(),
   }
-}
-
-export function listCards(root, pid = null) {
-  const p = requirePid(root, pid)
-  const key = cacheKey(root, p)
-  const stamp = stampOf(root, p)
-  const hit = cardCache.get(key)
-  if (hit && hit.stamp === stamp) return hit.cards
-  const reg = loadCardRegistry(root, p)
-  const cards = Object.keys(reg.cards)
-    .map((id) => readCard(root, p, id))
-    .filter(Boolean)
-  cardCache.set(key, { stamp, cards })
-  return cards
 }
 
 export function cardByAccount(root, pid, app, account) {
@@ -180,7 +299,7 @@ export function setCardDescription(root, pid, id, description, { actor = 'human:
   card.updated_at = localIso()
   const rel = cardRel(requirePid(root, pid), id)
   writeTracked(root, rel, JSON.stringify(card, null, 2) + '\n', { actor, reason })
-  invalidateCards(root, pid)
+  forgetCard(root, requirePid(root, pid), id)
   return card
 }
 
@@ -234,7 +353,13 @@ function mainIdFor(cards, ids) {
 }
 
 export function cardIndex(root, pid = null) {
-  const cards = listCards(root, pid)
+  const p = requirePid(root, pid)
+  const key = cacheKey(root, p)
+  const stamp = stampOf(root, p)
+  const hit = idxCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.idx
+
+  const cards = listCards(root, p)
   const byId = new Map(cards.map((c) => [c.id, c]))
   const map = new Map()
   const conflicts = []
@@ -249,7 +374,9 @@ export function cardIndex(root, pid = null) {
       else if (prev !== main) conflicts.push({ id, kept: prev, dropped: main })
     }
   }
-  return { cards, byId, map, conflicts }
+  const idx = { cards, byId, map, conflicts }
+  idxCache.set(key, { stamp, idx })
+  return idx
 }
 
 export function mainOf(root, pid, id) {
@@ -264,15 +391,11 @@ export function groupOf(root, pid, id) {
   return [...new Set([main, ...members])].sort().map((x) => idx.byId.get(x)).filter(Boolean)
 }
 
-/** 人物级字段只在主卡上；返回主卡。 */
-export function mainCard(root, pid, id) {
-  const main = mainOf(root, pid, id)
-  return readCard(root, pid, main)
-}
-
 /**
- * 合并：所有卡的 id 写进 id 最小那张的 members。
- * 主卡换人时，人物级字段搬到新主卡；其他卡清空 members/人物级字段。
+ * 合并：所有卡的 id 写进主卡的 members。
+ *
+ * 主卡 = 管理员那张（`dsh:master`，永远主卡）；没有管理员时才取 id 最小。
+ * 人物级字段（重要人物）只在主卡上：合并进来的卡如果被标过重要，标记搬到主卡。
  */
 export function mergeCards(root, pid, ids = []) {
   const wanted = [...new Set(ids.map(String).filter(Boolean))]
@@ -290,12 +413,13 @@ export function mergeCards(root, pid, ids = []) {
   const groupCards = list.map((id) => readCard(root, pid, id)).filter(Boolean)
   const main = groupCards.find(isConsoleMasterCard)?.id ?? list[0]
   const mainRec = readCard(root, pid, main)
-  const donor = groupCards.find((c) => c.tier === 'admin') ?? groupCards.find((c) => c.pinned)
-  if (donor && donor.id !== main) {
-    mainRec.tier = donor.tier ?? null
-    mainRec.pinned = donor.tier === 'admin' ? false : Boolean(donor.pinned)
-    mainRec.pinRank = donor.tier === 'admin' ? 0 : Number(donor.pinRank ?? 0)
-    donor.tier = null
+  const donor = groupCards.find((c) => c.pinned && c.id !== main)
+  if (donor) {
+    // 管理员不能兼任"重要人物"：并进管理员时，重要标记直接丢掉
+    if (!mainRec.pinned && !isConsoleMasterCard(mainRec)) {
+      mainRec.pinned = true
+      mainRec.pinRank = Number(donor.pinRank ?? 0)
+    }
     donor.pinned = false
     donor.pinRank = 0
     writeCard(root, pid, donor.id, donor)
@@ -307,7 +431,6 @@ export function mergeCards(root, pid, ids = []) {
       card.members = list.length > 1 ? list : []
     } else {
       card.members = []
-      card.tier = null
       card.pinned = false
       card.pinRank = 0
     }
@@ -331,10 +454,8 @@ export function splitCard(root, pid, id) {
   const newRec = readCard(root, pid, newMain)
   const splitRec = readCard(root, pid, id)
   if (main === id) {
-    newRec.tier = mainRec.tier ?? null
     newRec.pinned = Boolean(mainRec.pinned)
     newRec.pinRank = Number(mainRec.pinRank ?? 0)
-    splitRec.tier = null
     splitRec.pinned = false
     splitRec.pinRank = 0
   }
@@ -374,12 +495,6 @@ export function labelOfPerson(root, pid, id) {
   const main = group.find(isConsoleMasterCard) ?? [...group].sort((a, b) => a.id.localeCompare(b.id))[0]
   const names = main?.nicknames ?? []
   return names.length ? names.join(' / ') : main ? `${main.app}:${main.account}` : String(id)
-}
-
-export function nicknamesOfPerson(root, pid, id) {
-  const out = []
-  for (const c of groupOf(root, pid, id)) for (const n of c.nicknames ?? []) if (!out.includes(n)) out.push(n)
-  return out
 }
 
 export function personForAccount(root, pid, cardId) {
