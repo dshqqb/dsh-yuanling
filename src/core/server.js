@@ -10,6 +10,7 @@ import { ingest, healthReport } from './inbox.js'
 import { readMarker } from './persona.js'
 import { backfillGroups } from './groups.js'
 import { handleApi, handleApiWrite, handleModuleInstallFromUrl, handleModuleUi, handleModuleCheckUpdate } from './api.js'
+import { consoleHistory } from './console.js'
 const BODY_LIMIT = 4 * 1024 * 1024
 const WEB_ROOT = fileURLToPath(new URL('../../web/', import.meta.url))
 
@@ -140,7 +141,7 @@ export async function kickModule(body, notify, opts = {}) {
  * @param {string} root
  * @param {{token?: string, meta?: object, onSourceFetch?: Function, onModuleChanged?: Function}} opts
  */
-export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null, onModuleChanged = null, onUiGet = null } = {}) {
+export function createServer(root, { token = readToken(root), meta = null, onSourceFetch = null, onModuleChanged = null, onUiGet = null, onConsoleTurn = null, onConsoleStop = null } = {}) {
   if (!token) throw new Error('控制台令牌不存在，先跑 yuanling init 或 yuanling token --reset')
 
   return http.createServer(async (req, res) => {
@@ -198,6 +199,13 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
     if (url.pathname.startsWith('/api/')) {
       if (given !== token) return json(res, 401, { ok: false, error: 'bad token' })
 
+      if (req.method === 'GET' && url.pathname === '/api/console/history') {
+        const pid = readMarker(root)?.active
+        if (!pid) return json(res, 400, { ok: false, error: '没有激活的人格' })
+        const mode = url.searchParams.get('mode') === 'test' ? 'test' : 'chat'
+        return json(res, 200, { ok: true, mode, items: consoleHistory(root, pid, mode, { limit: Number(url.searchParams.get('limit')) || 200 }) })
+      }
+
       if (req.method === 'POST') {
         let text = ''
         try {
@@ -210,6 +218,43 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
           body = JSON.parse(text || '{}')
         } catch {
           return json(res, 400, { ok: false, error: 'body 不是合法 JSON' })
+        }
+
+        // 控制台聊天：SSE 流。必须在通用 API 之前接管，不能走 JSON 包装。
+        if (url.pathname === '/api/console/turn') {
+          if (!onConsoleTurn) return json(res, 503, { ok: false, error: '这个进程没有 DSH Agent 运行时（用 DSH 里的插件启动管理台）' })
+          const mode = body.mode === 'test' ? 'test' : 'chat'
+          const pid = readMarker(root)?.active
+          if (!pid) return json(res, 400, { ok: false, error: '没有激活的人格' })
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          })
+          let closed = false
+          const send = (event, data) => {
+            if (closed) return
+            try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch { closed = true }
+          }
+          const beat = setInterval(() => send('ping', { at: Date.now() }), 15_000)
+          try {
+            await onConsoleTurn({ pid, mode, text: body.text, model: body.model ?? null, send })
+          } catch (err) {
+            send('error', { message: String(err?.message ?? err) })
+          } finally {
+            clearInterval(beat)
+            closed = true
+            try { res.end() } catch { /* 已断开 */ }
+          }
+          return
+        }
+
+        if (url.pathname === '/api/console/stop') {
+          if (!onConsoleStop) return json(res, 503, { ok: false, error: '没有 DSH Agent 运行时' })
+          const pid = readMarker(root)?.active
+          await onConsoleStop({ pid, mode: body.mode === 'test' ? 'test' : 'chat' })
+          return json(res, 200, { ok: true })
         }
 
         // 取数要跟**活着的模块进程**说话，而进程只存在于插件宿主里，
@@ -294,12 +339,14 @@ export function createServer(root, { token = readToken(root), meta = null, onSou
  *
  * @returns {Promise<{server:http.Server, port:number, url:string}>}
  */
-export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null, onModuleChanged = null, onUiGet = null } = {}) {
+export function listen(root, { port = 17777, host = '127.0.0.1', meta = null, token, unref = false, onSourceFetch = null, onModuleChanged = null, onUiGet = null, onConsoleTurn = null, onConsoleStop = null } = {}) {
   const server = createServer(root, {
     meta,
     onSourceFetch,
     onModuleChanged,
     onUiGet,
+    onConsoleTurn,
+    onConsoleStop,
     ...(token === undefined ? {} : { token }),
   })
   return new Promise((resolve, reject) => {

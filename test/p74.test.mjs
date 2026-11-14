@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { writeGlobalRules } from '../src/core/rules.js'
 import { scaffold } from '../src/core/scaffold.js'
 import { createPerson, linkIdentity, writeProfile } from './helpers.mjs'
 import { putMedia, mediaTmpDir } from '../src/core/media.js'
@@ -30,6 +31,7 @@ function put(name, text) {
 before(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p74-'))
   scaffold(root, {})
+  writeGlobalRules(root, PID, { 'action.quiet_hours': [] })
   person = createPerson(root, { display: '小李' })
   linkIdentity(root, person.uid, { platform: 'qq', id: '40004' })
   writeProfile(root, PID, person.uid, { sketch: '小李' })

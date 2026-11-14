@@ -34,6 +34,7 @@ import { findProfiles, installMcp } from './src/core/mcpinstall.js'
 import { ensurePolicy, runtimeConfig } from './src/core/policy.js'
 import { startEvolution, EVOLVE_EVERY_HOURS } from './src/core/evolve.js'
 import { startProactive, PROACTIVE_EVERY_MINUTES } from './src/core/proactive.js'
+import { bindConsoleRoot, createConsoleChat, ensureConsoleMaster } from './src/core/console.js'
 
 // ⚠️ 不能用 `import z from '@deepseek-ai/schemastery'`：
 //    这个包只发布了 lib/index.cjs，package.json 的 import 条件指向不存在的
@@ -67,10 +68,16 @@ export const Config = z.object({
     .default('')
     .description('数据目录的绝对路径，例如 D:\\yuanling。留空则用 ~/.dsh/yuanling。')
     .extra('volatile', true),
-  consoleEnabled: z.boolean().default(true).description('**初值**：是否启动管理台。真值见数据目录的 system/policy.json。'),
-  consoleHost: z.string().default('127.0.0.1').description('**初值**：监听地址（真值见 system/policy.json）。默认只允许回环。'),
-  consolePort: z.number().default(17777).description('**初值**：管理台端口（0 = 随机，改动需重启）。真值见 system/policy.json。'),
-  allowRemote: z.boolean().default(false).description('**初值**：允许非回环监听（真值见 system/policy.json）。'),
+  consoleEnabled: z.boolean().default(true).description('管理台：是否启动原灵管理台。关闭后不启动服务，数据原样保留。'),
+  consoleHost: z
+    .string()
+    .default('127.0.0.1')
+    .description('管理台：监听地址。默认 127.0.0.1（只有本机能访问）。只有打开下面的「允许同一局域网内的其他设备访问」后，才允许填 127.0.0.1 之外的地址。'),
+  consolePort: z.number().default(17777).description('管理台：端口（0 = 随机）。改动后需要重启 DSH。'),
+  allowRemote: z
+    .boolean()
+    .default(false)
+    .description('允许同一局域网内的其他设备访问。只有勾选后，监听地址才可以填 127.0.0.1 之外的地址；管理台含私人记忆，请确认局域网可信。'),
   autoApproveDays: z
     .number()
     .default(3)
@@ -251,8 +258,10 @@ function registerSettingsApi(ctx, config, state) {
           config: {
             enabled: live?.enabled !== false,
             dataDir: live?.dataDir ?? '',
+            consoleEnabled: live?.consoleEnabled !== false,
             consoleHost: String(live?.consoleHost ?? '127.0.0.1'),
             consolePort: Number(live?.consolePort ?? 17777),
+            allowRemote: live?.allowRemote === true,
           },
           status: statusOf(root, state.consoleUrl),
         })
@@ -362,6 +371,18 @@ export function apply(ctx, config) {
   reconcilePersonas(root)
   const marker = readMarker(root)
 
+  // 控制台专用人物卡：每个激活人格一张，app=dsh / account=master。
+  // 固定 id 让它在新环境里天然是最小卡；旧数据里若已有更小 id，合并逻辑会优先保留它为主卡。
+  bindConsoleRoot(root)
+  for (const p of marker?.personas ?? []) {
+    try {
+      ensureConsoleMaster(root, p.id)
+    } catch (err) {
+      log('warn', config, `控制台人物卡初始化失败（${p.id}）：${err?.message ?? err}`)
+    }
+  }
+  const consoleChat = createConsoleChat(ctx)
+
   // 运行设置的唯一真值在数据目录里（system/policy.json）：
   // DSH 设置页只在**没有这个文件**时提供初值；之后以数据目录为准，谁都不覆盖它。
   // 这样"复制数据目录到新机器"才算真的迁移——见 README 第一条。
@@ -440,6 +461,8 @@ export function apply(ctx, config) {
           }
           return modules.uiGet(id, tab)
         },
+        onConsoleTurn: (payload) => consoleChat.turn(payload),
+        onConsoleStop: (payload) => consoleChat.stop(payload),
         // 自证：/root 会把这段原样吐出来，用来排查"配置改了但进程还用旧值"
         meta: {
           source,
@@ -470,6 +493,7 @@ export function apply(ctx, config) {
     ctx.on('dispose', async () => {
       disposed = true
       state.consoleUrl = ''
+      try { await consoleChat.dispose() } catch { /* 会话关停不挡退出 */ }
       try {
         await started
       } catch {

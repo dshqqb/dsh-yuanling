@@ -25,6 +25,7 @@ let person
 before(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p65-'))
   scaffold(root, {})
+  writeGlobalRules(root, PID, { 'action.quiet_hours': [] })
   person = createPerson(root, { display: '小李' })
   linkIdentity(root, person.uid, { platform: 'qq', id: '40004' })
   writeProfile(root, PID, person.uid, { sketch: '小李' })

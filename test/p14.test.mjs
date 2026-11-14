@@ -100,6 +100,7 @@ test('admin：全库唯一，换人必须先卸任', async () => {
   assert.equal(res2.status, 200)
   const d2 = await (await get('/api/people')).json()
   assert.equal(d2.admin.uid, uids['高权重'])
+  await post('/api/person/admin', { uid: null })
 })
 
 test('weight：手改接口已经删掉（权重只能由互动/名次决定）', async () => {

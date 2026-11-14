@@ -102,9 +102,19 @@ test('pickRow：只认自己的命名空间，并兼容旧的 yuanling', () => {
   assert.equal(pickRow(legacy)?.ns, 'yuanling', '读得到旧 id，才能迁移')
 })
 
-test('normalizePatch：只接受 enabled / dataDir（地址端口暂时只读）', () => {
-  const patch = normalizePatch({ enabled: false, dataDir: '  D:\\y  ', consolePort: 9999, consoleHost: '0.0.0.0' })
-  assert.deepEqual(patch, { enabled: false, dataDir: 'D:\\y' })
+test('normalizePatch：接受 enabled / dataDir 与管理台四项', () => {
+  const patch = normalizePatch({ enabled: false, dataDir: '  D:\\y  ', consolePort: 9999, consoleHost: '0.0.0.0', allowRemote: true, consoleEnabled: false })
+  assert.deepEqual(patch, { enabled: false, dataDir: 'D:\\y', consolePort: 9999, consoleHost: '0.0.0.0', allowRemote: true, consoleEnabled: false })
+})
+
+test('applyPatch：非回环地址没有勾选局域网访问时拒绝', async () => {
+  const settings = { update: async () => {} }
+  await assert.rejects(
+    () => applyPatch({ settings, body: { consoleHost: '0.0.0.0', allowRemote: false }, current: { consoleHost: '127.0.0.1', allowRemote: false } }),
+    /允许同一局域网/,
+  )
+  const ok = await applyPatch({ settings, body: { consoleHost: '0.0.0.0', allowRemote: true }, current: { consoleHost: '127.0.0.1' } })
+  assert.equal(ok.restartRequired, true)
 })
 
 test('applyPatch：写进宿主设置，并报告是否要重启', async () => {

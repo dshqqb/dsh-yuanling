@@ -5,8 +5,8 @@
 // 把数据目录搬到新机器，人格和记忆都在，但这些"她怎么运转"的旋钮全要重配一遍。
 //
 // 现在的分工：
-//   · DSH 设置页 = **首个默认值**（安装时给的初值，也是没有 policy.json 时的兜底）；
-//   · `system/policy.json` = **真值**。存在就以它为准，谁都不覆盖它。
+//   · DSH 设置页 = 管理台开关/监听地址/端口/局域网访问，以及其余运行设置的首个默认值；
+//   · `system/policy.json` = 演化周期、主动开口、日志级别等**运行设置**的真值。
 //   · 唯一搬运不走的：`dataDir` 本身（它决定去哪找数据目录，鸡生蛋）
 //     和 MCP 客户端配置（那是 DSH 的东西，不是原灵的数据）。
 import path from 'node:path'
@@ -15,12 +15,9 @@ import { P } from './paths.js'
 
 /**
  * 每个字段都写清"要不要重启"：不标的话，人改了端口发现没反应，会以为坏掉了。
+ * 管理台的四项（开关/监听地址/端口/局域网访问）**不在这里**，它们在 DSH 设置页。
  */
 export const POLICY_FIELDS = {
-  consoleEnabled: { type: 'bool', def: true, restart: true, label: '管理台', hint: '关掉就连不上这个页面了（改回来只能改文件或 DSH 设置页）' },
-  consoleHost: { type: 'string', def: '127.0.0.1', restart: true, label: '监听地址', hint: '默认只允许回环；改成 0.0.0.0 必须同时打开 allowRemote' },
-  consolePort: { type: 'number', def: 17777, min: 0, max: 65535, restart: true, label: '端口', hint: '0 = 随机' },
-  allowRemote: { type: 'bool', def: false, restart: true, label: '允许非回环', hint: '打开前先想清楚：这是你的私人记忆' },
   autoApproveDays: { type: 'number', def: 3, min: 0, max: 365, label: '提案等待天数', hint: '兜底默认值：人格规则里写了就以规则为准' },
   dailyAutoLimit: { type: 'number', def: 1, min: 0, max: 50, label: '每天自动采纳上限', hint: '兜底默认值；0 = 只手动采纳' },
   evolveEveryHours: { type: 'number', def: 6, min: 0, max: 168, label: '演化扫描周期（小时）', hint: '0 = 关掉自动扫描，只保留手动' },
@@ -135,18 +132,20 @@ export function writePolicy(root, patch = {}, { reason = '更新运行设置' } 
 }
 
 /**
- * 把"DSH 传进来的配置"和"数据目录里的设置"合成真正生效的那一份。
+ * 把"DSH 传进来的配置"和"数据目录里的运行设置"合成真正生效的那一份。
  *
- * policy 赢：它是真值；config 只是初值与兜底。
+ * 管理台四项（开关/监听地址/端口/局域网访问）来自 DSH 设置页的 Config；
+ * 其余运行设置仍以 policy 为准（数据目录搬走就该跟着走）。
  */
 export function runtimeConfig(config = {}, policy = {}) {
   const p = normalizePolicy(policy)
+  const val = (v) => (v && typeof v === 'object' && typeof v.get === 'function' ? v.get() : v)
   return {
     ...config,
-    consoleEnabled: p.consoleEnabled,
-    consoleHost: p.consoleHost,
-    consolePort: p.consolePort,
-    allowRemote: p.allowRemote,
+    consoleEnabled: val(config.consoleEnabled) !== false,
+    consoleHost: String(val(config.consoleHost) ?? '127.0.0.1').trim() || '127.0.0.1',
+    consolePort: Number(val(config.consolePort) ?? 17777) || 0,
+    allowRemote: Boolean(val(config.allowRemote)),
     autoApproveDays: p.autoApproveDays,
     dailyAutoLimit: p.dailyAutoLimit,
     evolveEveryHours: p.evolveEveryHours,

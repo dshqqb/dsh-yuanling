@@ -104,6 +104,7 @@ export function setPinned(root, pid, uid, pinned = true) {
   const main = mainOf(root, pid, uid)
   const card = readCard(root, pid, main)
   if (!card) throw new Error(`没有这个人物：${uid}`)
+  if (pinned && card.tier === 'admin') throw new Error('管理员高于重要人物，不能再设为重要')
   const rank = pinned ? (card.pinRank || nextPinRank(root, pid)) : 0
   setCardPersonFields(root, pid, main, { pinned: Boolean(pinned), pinRank: rank })
   renumberPinned(root, pid)
@@ -116,7 +117,7 @@ function nextPinRank(root, pid) {
 
 export function pinnedPeople(root, pid) {
   const p = requirePid(root, pid)
-  const rows = listMainCards(root, p).filter((c) => c.pinned)
+  const rows = listMainCards(root, p).filter((c) => c.pinned && c.tier !== 'admin')
   return rows.sort((a, b) => Number(a.pinRank ?? 0) - Number(b.pinRank ?? 0)).map((c) => c.id)
 }
 
@@ -146,12 +147,16 @@ export function setAdmin(root, uid = null) {
   const current = listMainCards(root, p).find((c) => c.tier === 'admin')
   if (uid && current && current.id !== uid) throw new Error(`已经有一个管理员（${current.id}），换人前先卸任`)
   if (!uid) {
-    for (const c of listMainCards(root, p)) if (c.tier === 'admin') setCardPersonFields(root, p, c.id, { tier: null })
+    for (const c of listMainCards(root, p)) {
+      if (c.tier === 'admin') setCardPersonFields(root, p, c.id, { tier: null, pinned: false, pinRank: 0 })
+    }
     return null
   }
   const main = mainOf(root, p, uid)
   if (!readCard(root, p, main)) throw new Error(`人物不存在：${uid}`)
-  setCardPersonFields(root, p, main, { tier: 'admin' })
+  // 管理员高于重要人物：同一个人不能同时占两个位置。
+  setCardPersonFields(root, p, main, { tier: 'admin', pinned: false, pinRank: 0 })
+  renumberPinned(root, p)
   return main
 }
 
@@ -210,8 +215,8 @@ export function listPeopleForUi(root, pid, { includeShadow = false } = {}) {
       weight: Math.min(100, group.reduce((n, c) => n + Number(c.weight ?? 0), 0)),
       admin: main.tier === 'admin',
       tier: main.tier ?? null,
-      pinned: Boolean(main.pinned),
-      pinRank: Number(main.pinRank ?? 0),
+      pinned: main.tier !== 'admin' && Boolean(main.pinned),
+      pinRank: main.tier === 'admin' ? 0 : Number(main.pinRank ?? 0),
       firstMet: first,
       lastMet: first,
       hasProfile: true,

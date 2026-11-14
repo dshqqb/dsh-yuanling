@@ -94,6 +94,8 @@ const PERSONA_NAV = [
   { id: 'people', label: '人物', icon: 'user' },
   { id: 'groups', label: '群体', icon: 'users' },
   { id: 'rules', label: '规则', icon: 'shield' },
+  { id: 'chat', label: '对话', icon: 'spark' },
+  { id: 'chat-test', label: '对话测试', icon: 'search' },
 ]
 
 const NAV_BY_MODE = { frame: FRAME_NAV, persona: PERSONA_NAV }
@@ -2021,6 +2023,132 @@ async function loadDiag() {
 // ── 切页 ──────────────────────────────────────────────────────────────
 // 键就是菜单 id。注意 shape 用的是 loadProposals——"人格塑造"就是原来那页提案，
 // 改名是为了让人看懂，不是重写。
+// ── 控制台对话 ────────────────────────────────────────────────────────
+function chatPrefix(mode) {
+  return mode === 'test' ? 'chat-test' : 'chat'
+}
+
+function appendChatBubble(mode, role, text, { test = mode === 'test', error = '' } = {}) {
+  const log = $(mode === 'test' ? 'chat-test-log' : 'chat-log')
+  if (!log) return null
+  const empty = log.querySelector('.console-empty')
+  if (empty) empty.remove()
+  const bubble = el('div', `console-msg ${role}${test && role === 'assistant' ? ' test' : ''}`)
+  if (role === 'assistant' && test) bubble.append(el('span', 'console-tag', '测试模式 · 不保存'))
+  bubble.append(document.createTextNode(text || ''))
+  if (error) bubble.append(el('div', 'console-err', error))
+  log.append(bubble)
+  log.scrollTop = log.scrollHeight
+  return bubble
+}
+
+async function loadChat(mode) {
+  const log = $(mode === 'test' ? 'chat-test-log' : 'chat-log')
+  if (!log) return
+  const data = await api(`/api/console/history?mode=${mode === 'test' ? 'test' : 'chat'}`)
+  log.innerHTML = ''
+  const items = data.items ?? []
+  if (!items.length) log.append(el('div', 'console-empty', mode === 'test' ? '测试对话从这里开始。不会写 raw，也不会提炼记忆。' : '从这里开始和她说话。'))
+  for (const it of items) {
+    if (it.role === 'user' || it.role === 'assistant') {
+      appendChatBubble(mode, it.role, it.text || '', { test: mode === 'test', error: it.error || '' })
+    }
+  }
+  const input = $(mode === 'test' ? 'chat-test-input' : 'chat-input')
+  const sendBtn = $(mode === 'test' ? 'chat-test-send' : 'chat-send')
+  if (input && !input.dataset.bound) {
+    input.dataset.bound = '1'
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        sendChat(mode).catch(() => {})
+      }
+    })
+    input.addEventListener('input', () => {
+      input.style.height = 'auto'
+      input.style.height = `${Math.min(160, input.scrollHeight)}px`
+    })
+  }
+  if (sendBtn && !sendBtn.dataset.bound) {
+    sendBtn.dataset.bound = '1'
+    sendBtn.addEventListener('click', () => sendChat(mode).catch(() => {}))
+  }
+}
+
+async function sendChat(mode) {
+  const input = $(mode === 'test' ? 'chat-test-input' : 'chat-input')
+  const sendBtn = $(mode === 'test' ? 'chat-test-send' : 'chat-send')
+  const hint = $(mode === 'test' ? 'chat-test-hint' : 'chat-hint')
+  if (!input || !sendBtn) return
+  const text = input.value.trim()
+  if (!text) return
+  input.value = ''
+  input.style.height = 'auto'
+  input.disabled = true
+  sendBtn.disabled = true
+  appendChatBubble(mode, 'user', text, { test: false })
+  const reply = appendChatBubble(mode, 'assistant', '', { test: mode === 'test' })
+  const replyText = document.createTextNode('')
+  reply.append(replyText)
+  let acc = ''
+  try {
+    const res = await fetch('/api/console/turn', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(state.token ? { 'x-yuanling-token': state.token } : {}),
+      },
+      body: JSON.stringify({ mode: mode === 'test' ? 'test' : 'chat', text }),
+    })
+    if (res.status === 401) {
+      state.token = null
+      showTokenBar(true)
+      throw new Error('unauthorized')
+    }
+    if (!res.ok) throw new Error((await res.text().catch(() => '')).slice(0, 200) || `请求失败 ${res.status}`)
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const parts = buf.split('\n\n')
+      buf = parts.pop() ?? ''
+      for (const part of parts) {
+        let event = 'message'
+        let data = ''
+        for (const line of part.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        let payload = {}
+        try { payload = data ? JSON.parse(data) : {} } catch { continue }
+        if (event === 'delta' && payload.text) {
+          acc += payload.text
+          replyText.data = acc
+          const log = reply.parentElement
+          if (log) log.scrollTop = log.scrollHeight
+        } else if (event === 'done') {
+          if (payload.text) {
+            acc = payload.text
+            replyText.data = acc
+          }
+        } else if (event === 'error') {
+          reply.append(el('div', 'console-err', payload.message || '出错了'))
+        }
+      }
+    }
+    if (hint) hint.textContent = mode === 'test' ? '测试模式：不写 raw，不提炼记忆' : ''
+  } catch (err) {
+    reply.append(el('div', 'console-err', String(err.message ?? err)))
+  } finally {
+    input.disabled = false
+    sendBtn.disabled = false
+    input.focus()
+  }
+}
+
 const loaders = {
   status: loadStatus,
   overview: loadOverview,
@@ -2030,6 +2158,8 @@ const loaders = {
   people: loadPeople,
   groups: loadGroups,
   rules: loadRules,
+  chat: () => loadChat('chat'),
+  'chat-test': () => loadChat('test'),
   usage: loadUsage,
   sources: loadSources,
   logs: loadLogs,

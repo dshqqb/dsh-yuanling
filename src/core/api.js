@@ -345,7 +345,7 @@ export function handleApi(root, url) {
     const map = new Map()
     for (const m of listModules(root)) {
       const app = String(m.app ?? '').trim()
-      if (!app) continue
+      if (!app || app === 'dsh') continue
       const hit = map.get(app) ?? { app, modules: [] }
       hit.modules.push({ id: m.id, name: m.name, enabled: m.enabled })
       map.set(app, hit)
@@ -962,6 +962,7 @@ export function handleApiWrite(root, url, body) {
       if (!app || !account || !nickname) {
         return { status: 400, body: { ok: false, error: '需要 platform / nativeId / nickname' } }
       }
+      if (app === 'dsh') return { status: 403, body: { ok: false, error: 'dsh 是控制台专用账户，不能手动创建' } }
       const r = ensureCard(root, pid, { app, account, nicknames: nickname.split(/\s+/).filter(Boolean) })
       if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有卡了', acct: r.cardId } }
       if (typeof b.description === 'string' && b.description.trim()) {
@@ -1041,6 +1042,7 @@ export function handleApiWrite(root, url, body) {
       const app = String(b.platform ?? b.app ?? '').trim()
       const account = String(b.nativeId ?? b.account ?? b.id ?? '').trim()
       if (!app || !account) return { status: 400, body: { ok: false, error: '需要 platform + nativeId' } }
+      if (app === 'dsh') return { status: 403, body: { ok: false, error: 'dsh 是控制台专用账户，不能手动创建' } }
       if (!nickname) return { status: 400, body: { ok: false, error: '需要昵称' } }
       const r = ensureCard(root, pid, { app, account, nicknames: nickname.split(/\s+/).filter(Boolean) })
       if (!r.created) return { status: 409, body: { ok: false, error: '这个账号已经有卡了' } }

@@ -36,6 +36,7 @@ let root
 before(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p60-'))
   scaffold(root, {})
+  writeGlobalRules(root, PID, { 'action.quiet_hours': [] })
 })
 
 /** 造一条原始记录 + 一条挂在它上面的到期目的。 */
@@ -106,6 +107,7 @@ test('同一条目的不会重复入队', () => {
 test('群来源 + 群里默认不许主动插话 → 压着（held），不产出', () => {
   const r2root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p60b-'))
   scaffold(r2root, {})
+  writeGlobalRules(r2root, PID, { 'action.quiet_hours': [] })
   const rec = appendRecord(r2root, {
     source: 'qq', acct: '1', channel: 'group:grp_demo',
     actor: { kind: 'member', id: '30002', name: '老王' },
@@ -126,6 +128,7 @@ test('群来源 + 群里默认不许主动插话 → 压着（held），不产�
 test('群来源 + 允许群里开口 → 发回那个群，并 @ 说话的人', () => {
   const r2root = fs.mkdtempSync(path.join(os.tmpdir(), 'yuanling-p60c-'))
   scaffold(r2root, {})
+  writeGlobalRules(r2root, PID, { 'action.quiet_hours': [] })
   const rec = appendRecord(r2root, {
     source: 'qq', acct: '1', channel: 'group:grp_demo',
     actor: { kind: 'member', id: '30002', name: '老王' },

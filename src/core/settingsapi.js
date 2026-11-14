@@ -117,6 +117,10 @@ export function normalizePatch(body = {}) {
   const patch = {}
   if (body.enabled !== undefined) patch.enabled = Boolean(body.enabled)
   if (body.dataDir !== undefined) patch.dataDir = String(body.dataDir ?? '').trim()
+  if (body.consoleEnabled !== undefined) patch.consoleEnabled = Boolean(body.consoleEnabled)
+  if (body.consoleHost !== undefined) patch.consoleHost = String(body.consoleHost ?? '').trim()
+  if (body.consolePort !== undefined) patch.consolePort = Number(body.consolePort)
+  if (body.allowRemote !== undefined) patch.allowRemote = Boolean(body.allowRemote)
   return patch
 }
 
@@ -155,6 +159,26 @@ export async function applyPatch({ settings, body, current = {}, ns = NS, valida
     }
   }
 
+  if (patch.consolePort !== undefined) {
+    if (!Number.isFinite(patch.consolePort) || patch.consolePort < 0 || patch.consolePort > 65535) {
+      throw new SettingsError('管理台端口必须在 0~65535 之间')
+    }
+  }
+  if (patch.consoleHost !== undefined) {
+    const host = String(patch.consoleHost)
+    const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+    const allow = patch.allowRemote !== undefined ? patch.allowRemote : current.allowRemote === true
+    if (!host) throw new SettingsError('管理台监听地址不能为空')
+    if (!loopback && !allow) {
+      throw new SettingsError('监听 127.0.0.1 之外的地址前，必须先勾选「允许同一局域网内的其他设备访问」')
+    }
+  }
+  if (patch.allowRemote === false) {
+    const host = String(patch.consoleHost ?? current.consoleHost ?? '127.0.0.1')
+    const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+    if (!loopback) throw new SettingsError('取消局域网访问前，先把监听地址改回 127.0.0.1')
+  }
+
   const before = String(current.dataDir ?? '').trim()
   const changedDir = patch.dataDir !== undefined && patch.dataDir !== before
 
@@ -167,7 +191,7 @@ export async function applyPatch({ settings, body, current = {}, ns = NS, valida
     patch,
     changedDir,
     mcp,
-    // 改目录必须重启：插件下次启动才会去读新目录，MCP 条目也要 DSH 重启才生效
-    restartRequired: changedDir,
+    // 改目录/管理台监听参数都必须重启：插件下次启动才会去读新配置
+    restartRequired: changedDir || patch.consoleHost !== undefined || patch.consolePort !== undefined || patch.allowRemote !== undefined || patch.consoleEnabled !== undefined,
   }
 }

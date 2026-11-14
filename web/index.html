@@ -413,6 +413,36 @@
           </div>
         </section>
 
+        <section id="tab-chat" class="page" hidden>
+          <div class="page-head">
+            <h2>对话</h2>
+            <p class="muted">直接和当前人格说话。每轮写进 raw（<code>source: dsh</code>），和私聊一样自动提炼记忆。</p>
+          </div>
+          <div class="console-chat" data-chat-mode="chat">
+            <div class="console-chat-log" id="chat-log"></div>
+            <div class="console-composer">
+              <textarea id="chat-input" rows="1" placeholder="和她说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+              <button id="chat-send" class="console-send" title="发送" aria-label="发送">↑</button>
+            </div>
+            <div class="console-chat-hint" id="chat-hint"></div>
+          </div>
+        </section>
+
+        <section id="tab-chat-test" class="page" hidden>
+          <div class="page-head">
+            <h2>对话测试</h2>
+            <p class="muted">只读上下文，<b>不写 raw、不提炼记忆</b>；回复只用于测试。工作目录是当前人格的 <code>console/test</code>。</p>
+          </div>
+          <div class="console-chat" data-chat-mode="test">
+            <div class="console-chat-log" id="chat-test-log"></div>
+            <div class="console-composer">
+              <textarea id="chat-test-input" rows="1" placeholder="测试模式：只接收回复，不保存…（Enter 发送）"></textarea>
+              <button id="chat-test-send" class="console-send" title="发送" aria-label="发送">↑</button>
+            </div>
+            <div class="console-chat-hint" id="chat-test-hint">测试模式：不写 raw，不提炼记忆</div>
+          </div>
+        </section>
+
         <section id="tab-usage" class="page" hidden>
           <div class="page-head">
             <h2>用量</h2>

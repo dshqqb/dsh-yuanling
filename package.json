@@ -1,6 +1,6 @@
 {
   "name": "dsh-yuanling",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "原灵 —— DSH 的长期记忆与人格底座（目录骨架 / 原始层 / 版本 / 记忆 / 规则 / 管理台 / 演化提案）",
   "type": "module",
   "main": "index.js",
@@ -12,7 +12,8 @@
     "bundle": {
       "patch": [
         "./cordis.patch.yml",
-        "./presets/yuanling-qq.patch.yml"
+        "./presets/yuanling-qq.patch.yml",
+        "./presets/yuanling-console.patch.yml"
       ]
     },
     "client": {

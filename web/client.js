@@ -109,6 +109,7 @@ if (!window.__yuanlingClientLoaded) {
     function YuanlingSection() {
       const [state, setState] = useState(null)
       const [dirDraft, setDirDraft] = useState('')
+      const [consoleDraft, setConsoleDraft] = useState({ enabled: true, host: '127.0.0.1', port: 17777, allowRemote: false })
       const [busy, setBusy] = useState(false)
       const [msg, setMsg] = useState('')
 
@@ -117,6 +118,12 @@ if (!window.__yuanlingClientLoaded) {
           const d = await api()
           setState(d)
           setDirDraft(d.config?.dataDir ?? '')
+          setConsoleDraft({
+            enabled: d.config?.consoleEnabled !== false,
+            host: String(d.config?.consoleHost ?? '127.0.0.1'),
+            port: Number(d.config?.consolePort ?? 17777),
+            allowRemote: d.config?.allowRemote === true,
+          })
         } catch (error) {
           setMsg(`读取失败：${String(error?.message ?? error)}`)
         }
@@ -236,7 +243,71 @@ if (!window.__yuanlingClientLoaded) {
           h(
             'div',
             { style: S.row },
-            h('div', { style: { ...S.label, minWidth: 'auto', opacity: 0.9 } }, consoleUrl || '未启动'),
+            h(Radio, { checked: consoleDraft.enabled, onChange: () => setConsoleDraft((v) => ({ ...v, enabled: true })) }, '开启管理台'),
+            h(Radio, { checked: !consoleDraft.enabled, onChange: () => setConsoleDraft((v) => ({ ...v, enabled: false })) }, '关闭管理台'),
+          ),
+          h(
+            'div',
+            { style: S.row },
+            h('span', { style: S.label }, '监听地址'),
+            h('input', {
+              style: S.input,
+              value: consoleDraft.host,
+              disabled: busy || !consoleDraft.allowRemote,
+              placeholder: '127.0.0.1',
+              onChange: (e) => setConsoleDraft((v) => ({ ...v, host: e.target.value })),
+            }),
+          ),
+          h(
+            'div',
+            { style: S.row },
+            h('span', { style: S.label }, '端口'),
+            h('input', {
+              style: { ...S.input, minWidth: '90px', flex: '0 0 90px' },
+              type: 'number',
+              value: consoleDraft.port,
+              disabled: busy,
+              onChange: (e) => setConsoleDraft((v) => ({ ...v, port: Number(e.target.value) })),
+            }),
+            h('span', { style: S.hint }, '0 = 随机端口'),
+          ),
+          h(
+            'label',
+            { style: { display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '13px', lineHeight: 1.5 } },
+            h('input', {
+              type: 'checkbox',
+              checked: consoleDraft.allowRemote,
+              disabled: busy,
+              onChange: (e) => {
+                const allowRemote = e.target.checked
+                setConsoleDraft((v) => ({ ...v, allowRemote, host: allowRemote ? v.host : '127.0.0.1' }))
+              },
+            }),
+            h(
+              'span',
+              undefined,
+              '允许同一局域网内的其他设备访问',
+              h('span', { style: S.hint }, '只有勾选后，监听地址才可以填 127.0.0.1 之外的地址；管理台含私人记忆，请确认局域网可信。'),
+            ),
+          ),
+          h(
+            'div',
+            { style: S.row },
+            h(
+              'button',
+              {
+                style: S.btn,
+                disabled: busy,
+                onClick: () =>
+                  save({
+                    consoleEnabled: consoleDraft.enabled,
+                    consoleHost: consoleDraft.host,
+                    consolePort: consoleDraft.port,
+                    allowRemote: consoleDraft.allowRemote,
+                  }),
+              },
+              '保存管理台设置',
+            ),
             h(
               'button',
               {
@@ -267,7 +338,7 @@ if (!window.__yuanlingClientLoaded) {
               '复制令牌',
             ),
           ),
-          h('div', { style: S.hint }, '地址与端口目前只读（改它们属于危险操作，后期再开口子）。记忆、人物、规则、提案都在管理台里改。'),
+          h('div', { style: S.hint }, '管理台开关/地址/端口/局域网访问改完需要重启 DSH。记忆、人物、规则、提案都在管理台里改。'),
         ),
 
         msg ? h('div', { style: S.hint }, msg) : null,
@@ -284,7 +355,7 @@ if (!window.__yuanlingClientLoaded) {
       const register = () =>
         ctx.slots.inject('settings.section', () =>
           ctx.slots.register(
-            { name: 'settings.section', id: NS, order: 6, label: () => '原灵' },
+            { name: 'settings.section', id: NS, order: 6, label: '原灵' },
             YuanlingSection,
           ),
         )

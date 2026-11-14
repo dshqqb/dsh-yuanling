@@ -225,6 +225,14 @@ export function noteCardMessage(root, pid, id, { now = Date.now(), ts = null } =
  * 全表扫描：members 非空的卡是“主卡候选”，列表里的每个 id 都归到其中最小的主卡。
  * 不写盘；用于读时解析。
  */
+export const isConsoleMasterCard = (card) => card?.app === 'dsh' && card?.account === 'master'
+
+function mainIdFor(cards, ids) {
+  const list = [...new Set(ids)]
+  const master = list.map((id) => cards.get(id)).find((c) => c && isConsoleMasterCard(c))
+  return master?.id ?? list.sort()[0]
+}
+
 export function cardIndex(root, pid = null) {
   const cards = listCards(root, pid)
   const byId = new Map(cards.map((c) => [c.id, c]))
@@ -233,8 +241,9 @@ export function cardIndex(root, pid = null) {
   for (const card of cards) {
     const members = Array.isArray(card.members) ? card.members.filter((x) => byId.has(x)) : []
     if (!members.length) continue
-    const main = [...new Set([...members, card.id])].sort()[0]
-    for (const id of new Set([...members, card.id])) {
+    const group = new Set([...members, card.id])
+    const main = mainIdFor(byId, group)
+    for (const id of group) {
       const prev = map.get(id)
       if (!prev || main < prev) map.set(id, main)
       else if (prev !== main) conflicts.push({ id, kept: prev, dropped: main })
@@ -278,13 +287,14 @@ export function mergeCards(root, pid, ids = []) {
     for (const x of group) if (idx.byId.has(x)) all.add(x)
   }
   const list = [...all].sort()
-  const main = list[0]
+  const groupCards = list.map((id) => readCard(root, pid, id)).filter(Boolean)
+  const main = groupCards.find(isConsoleMasterCard)?.id ?? list[0]
   const mainRec = readCard(root, pid, main)
-  const donor = list.map((id) => readCard(root, pid, id)).find((c) => c && (c.tier || c.pinned))
+  const donor = groupCards.find((c) => c.tier === 'admin') ?? groupCards.find((c) => c.pinned)
   if (donor && donor.id !== main) {
     mainRec.tier = donor.tier ?? null
-    mainRec.pinned = Boolean(donor.pinned)
-    mainRec.pinRank = Number(donor.pinRank ?? 0)
+    mainRec.pinned = donor.tier === 'admin' ? false : Boolean(donor.pinned)
+    mainRec.pinRank = donor.tier === 'admin' ? 0 : Number(donor.pinRank ?? 0)
     donor.tier = null
     donor.pinned = false
     donor.pinRank = 0
@@ -316,7 +326,8 @@ export function splitCard(root, pid, id) {
   const group = mainRec?.members?.length ? [...new Set(mainRec.members)] : [main]
   const rest = group.filter((x) => x !== id)
   if (!rest.length) return { main, members: [] }
-  const newMain = rest.sort()[0]
+  const restCards = new Map(rest.map((x) => [x, readCard(root, pid, x)]))
+  const newMain = mainIdFor(restCards, rest)
   const newRec = readCard(root, pid, newMain)
   const splitRec = readCard(root, pid, id)
   if (main === id) {
@@ -359,7 +370,8 @@ export function personWeight(root, pid, id) {
 }
 
 export function labelOfPerson(root, pid, id) {
-  const main = [...groupOf(root, pid, id)].sort((a, b) => a.id.localeCompare(b.id))[0]
+  const group = groupOf(root, pid, id)
+  const main = group.find(isConsoleMasterCard) ?? [...group].sort((a, b) => a.id.localeCompare(b.id))[0]
   const names = main?.nicknames ?? []
   return names.length ? names.join(' / ') : main ? `${main.app}:${main.account}` : String(id)
 }

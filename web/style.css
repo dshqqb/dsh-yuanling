@@ -712,3 +712,22 @@ input.narrow { min-width: 0; width: 110px; }
   .stats { grid-template-columns: 1fr; }
   .stat-row { grid-template-columns: 1fr; }
 }
+
+/* 控制台对话 / 对话测试 */
+.console-chat { display: flex; flex-direction: column; height: calc(100vh - 190px); min-height: 360px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+.console-chat-log { flex: 1; overflow: auto; padding: 18px 18px 8px; display: flex; flex-direction: column; gap: 12px; }
+.console-msg { max-width: min(760px, 84%); padding: 10px 13px; border-radius: 14px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+.console-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.console-msg.assistant { align-self: flex-start; background: var(--soft); border-bottom-left-radius: 4px; }
+.console-msg.test { border: 1px solid #e05a5a; }
+.console-msg .console-tag { display: block; color: #d33; font-size: 11px; font-weight: 700; margin-bottom: 5px; letter-spacing: .04em; }
+.console-msg .console-err { color: #d33; font-size: 12px; margin-top: 6px; }
+.console-empty { color: var(--muted); text-align: center; margin: auto; font-size: 13px; }
+.console-composer { display: flex; gap: 10px; align-items: flex-end; padding: 12px 14px 14px; border-top: 1px solid var(--line); background: var(--card); }
+.console-composer textarea { flex: 1; resize: none; min-height: 42px; max-height: 160px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.45; outline: none; }
+.console-composer textarea:focus { border-color: var(--accent); }
+.console-send { width: 42px; height: 42px; flex: none; border: 0; border-radius: 50%; background: var(--accent); color: #fff; font-size: 22px; line-height: 1; cursor: pointer; }
+.console-send:disabled { opacity: .45; cursor: default; }
+.console-chat-hint { padding: 0 16px 12px; font-size: 12px; color: var(--muted); }
+#tab-chat-test .console-msg.assistant { color: #c43c3c; }
+#tab-chat-test .page-head h2 { color: #c43c3c; }

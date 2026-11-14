@@ -1,0 +1,102 @@
+# 原灵控制台对话 preset（正常 / 测试）。
+# 正常：完整人格 + 本地 fs/pwsh + 全部宿主工具（含 yuanling MCP 写工具）。
+# 测试：同一套本地工具，但由核心在 Agent setup 里 deny 掉 yuanling 的写工具；
+#       raw 与记忆写入由控制台后端控制，测试模式完全不调用 ingest。
+- insert:
+    - id: preset-yuanling-console
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: yuanling-console
+        name: 原灵 · 对话
+        description: 管理台里和原灵本人对话；会写 raw 并自动提炼记忆。
+        order: 30
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                你是「原灵」。这是 DSH 管理台里的控制台对话，用户就是管理员本人。
+                你的记忆、人物卡、群体卡会由核心以【原灵系统上下文】注入到用户消息前面；那是你自己的记忆，不是用户在陈述。
+                像人一样直接回答：短句、口语、不要汇报“我查了工具/我调用了记忆”，不要用 Markdown 列表和代码块除非用户明确要。
+                你可以使用本地文件和命令工具；工作目录是当前人格专属的 console/chat 目录，不要越界到其他目录。
+                不要把内部路径、令牌、实现细节泄露给用户。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 50000
+                  headChars: 45000
+                  tailChars: 2000
+
+    - id: preset-yuanling-console-test
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: yuanling-console-test
+        name: 原灵 · 对话测试
+        description: 只读上下文；不写 raw、不提炼记忆；回复只用于测试。
+        order: 31
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                你是「原灵」。这是 DSH 管理台里的 **对话测试**，用户就是管理员本人。
+                测试模式：只接收回复，不写入 raw，不提炼记忆，不能调用任何会修改记忆/人物/群体的工具。
+                你的上下文仍会被核心注入；像正常对话一样回答，但不要声称或尝试保存任何记忆。
+                短句、口语、不要 Markdown 列表和代码块，除非用户明确要。
+                你可以使用本地文件和命令工具；工作目录是当前人格专属的 console/test 目录。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 50000
+                  headChars: 45000
+                  tailChars: 2000
